@@ -1,0 +1,103 @@
+@layer theme, base, openui, components, utilities;
+
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@import "@openuidev/react-ui/layered/styles/index.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  --chart-1: oklch(0.55 0.15 148);
+  --chart-2: oklch(0.68 0.14 76);
+  --chart-3: oklch(0.55 0.1 195);
+  --chart-4: oklch(0.55 0.19 27);
+  --chart-5: oklch(0.5 0.05 155);
+}
+
+.dark {
+  --chart-1: oklch(0.78 0.185 149);
+  --chart-2: oklch(0.83 0.16 85);
+  --chart-3: oklch(0.75 0.11 195);
+  --chart-4: oklch(0.7 0.19 22);
+  --chart-5: oklch(0.65 0.06 155);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    --radius: var(--openui-radius-m);
+    --background: var(--openui-background);
+    --foreground: var(--openui-text-neutral-primary);
+    --card: var(--openui-foreground);
+    --card-foreground: var(--openui-text-neutral-primary);
+    --popover: var(--openui-popover-background);
+    --popover-foreground: var(--openui-text-neutral-primary);
+    --primary: var(--openui-interactive-accent-default);
+    --primary-foreground: var(--openui-text-accent-primary);
+    --secondary: var(--openui-elevated);
+    --secondary-foreground: var(--openui-text-neutral-primary);
+    --muted: var(--openui-elevated-light);
+    --muted-foreground: var(--openui-text-neutral-secondary);
+    --accent: var(--openui-highlight);
+    --accent-foreground: var(--openui-text-neutral-primary);
+    --destructive: var(--openui-interactive-destructive-accent-default);
+    --border: var(--openui-border-default);
+    --input: var(--openui-border-interactive);
+    --ring: var(--openui-border-accent-emphasis);
+    --sidebar: var(--openui-foreground);
+    --sidebar-foreground: var(--openui-text-neutral-primary);
+    --sidebar-primary: var(--openui-interactive-accent-default);
+    --sidebar-primary-foreground: var(--openui-text-accent-primary);
+    --sidebar-accent: var(--openui-highlight);
+    --sidebar-accent-foreground: var(--openui-text-neutral-primary);
+    --sidebar-border: var(--openui-border-default);
+    --sidebar-ring: var(--openui-border-accent-emphasis);
+    @apply bg-background text-foreground;
+  }
+}
