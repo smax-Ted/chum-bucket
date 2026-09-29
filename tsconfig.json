@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"],
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@/*": ["./*"],
+      "@src/*": ["./src/*"],
+      "@server/*": ["./server/*"]
+    }
+  },
+  "include": ["src", "server", "components", "lib", "scripts", "drizzle.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}
