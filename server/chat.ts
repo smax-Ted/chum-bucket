@@ -12,6 +12,8 @@ import { db } from "./db";
 import { threadsTable } from "./db/schema";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { getFigma } from "./harness/tools/get-figma";
+import { getTicket } from "./harness/tools/get-ticket";
 
 const app = new Hono();
 
@@ -53,6 +55,7 @@ app.post("/", async (c) => {
     threadId: payload.threadId,
     runId: payload.runId,
     middleware: [updateChatMessage],
+    tools: [getFigma, getTicket],
   });
 
   return toServerSentEventsResponse(stream);
