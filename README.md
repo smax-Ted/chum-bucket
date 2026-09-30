@@ -1,188 +1,126 @@
-# Chum Bucket：打造 Jira Acceptance Agent 的 Harness Workshop
-
-> 用 Coding Agent 協助開發，親手理解讓 Agent 可控、可恢復、可驗證的系統設計。
+# Chum Bucket：Harness Engineering
 
 ## Before Start
 
-這是一份內部教學教材。重點不是做出功能最多的聊天介面，而是理解：**模型提出下一步時，誰決定能不能做、在哪裡做、失敗怎麼辦，以及如何證明真的完成？**
+這是一份給工程師閱讀的 Harness 教材：從模型與工具的基本互動，逐步理解執行狀態、程式式工具使用、Context 管理、多 Agent 協作、人工核准與安全隔離。
 
-開發時可以使用任意 Coding Agent。示範預計使用 [pi](https://pi.dev/) 搭配 [pstack](https://github.com/backnotprop/pstack)，必要時手動修改與審查，避免實作偏離目標。
+開發時不限定 Coding Agent；示範使用 [pi](https://pi.dev/) 搭配 [pstack](https://github.com/backnotprop/pstack)，必要時手動修改。**幫我們開發的 Coding Agent，和我們正在建立的 Harness，是兩個不同層次。** 前者協助寫程式；後者決定程式中的 Agent 如何執行。
 
-請先分清楚兩個角色：
+本文沿用 [Hendrixer / Harness Engineering](https://github.com/Hendrixer/harness-engineering) 的主題脈絡，以 Jira、Figma 與瀏覽器驗收作為部分例子。**圖與 TypeScript 片段用來解釋機制；未特別標示為現有程式的介面，都是簡化示意，不代表本專案已有對應功能，也不是可直接貼上執行的完整實作。**
 
-- **協助我們開發的 Coding Agent**：pi 與搭配的開發工具，幫我們讀寫程式、探索設計。
-- **我們要建立的 Harness**：本專案的執行系統，負責模型呼叫、工具、狀態、權限與執行生命週期。
+## 0. Intro
 
-使用現成 Coding Agent 寫程式，不代表已經理解 Harness；本課程要求能解釋它產生的設計，也能用失敗案例驗證它。
+### Agent = Model + Harness
 
-### 適合誰、需要先會什麼
+可以把 Agent 想成「模型的判斷能力」加上「把判斷轉成可執行工作的系統」。
 
-對象是工程師，總長 **6 小時，含兩次各 10 分鐘休息**。需具備 TypeScript、非同步程式設計、HTTP API 與基本測試經驗；不需要先做過 multi-agent 系統。課前先熟悉基本 LLM API 與 Playwright locator／assertion，現場時間用在 Harness 的取捨與失敗演練。
+- **Model** 接收目前的 Context，產生回答、工具呼叫或其他形式的行動請求。
+- **Harness** 準備 Context、呼叫模型、解讀結果、檢查權限、執行工具、保存狀態，並決定何時繼續或停止。
+- **Environment** 是被操作的世界，例如瀏覽器、檔案系統、資料庫與第三方 API。
 
-### 學完應該能做到
+模型本身不會因為輸出「我已點擊送出」就真的操作瀏覽器。那是一段文字；真正的點擊需要 Harness 接到行動請求，經過驗證後呼叫瀏覽器工具。
 
-1. 畫出 model → tool → model 的控制流程，指出模型與 Harness 各自的責任。
-2. 設計有 schema、權限、錯誤與輸出上限的工具介面。
-3. 區分畫面已顯示、step 已 checkpoint，以及外部副作用已提交。
-4. 用明確狀態處理重試、中斷、恢復、取消與人工核准。
-5. 選擇必要的 context、routing 與 subagent 策略，並量測它們是否值得。
-6. 用測試、事件紀錄與評估集證明成果，而不是只看一次成功 demo。
+```mermaid
+flowchart LR
+    U[使用者任務] --> H[Harness]
+    H -->|Context 與工具定義| M[Model]
+    M -->|回答或行動請求| H
+    H -->|驗證後執行| E[Environment]
+    E -->|觀察與結果| H
+    H -->|成果或需要澄清| U
+```
 
-### 如何閱讀這份教材
+模型像是每次收到資料後提出下一步的決策者；Harness 則持有控制權。即使模型要求不存在的工具、反覆執行同一件事，或宣稱已經完成，Harness 仍應檢查實際結果、預算與停止條件。
 
-各章保留原本的主題編號，但不必照編號上課。每章都有「概念 → 練習 → 通過條件」。依 6 小時議程，以準備好的模組進行引導實作；高風險失敗情境使用 fake tool 或預先隔離環境，Routing 與 Subagent 則必須完成實際分派與整合。
+### 最小 Agent Loop
 
-**以下練習、示意 API 與 fixture 是課程設計，不代表目前 repository 已全部實作。** 此次教材整理不要求更動現有程式。
+一次模型輸出不一定就是最後答案。當輸出包含工具呼叫時，Harness 執行工具，把結果補回對話，再進行下一次模型呼叫。
 
-## 專案現況與課程範圍
+```mermaid
+flowchart TD
+    A[接收任務] --> B[準備訊息與可用工具]
+    B --> C[呼叫模型]
+    C --> D{輸出內容}
+    D -->|最終回答| E[結束並回報]
+    D -->|工具呼叫| F[驗證與執行工具]
+    F --> G[把工具結果加入 Context]
+    G --> H{仍在步數與時間預算內}
+    H -->|是| C
+    H -->|否| I[停止並回報未完成部分]
+```
 
-依目前 `main` 的程式與文件，可從下列入口開始讀：
+這個 loop 是骨架，還不是可靠系統。當工具超時、程序重啟、Context 太長、使用者尚未核准，或兩個 Agent 同時操作同一份資料時，就需要後續章節的設計。
 
-| 入口 | 目前可以觀察的內容 |
-| --- | --- |
-| [server/harness/run.ts](server/harness/run.ts) | 最多五輪的 model/tool loop；模型與個別工具使用 DBOS steps；finish 與 recovery reconciliation |
-| [server/harness/model-turn.ts](server/harness/model-turn.ts) | 模型串流轉成訊息與 tool call 的邊界 |
-| [server/harness/run-store.ts](server/harness/run-store.ts) | run、事件、持久化與 thread revision 的處理 |
-| [server/harness/tools/get-ticket.ts](server/harness/tools/get-ticket.ts) | Jira issue 唯讀工具，參數驗證與回傳內容限制 |
-| [server/harness/tools/get-figma.ts](server/harness/tools/get-figma.ts) | Figma 唯讀工具，depth、摘要與分頁 |
-| [docs/dbos-durable-execution.md](docs/dbos-durable-execution.md) | durable 執行合約、恢復邊界、已知限制與離線驗證方式 |
-| [docs/frontend-thread.md](docs/frontend-thread.md) | thread UI、重新連線與執行狀態的設計 |
+### Token 與 Context
 
-目前的 loop 每次直接提供 `get_ticket`、`get_figma` 兩個工具，且逐一執行回傳的工具呼叫。**Lazy loading、Code Mode、對話 compaction、routing、subagent、人工核准與執行不受信任程式的 sandbox，是本 workshop 的待實作教學能力**，不能因為套件已安裝或章節存在，就視為功能已完成。
+Token 是模型處理內容的單位，不等於單字或字元。英文、中文、程式碼與數字的切分不同，不同模型的 tokenizer 也可能不同。可以用 [Tokenizer](https://platform.openai.com/tokenizer) 觀察，不能把固定的「字元數除以四」當成所有情境的精準估算。
 
-## Workshop 主題：Jira Acceptance Agent
-
-從 Jira 的 Acceptance Criteria（AC）與 Figma 設計取得規格，規劃測試，再透過 Playwright 操作指定測試環境，逐條提供判定與證據。
+Context 是本次模型呼叫能看到的內容，通常包含：
 
 ```text
-Jira ticket ＋ 指定 Figma frame/version ＋ 測試環境
-  → 擷取 AC、確認規格與前置條件
-  → 產生 AC coverage matrix 與測試計畫
-  → Routing：功能／視覺／兩者／需澄清
-  → 專職 Subagents：功能驗證與視覺檢查
-  → 彙整 assertion、截圖、trace 與阻礙
-  → 逐條驗收報告 → 人工決定後續處理
+system instructions
+＋ 使用者任務
+＋ 對話歷史
+＋ 工具定義
+＋ 工具結果
+＋ 必要的文件、圖片或其他資料
 ```
 
-這個主題可以沿用目前的 `get_ticket`、`get_figma`，新增能力集中在瀏覽器執行介面、驗收狀態與協作流程。現有專案不是已完成的驗收 Agent；下列是 workshop 要逐步建立的設計。
+模型不會自動知道上一個程序記憶體裡的物件，也不會自動讀到硬碟上的檔案。Harness 必須決定哪些資料要送入 Context、哪些保留在外部，等需要時再讀。
 
-瀏覽器操作以 **Playwright** 為基礎；**TypeSafe／Jev 可根據文字與結構化狀態做路由、判斷，也能在受控流程中選擇下一個瀏覽器動作**。Harness 再透過 Playwright 執行。Jev 不直接接收圖片；Figma 圖像與瀏覽器截圖的視覺比較，需交給具備圖片能力的工具／人工審查，或使用經核准的 screenshot baseline。詳見第 5 章與 [TypeSafe State](https://docs.typesafe.ai/concepts/state)。
+### 多模態能力與操作能力是兩回事
 
-### 驗收的終點
+能接收圖片的模型可以分析畫面，但不表示它能點擊畫面；能讀文字的模型，也能根據 DOM、accessibility tree 與元素狀態選擇操作，再由 Harness 呼叫瀏覽器工具。
 
-輸出可追溯的驗收報告，不自動將 Jira 改成 Done，也不自動留言、修程式或發版。Agent 的判定是提交人工審查的證據；是否正式接受交付，屬於團隊的工作流程。
+例如 Jev 可以使用文字／結構化頁面狀態參與瀏覽器決策，但不直接接收 screenshot 做像素理解。輸入模態決定模型能看什麼；工具與執行環境決定 Agent 能做什麼。[TypeSafe State](https://docs.typesafe.ai/concepts/state)
 
-每個 AC 使用四種對外狀態：
+「較好的 Harness 搭配較弱的模型」有可能勝過另一種組合，但不是保證。應固定任務與預算，比較正確率、延遲、成本與越權情況，而不是只看模型排行榜。
 
-| 狀態 | 何時使用 | 報告要附什麼 |
-| --- | --- | --- |
-| `pass` | 明確條件在指定版本／環境下已全部驗證 | assertion／量測結果、步驟、對應證據 |
-| `fail` | 有可重現證據顯示不符合明確條件 | expected vs actual、重現方式、截圖或 trace |
-| `blocked` | 環境、權限、資料、規格或執行問題，使必要驗證無法完成 | 具體阻礙與解除方式；不能當成產品 bug |
-| `needs-human-review` | 已收集證據，但判定需要人類澄清或主觀設計審查 | 比較圖、差異、待決問題與相關來源 |
+## 1. Tool
 
-內部 lifecycle 另有 `pending`、`running` 等狀態；尚未跑完的 AC 不可提前標成 `pass`。整張 ticket 只有在所有必要 AC 都已通過時，才可回報「本次範圍全部通過」。已知 fail 不會因其他項目 blocked 而被隱藏；報告應同時呈現各狀態數量與未覆蓋範圍。
+### 工具是模型與外部世界之間的合約
 
-### 共用教學 Fixture：新增會員表單
+對模型而言，一個工具通常包含名稱、用途與輸入格式。對 Harness 而言，還需要對應的實作、授權規則、timeout 與結果處理。
 
-使用授課者準備的假 Jira ticket、固定 Figma 設計快照與可重設的測試網站，避免 workshop 依賴真實帳號或正式資料。以下是教學規格，並非已存在於此 repository 的頁面：
-
-| AC ID | 可驗證的條件 | Route | 必要證據 |
-| --- | --- | --- | --- |
-| AC-01 | 姓名／Email 空白送出時顯示各欄位必填錯誤，不新增會員，錯誤態符合指定 Figma frame | functional + visual | 錯誤文字與未新增的斷言；錯誤態設計比較 |
-| AC-02 | 有效資料送出後顯示成功狀態，且測試後端只新增一筆 | functional | UI assertion；測試資料查證 |
-| AC-03 | 已存在 Email 顯示重複提示，資料總數不增加 | functional | 預置重複資料、提示與資料計數證據 |
-| AC-04 | 1440×900 桌機狀態符合指定 desktop frame | visual | 同狀態截圖、明確版面／樣式檢核 |
-| AC-05 | 390×844 手機狀態符合指定 mobile frame，欄位與送出按鈕可操作 | functional + visual | 操作證據、無水平溢出檢查與版面比較 |
-| AC-06 | Ticket 另寫「整體操作很順暢」但未定義指標 | clarification | 待澄清的可測量定義，不自行猜測門檻 |
-
-讓 fixture 保留一個已知功能錯誤與一個已知視覺差異，再提供正常版本，用來驗證 Agent 是否能找出問題、是否誤報，以及修正後是否正確重新判定。AC-06 用來練習 `blocked` 與詢問；若規格已明確交由設計師主觀審查，才標成 `needs-human-review`。
-
-### AC Coverage Matrix：從規格到證據
-
-先建立 matrix，再開瀏覽器。每條 AC 至少保存：來源段落、測試前置條件、步驟、expected、route、執行狀態、evidence refs。AC 不可因為難測就從報告消失。
-
-```json
-{
-  "acId": "AC-01",
-  "source": { "ticket": "DEMO-101", "section": "Acceptance Criteria/1" },
-  "routes": ["functional", "visual"],
-  "preconditions": ["empty form", "isolated test dataset"],
-  "expected": ["required errors visible", "member count unchanged", "error state matches approved design"],
-  "status": "pending",
-  "evidenceRefs": []
-}
+```ts
+const toolDefinition = {
+  name: 'get_ticket',
+  description: 'Read a Jira issue by key.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      ticket: { type: 'string' },
+    },
+    required: ['ticket'],
+    additionalProperties: false,
+  },
+};
 ```
 
-這是建議資料合約，不是現有 API。執行前還要凍結本次 run 的 application build、ticket 擷取時間／版本資訊、Figma version／frame、viewport、browser、locale、字型、測試資料與頁面狀態。來源變更時重新評估受影響的 AC，不把舊證據套到新規格。
+模型看到這份定義，可以提出 `get_ticket({ ticket: "DEMO-101" })`。真正的 API URL、驗證 token 與 `fetch` 實作留在 Harness；不需要把工具函式原始碼或秘密提供給模型。
 
-### 6 小時議程：360 分鐘
+### 完整的 Tool Calling 流程
 
-| 時間 | 分鐘 | 教材與實作 | 本段產出 |
-| --- | ---: | --- | --- |
-| 00:00–00:25 | 25 | Intro、fixture 與四種結果；先看一次有缺陷的驗收 | baseline 與 AC matrix |
-| 00:25–01:10 | 45 | Tool、Lazy Loading、Playwright assertion 與證據 | 工具合約、AC-01 的可重現檢查 |
-| 01:10–01:40 | 30 | Sandbox、User Approve；辨識表單提交的副作用 | 權限表、核准卡與隔離驗證 |
-| 01:40–01:50 | 10 | 休息 | |
-| 01:50–02:35 | 45 | Durable；中斷與重試、證據 checkpoint | 故障注入與恢復觀察 |
-| 02:35–03:15 | 40 | Agent Routing；functional／visual 多標籤分派 | router 與專職 Agent dispatch |
-| 03:15–04:00 | 45 | Subagent；fan-out／fan-in、部分失敗、結果整合 | 兩個 Agent 的獨立執行與完整報告 |
-| 04:00–04:10 | 10 | 休息 | |
-| 04:10–04:45 | 35 | Compact、Code Mode；使用準備好的執行器做對照 | 壓縮保真與往返成本比較 |
-| 04:45–05:35 | 50 | 整合演練：視覺 worker 失敗、AC 模糊、注入指令 | 有證據、有阻礙說明的逐條驗收 |
-| 05:35–06:00 | 25 | Eval、demo 與設計回顧 | baseline 比較、已知限制與下一步 |
-| **合計** | **360** | **教學／實作 340 分鐘＋休息 20 分鐘** | |
-
-所有原始主題都會教到，**Routing 與 Subagent 是必修實作**。6 小時不適合從零寫 UI、workflow engine、sandbox 與 browser adapter；採 starter modules＋小範圍 TODO＋授課者引導。較深入的 sandbox 基礎設施、多模型 routing 調校與正式部署，留作課後延伸，不影響必修主題。
-
-### 授課者需事先備妥
-
-- 已安裝並驗證的環境；所有人能跑同一個小型 Playwright 測試。
-- 假 Jira／Figma 回應、經核准的設計參考與 browser baseline，以及明確的 AC 標準答案。
-- 正常／缺陷兩種 fixture build；每組獨立帳號或資料 namespace；可確認完成的 reset。
-- 可用的模型存取與限額；離線替身資料用來演練 timeout／拒絕／重試。
-- starter：tool registry、browser adapter、事件檢視、持久化／recovery、核准狀態與實際隔離執行器。
-- starter：functional、visual 專職 Agent 的最小實作與輸出 schema，讓學員補 routing／協作邏輯而非現場從零搭所有基礎設施。
-
-這份 README 定義要準備的材料，並不宣稱以上 starter 或 fixture 已在 repository 中完成。真實 Jira／Figma 可以作為示範替代輸入，但不得讓憑證、權限或測試資料污染拖垮現場教學。
-
-## 0. Intro：Agent = Model + Harness
-
-這是一個方便討論的心智模型：
-
-- **Model**：根據目前 context 產生文字或行動請求。
-- **Harness**：準備 context、接收請求、驗證與執行工具、保存狀態、管理預算與權限，再把結果交回模型。
-- **Environment**：實際能讀寫的檔案、服務、資料庫與隔離執行環境。
-
-模型不會因為說「所有 AC 通過」就真的完成驗收。Harness 必須持有實際執行結果，並決定什麼條件才算完成。
-
-```text
-使用者任務 → Harness 準備 context → Model
-                                  ↓
-                            回答或 tool call
-                                  ↓
-                     驗證 → 權限判斷 → 執行
-                                  ↓
-                            tool result → Model
+```mermaid
+sequenceDiagram
+    participant U as 使用者
+    participant H as Harness
+    participant M as Model API
+    participant T as Tool implementation
+    U->>H: 說明 DEMO-101 的驗收條件
+    H->>M: 訊息與 get_ticket schema
+    M-->>H: tool call：名稱、參數、call ID
+    H->>H: 解析參數、驗證 schema 與權限
+    H->>T: 執行 get_ticket
+    T-->>H: 資料或錯誤
+    H->>M: 原 tool call 與對應的 tool result
+    M-->>H: 回答或下一個 tool call
+    H-->>U: 最終結果
 ```
 
-### Token、context 與多模態
+這不是「Harness 暫停模型內部某個函式」。對一般應用端 function calling 而言，模型先完成一次含工具請求的輸出，應用執行工具，再發起下一次模型請求。不同 provider 的 streaming 與內建工具可能有其他機制，應以該 API 合約為準。[OpenAI Function Calling](https://developers.openai.com/api/docs/guides/function-calling)
 
-Token 是模型處理內容的單位，不等於字數；不同語言、模型與 tokenizer 的比例不同。可用 [Tokenizer](https://platform.openai.com/tokenizer) 觀察，但不要把「四個字元一個 token」當成中文或所有模型的精準公式。
-
-Context 不只包含對話，也可能包含 system instructions、工具定義、工具結果與多模態輸入。支援圖片輸入不代表能直接操作 UI；圖片只是輸入，操作能力仍需 Harness 提供工具。
-
-好的 Harness 能減少錯誤與浪費，但「較弱模型＋較好 Harness」是否勝過另一個組合，要用相同任務、預算與評估方式驗證，不能當作保證。
-
-**練習**：把「驗收新增會員表單」拆成讀規格、推論、操作、查證與報告，標出每一步由誰負責，以及哪些操作會真的新增資料。
-
-**通過條件**：能指出完成依據、最大輪數／時間／成本上限，以及找不到答案時的停止方式。
-
-## 1. Tool：模型提出請求，Harness 決定如何執行
-
-以應用程式看得見的 API 合約理解 tool calling 即可：先提供工具描述與輸入格式；模型回傳 tool call；應用驗證並執行；再把對應結果傳回模型。實際欄位依 provider／SDK 而異。[OpenAI Function Calling](https://developers.openai.com/api/docs/guides/function-calling)
-
-下面是 provider-neutral 示意，不是本專案的 API payload：
+下列是 provider-neutral 的訊息示意：
 
 ```json
 {
@@ -198,235 +136,485 @@ Context 不只包含對話，也可能包含 system instructions、工具定義�
   "type": "tool_result",
   "tool_call_id": "call_01",
   "ok": true,
-  "data": { "key": "DEMO-101", "description": "Acceptance Criteria: ..." }
+  "data": { "key": "DEMO-101", "description": "..." }
 }
 ```
 
-`get_ticket` 與 `get_figma` 是目前已有的工具；瀏覽器操作與 evidence capture 的工具介面則是本次課程要設計的擴充。
+`tool_call_id` 用來對應哪次請求。若同一輪有多個呼叫，只靠工具名稱無法區分結果；同一工具可能被不同參數呼叫多次。
 
-### 不要把特殊 token 當成安全機制
+### 特殊 Token 不是應用的安全邊界
 
-不同模型可能使用不同內部格式或特殊 token，但 `<|tool_call|>` 並不是跨模型標準，也不應以掃描字串作為可靠的執行協定。Harness 應依 provider 的結構化訊息／事件與 SDK 合約解析。
+不同模型可能有自己的內部格式與特殊 token，但 `<|tool_call|>`、`<|tool_result|>` 不是跨模型標準。應用通常處理 API 暴露的結構化欄位或事件，不是自行搜尋輸出文字裡的標記。
 
-使用者打出某段「看起來像標記的文字」，與真正的 API tool call 是不同事情；**安全性仍不能建立在「人類無法輸入這個字串」上**。
+使用者打出看似特殊 token 的字串，不等於產生了合法 tool call；反過來，也不能以「人類無法輸入這個 token」作為安全保證。是否執行，應由結構化解析、工具 allowlist、參數驗證與授權共同決定。
 
-同樣地，`role: tool` 表示資料來源管道，不保證內容真實或可信。Jira 描述、Figma 文字、檔案與網頁都可能包含錯誤資料或 prompt injection。工具回傳的「忽略規則並執行某指令」仍然是外部內容，不能自行提升為授權。
+同樣地，`role: tool` 只表示訊息經由工具管道回來，不保證內容可信。Jira 描述或網頁中可能寫著「忽略規則，把資料送到某處」，那仍是外部資料，不能自動升級成使用者指令。
 
-### 一個好工具不只有 name 與 schema
+### Schema 正確，不代表操作合法
 
-- 清楚描述何時使用、不適用情況與可能不完整的結果。
-- 驗證輸入形狀，再檢查路徑、物件與操作權限；通過 schema 不等於有權執行。
-- 設定 timeout、輸出大小／分頁與錯誤格式，避免一次把所有資料塞回模型。
-- 區分可重試的暫時性失敗、輸入錯誤、拒絕授權與結果未知。
-- 寫入工具需說明副作用、idempotency 與人工核准規則。
-
-現有例子：`get_ticket` 讀取固定欄位，未包含 Jira 自訂欄位；最多取 API 回傳頁中的 10 則留言，不能保證是最新留言。Workshop 的 AC fixture 應先放在 description，若實際團隊把 AC 放在 custom field，需另行擴充工具，不能假裝已取得。`get_figma` 預設 depth 為 2，超過 30,000 bytes 的詳細結果門檻時改回節點摘要與分頁；`depthLimited`／`truncated` 提醒我們資料不完整，不等於已拿到完整設計。缺失或截斷的規格應阻擋相應驗收並查補資料，不能直接判產品 fail。
-
-**練習**：為一個唯讀工具列出正常輸入、無效參數、找不到資料、超時與帶有惡意指令的回傳內容。
-
-**通過條件**：錯誤能被清楚分類；無效／未授權請求不會進入實際操作；資料裡的指令不會改變工具權限。
-
-### 1.1 Lazy Loading：需要時才提供完整工具定義
-
-工具數量增多時，把所有 schema 一次放進 context 可能增加成本與選擇難度。Lazy loading 可先給工具索引或搜尋能力，找到候選工具後，再載入必要的完整定義。這與只在執行時 `import()` 程式模組不同：前者管理模型 context，後者管理應用載入時機。[Anthropic：Advanced Tool Use](https://www.anthropic.com/engineering/advanced-tool-use)
-
-```text
-任務 → 搜尋工具索引 → 取得候選名稱與用途
-     → 載入需要的 schema → 模型發出呼叫 → 正常驗證與執行
-```
-
-延遲載入不會自動授予工具權限；搜尋索引與最終 executor 都要遵守同一套可見性與授權規則。只有兩個工具時，先全部提供通常更容易教與除錯，不必為模式而模式。
-
-**練習**：用一組模擬工具比較「全部載入」與「搜尋後載入」，加入找不到工具的情境。
-
-**通過條件**：記錄 schema/context 大小、工具選擇成功率與額外往返；找不到時能停止或合理降級，不憑空呼叫工具。
-
-### 1.2 Browser Tools：先定義可觀察的事實
-
-工具不只提供任意 `click`；至少需要讀取目前頁面狀態、執行允許的操作、驗證條件與保存證據。模型可以幫忙規劃與找對象，Harness 仍要限制目標 origin、資料、動作與執行時間。
-
-把 AC 寫成 Given／When／Then，再把 Then 對應到可觀察事實：
-
-```text
-Given：可重設 fixture 的空白表單與已知初始會員數
-When：送出空白姓名與 Email
-Then：兩個必填錯誤可見，且會員數沒有增加
-```
-
-只看到錯誤文字，還不足以證明「未新增會員」。需要測試資料查詢或事先定義的 mock server 紀錄；若沒有這項可觀察能力，只能說 UI 部分已驗證，不能整條 AC pass。
-
-下面是授課 fixture 應提供的 Playwright Test 示意，不是本專案已存在的測試。`baseURL`、label、錯誤文字與 test id 都需對應準備好的網站：
+這段 dispatcher 示意把幾個檢查放在實際副作用之前：
 
 ```ts
-import { test, expect } from '@playwright/test';
+async function dispatch(call: ToolCall, context: RunContext) {
+  const tool = registry.get(call.name);
+  if (!tool) {
+    throw new Error('Unknown tool');
+  }
 
-test('AC-01: empty fields show required errors', async ({ page }) => {
-  await page.goto('/members/new');
-  await page.getByRole('button', { name: '建立會員', exact: true }).click();
-  await expect(page.getByTestId('name-error')).toBeVisible();
-  await expect(page.getByTestId('name-error')).toHaveText('請填寫姓名');
-  await expect(page.getByTestId('email-error')).toBeVisible();
-  await expect(page.getByTestId('email-error')).toHaveText('請填寫 Email');
+  const input = tool.inputSchema.parse(call.arguments);
+  await policy.assertAllowed(context, tool.name, input);
+
+  return tool.execute(input, {
+    signal: context.signal,
+    operationId: context.operationId,
+  });
+}
+```
+
+Schema 解決「參數長得對不對」；policy 解決「這個使用者、這次任務，能不能對這個目標做這件事」。`path: "../../secret"` 可能是合法字串，卻不是合法檔案範圍。輸入驗證與授權缺一不可。
+
+工具錯誤也應能區分：輸入無效、不存在、權限拒絕、暫時故障，以及「請求已送出但結果未知」。最後一種對寫入尤其重要：timeout 不代表外部操作沒有發生，不能一律直接重試。
+
+### 工具結果是 Context 設計的一部分
+
+工具不應只把整份 API response 原封不動交給模型。可以選欄位、分頁、提供來源與完整性標記，讓模型知道拿到的是什麼、還缺什麼。
+
+本專案的現有例子：
+
+- [`get_ticket`](server/harness/tools/get-ticket.ts) 讀取固定 Jira 欄位，最多取 API 回傳頁中的 10 則留言，未必是最新留言；未包含自訂 AC 欄位。
+- [`get_figma`](server/harness/tools/get-figma.ts) 限制 depth；詳細結果過大時改回節點摘要與分頁。摘要不是完整設計，也不是 frame image export。
+
+模型若不知道資料被截斷，很容易把「沒看到」誤認成「不存在」。工具描述、回傳格式與錯誤訊息，會直接影響 Agent 的行為。
+
+### Lazy Loading：需要時才載入工具定義
+
+工具少時，全部放進 Context 最簡單。工具多時，所有 schema 會占用 Context，且讓模型更難選擇。Lazy loading 把「知道有這個工具」和「取得完整呼叫方式」拆開。
+
+```mermaid
+sequenceDiagram
+    participant M as Model
+    participant H as Harness
+    participant R as Tool registry
+    H->>M: 基本工具與工具搜尋能力
+    M->>H: 搜尋讀取 Figma 的工具
+    H->>R: 依任務與權限找候選
+    R-->>H: 名稱、用途、工具 ID
+    H-->>M: 精簡候選清單
+    M->>H: 載入候選工具定義
+    H->>R: 取得完整 schema
+    H-->>M: 後續 Context 中提供可呼叫定義
+    M->>H: 呼叫已載入工具
+    H->>H: 再次驗證與授權
+```
+
+這裡的 lazy loading 管理的是**模型可見的工具資訊**，不只是 JavaScript 的 `import()`。應用可以已經載入實作，但暫時不把 schema 放進模型 Context；也可以兩者都延遲處理。
+
+工具搜尋和工具執行要使用一致的權限範圍。找到工具不等於被授權，載入 schema 也不等於可以執行。若搜尋不到，應回報缺少能力，而不是猜工具名稱。
+
+代價是多一次或多次 discovery 往返，也可能找錯工具。只有兩個工具時，通常先維持直接提供；是否需要延遲載入，要看工具數量、Context 成本與選擇錯誤率。[Anthropic Advanced Tool Use](https://www.anthropic.com/engineering/advanced-tool-use)
+
+## 2. Durable
+
+### 問題：程序會消失，工作不能只活在記憶體裡
+
+最簡單的 Agent Loop 把 `messages`、目前步驟與工具結果存在變數中。程序一旦 crash，這些狀態就消失；重啟後若重新從第一步開始，可能重複呼叫模型、點擊按鈕或新增資料。
+
+Durable execution 的核心是：**把可恢復的進度寫到持久儲存，讓程序重啟後能分辨已完成、尚未完成與結果未知的工作。**
+
+```mermaid
+flowchart LR
+    A[接收固定 run input] --> B[Model step]
+    B --> C[(保存 step output)]
+    C --> D[Tool step]
+    D --> E[(保存 step output)]
+    E --> F[下一個 Model step]
+    R[程序重啟] --> C
+    C -->|重用已完成結果| D
+```
+
+實際恢復通常會重新進入 workflow 函式，由引擎識別已完成的 durable operations 並回傳保存結果；不是把 JavaScript call stack 原封不動凍結再還原。
+
+### 哪些狀態要分開？
+
+| 狀態 | 回答的問題 | 例子 |
+| --- | --- | --- |
+| Run／workflow state | 工作進行到哪裡？ | running、awaiting approval、failed |
+| Step output | 哪些操作已經完成並可重用？ | 模型輸出、工具結果 |
+| Conversation state | 下一次模型需要看到什麼？ | 訊息、tool call/result |
+| Observation state | 使用者目前看到什麼？ | 串流事件、snapshot、游標 |
+| External state | 外部世界實際發生什麼？ | 會員已新增、訊息已送出 |
+
+這幾者不一定同時更新。例如畫面已出現工具結果，但 step checkpoint 還沒成功；瀏覽器斷線，但後端 producer 還在執行。把 UI 畫面當成 workflow 的唯一真相，就容易錯判完成與恢復位置。
+
+### Step 與重試
+
+DBOS 是本專案採用的 durable 機制。以下簡化例子展示把非決定性的操作放進 step：
+
+```ts
+const ticket = await DBOS.runStep(
+  () => readTicket(ticketKey),
+  { name: 'read-ticket' },
+);
+
+const plan = await DBOS.runStep(
+  () => generatePlan(ticket),
+  { name: 'generate-plan' },
+);
+```
+
+已完成並保存的 step 可以重用 output，避免重新呼叫外部 API 或重新生成另一份 plan。輸出需要符合引擎的可序列化合約；browser page、socket、檔案 handle 等程序內物件，不能直接當成恢復後仍有效的資源。[DBOS Steps](https://docs.dbos.dev/typescript/tutorials/step-tutorial)
+
+因此，瀏覽器工作應保存可重建資訊，例如 URL、app build、測試資料 namespace、已完成檢查與 evidence reference。重啟後重建 browser context，回到可查證的狀態，而不是重用失效的 page handle。
+
+### Durable 不等於外部副作用 Exactly-once
+
+最容易忽略的是這個窗口：
+
+```mermaid
+sequenceDiagram
+    participant W as Workflow
+    participant S as 外部服務
+    participant D as Checkpoint store
+    W->>S: 新增會員
+    S-->>W: 新增成功
+    Note over W,D: 在保存 step output 前程序崩潰
+    W->>D: 重啟後查詢完成紀錄
+    D-->>W: 沒有完成紀錄
+    W->>S: 可能再次執行新增
+```
+
+外部服務和 checkpoint store 是兩個不同系統，未必共享交易。`runStep` 不會自動讓任意外部副作用只發生一次。
+
+常見解法包括：
+
+- **Idempotency key**：同一個邏輯操作重試時使用相同 key，且外部服務真的會去重。
+- **交易／outbox**：在可控制的資料庫範圍中，把狀態與待送工作原子提交，再設計可靠傳送。
+- **查證後恢復**：外部結果不明時，先依 operation ID 查詢，避免盲目重送。
+- **版本前置條件**：只在資料仍符合預期版本時寫入，避免重試覆蓋後來的修改。
+
+```ts
+await memberService.create({
+  email: input.email,
+  idempotencyKey: `${runId}:${logicalActionId}`,
 });
 ```
 
-這個例子只證明兩段錯誤文字，不涵蓋 AC-01 的後端與視覺部分。優先使用可重試的 web assertions，而不是固定 sleep 後猜 UI 已完成；locator、timeout 與實際讀到的值都應留在證據中。[Playwright Assertions](https://playwright.dev/docs/test-assertions)
+重試時臨時產生新 key 就失去去重意義；對方若不支援 idempotency，光是傳一個欄位也沒有保證。
 
-### 1.3 Jev + Playwright：受控的觀察／決策／執行迴圈
+本專案的 [`run.ts`](server/harness/run.ts) 將 model 與個別 tool 包成 DBOS steps；[恢復合約](docs/dbos-durable-execution.md) 明確區分 checkpoint 與外部副作用，並說明可能重跑的窗口。它也提醒：mock recovery 測試不等於真實資料庫與多程序恢復已被驗證。
 
-Text-only 不代表不能控制瀏覽器。可把目前 DOM／accessibility 資訊、可見文字與 element 狀態整理成 Jev 能讀的結構化 state，讓它選擇適合的目標或下一個動作，再由 Playwright 執行。
+### Workflow 版本也是狀態的一部分
 
-```text
-Playwright 觀察目前頁面
-  → Harness 產生文字 snapshot 與允許的候選動作
-  → Jev 在候選中選擇／判斷是否資訊不足
-  → Harness 驗證 snapshot 與權限仍有效
-  → Playwright 執行 → assertion／重新觀察
+如果新版本改變 step 順序、名稱或 output shape，舊 run 未必能用新程式安全恢復。模型、prompt、工具 schema 改變，也可能改變後續語意。Durable 系統要考慮版本相容與遷移，不只是保存 `messages`。
+
+## 3. Code Mode
+
+### 問題：為什麼每個中間結果都要經過模型？
+
+假設要讀多張 Jira 單，找出包含 Figma 連結的項目，再整理設計節點。傳統 tool calling 常見流程是：
+
+```mermaid
+sequenceDiagram
+    participant M as Model
+    participant H as Harness
+    participant T as Tools
+    M->>H: get_ticket A
+    H->>T: 執行
+    T-->>H: Ticket A 的完整結果
+    H-->>M: tool result
+    M->>H: get_ticket B
+    H->>T: 執行
+    T-->>H: Ticket B 的完整結果
+    H-->>M: tool result
+    M->>H: get_figma 指定節點
+    H->>T: 執行
+    T-->>H: 設計資料
+    H-->>M: tool result
+    M-->>H: 篩選、彙總後回答
 ```
 
-建議教學策略是 **有限候選選擇**，而不是讓模型輸出任意可執行程式：
+即使某一步只是把上一個結果的 ID 填進下一個參數，也要經過一次模型推論。大量原始資料同時占用 Context，模型還要負責搬運、篩選與計數。
 
-- 候選只來自剛取得的 snapshot，帶穩定 ID、role/name、可見／enabled 狀態。
-- 選項包括 `need_more_context` 與 `stop`，不強迫猜一個按鈕。
-- Harness 將候選 ID 映射到自己持有的 locator／操作，不直接 `eval` 模型回傳值。
-- 執行前重查元素與目標，頁面變更或 locator 不唯一時重新觀察。
-- 每輪限制步數、時間與重試；新增會員等副作用先走 policy／approval。
-- 網頁文字仍是不可信內容，不能要求 Agent 擴權、讀秘密或跳過核准。
+傳統工具呼叫也可以一次請求多個獨立工具，或使用專門的 batch tool，並非必然一次只做一件事。Code Mode 的不同之處在於：**把條件、迴圈、資料轉換與工具組合，交給一段實際執行的程式。**
 
-這是建議整合架構，實際 TypeSafe 請求形式見第 5 章。[playwright-jev](https://github.com/AdriaanVE/playwright-jev) 提供基於 accessibility tree 候選的 locator healing 與語意驗證範例，可作為閱讀材料；它不是本專案已安裝的工具。第三方 adapter 的 report／enforce、fail-open 與 CI 政策需另外審查，不能把機率閘門當成唯一安全邊界。
+### Code Mode 是什麼？
 
-[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) 是更完整的觀察／決策／執行架構參考：從目前 DOM 建立有索引的元素表，用同一份 state 詢問操作與相容目標，最後只執行被選定操作對應的目標。模型不直接輸出任意 selector、座標或 JavaScript；`DONE` 也需獨立確認。這種 speculative questions 是預先詢問候選決策，不是提前執行多個瀏覽器動作。
+Harness 提供一個受控的程式執行能力，模型產生程式碼作為輸入。執行器運行這段程式，程式透過允許的 API 呼叫工具，最後將必要的結果回傳模型。
 
-該參考實作使用 Python 與 Browser Harness，**不是可直接替換進本專案的 Playwright／TypeScript 套件**。文字輸入另用文字生成模型；workshop 第一版可更簡單，直接使用固定假資料，不需要模型生成任意欄位內容。它的既有 Chrome profile 使用方式也不等於獨立 BrowserContext，課堂仍需自己準備帳號與資料隔離。
-
-在 6 小時內只借用核心設計，由授課者備妥 TypeScript＋Playwright adapter。先限制同一 origin、一般 DOM、固定會員表單；不處理 iframe、shadow DOM、canvas、檔案上傳或 popup 等延伸情境。執行前檢查 snapshot 是否過期、locator 是否唯一、元素是否可操作且未被遮蔽；每次操作後重新觀察，失敗不能直接用舊 snapshot 繼續猜。
-
-**引導實作**：在 FunctionalTester 內接上 observe → Jev decide → Playwright act → verify。測試「按鈕改名」「按鈕不存在」「兩個相似按鈕」三種情境：分別觀察可選替代目標、`none` 與需澄清。仍以操作後的 assertion 判斷成功。若 AC 明確要求按鈕文字完全一致，即使語意定位找到同用途按鈕，也必須保留文字不符的 fail，不能用 self-healing 隱藏需求偏移。
-
-### 1.4 Figma 與 Screenshot Baseline 是兩種參照
-
-Figma 指定版本／frame 是設計規格；Playwright 的 screenshot baseline 是事先審核的瀏覽器渲染影像。`toHaveScreenshot` 比較的是目前畫面與 baseline，**不會自動理解 Figma 或證明兩者語意一致**。首次產生 baseline 也不是驗收通過，需有人確認它符合設計後才能使用。[Playwright Visual Comparisons](https://playwright.dev/docs/test-snapshots)
-
-比較前固定 app build、Figma 版本與狀態、viewport、browser／OS、字型、locale、資料、動畫與時間相關內容。僅在有明確理由時 mask 動態區域，不能遮掉本來要驗收的內容。不同執行環境可能產生不同像素結果；門檻應校準，不用「差異小於某個任意百分比」代表設計已正確。
-
-可拆成三層證據：
-
-1. **確定性檢查**：必要欄位、字串、可見性、已定義尺寸／顏色／間距與有無溢出。
-2. **視覺回歸**：與經審核的 browser baseline 比較，附 current／baseline／diff。
-3. **設計符合度審查**：以指定 Figma frame 與目前畫面交由具圖片能力的 reviewer 或人檢查，標示判斷與不確定處。
-
-目前 `get_figma` 使用 files／nodes 資料介面，回傳設計資料與摘要，沒有 frame image export／完整設計比較工具。Workshop 應預先準備必要圖片與來源參照，或另行建置授權的圖像取得流程。
-
-每份證據至少帶 AC ID、run／task ID、build、viewport、步驟、expected／actual、時間與 artifact 位置。Trace 可協助檢查動作前後、DOM snapshot 與相關 network 資訊，不能取代 AC 的明確 assertion。[Playwright Trace Viewer](https://playwright.dev/docs/trace-viewer)
-
-截圖與 trace 可能含帳號、token 或頁面資料，使用假資料、限制存取與保存期限。不要為了分享報告，自動把內部 trace 上傳外部服務。
-
-**練習**：為 AC-01 保存功能證據；為 AC-04 產出固定 viewport 的設計比較資料；確認一個 screenshot 無法單獨證明 AC-02 的「只新增一筆」。
-
-**通過條件**：每項判定能回到對應 AC、版本與證據；baseline 未核准、缺後端查證或缺設計版本時能正確回報限制。
-
-## 2. Durable Execution：中斷後知道從哪裡繼續
-
-Durable 的目的不只是「把聊天存進資料庫」，而是保存執行進度，讓流程在重啟後能重用已完成步驟的結果，並處理尚未完成的工作。DBOS 的 step 是目前專案採用的機制；不要把它和 UI 的訊息紀錄混為一談。[DBOS Steps](https://docs.dbos.dev/typescript/tutorials/step-tutorial)
-
-至少區分三種狀態：
-
-1. **Execution state**：哪個 run、哪個 step、哪次 attempt，目前是執行／等待／成功／失敗。
-2. **Conversation state**：下一次模型呼叫需要哪些訊息與工具結果。
-3. **Observation state**：使用者目前看到的串流、snapshot 與事件游標。
-
-看見 token 或工具結果，不代表該 step 已成功 checkpoint；HTTP 斷線也不代表 producer 已停止。
-
-### Durable 不等於外部副作用 exactly-once
-
-最重要的故障窗口：
-
-```text
-外部服務已完成寫入
-  → 程式在 checkpoint 前崩潰
-  → 恢復時 step 可能再執行
+```mermaid
+sequenceDiagram
+    participant M as Model
+    participant H as Harness
+    participant R as 隔離執行器
+    participant T as Host tools
+    H->>M: 可用 API 的型別與說明
+    M->>H: run_code，內容是一段程式字串
+    H->>H: 檢查執行政策與預算
+    H->>R: 建立受限能力並執行程式
+    R->>T: 工具呼叫 A，經過 bridge
+    T-->>R: 結構化資料 A
+    R->>T: 工具呼叫 B，經過 bridge
+    T-->>R: 結構化資料 B
+    R->>R: 篩選、組合、計算
+    R-->>H: 最終結果與受限診斷
+    H-->>M: run_code 的 tool result
+    M-->>H: 回答或下一步
 ```
 
-要避免重複發信、付款或重複套用修改，需依操作設計穩定 idempotency key、去重、交易、版本前置條件或外部結果查證。不是加上 `runStep` 就能替所有外部系統提供 exactly-once。
+模型仍然是在產生 token，通常先回傳一段 code string；**它不是自己在神經網路裡執行 JavaScript**。程式的迴圈、`await`、運算與工具呼叫，是後面的 runtime 真正執行。
 
-本專案的 [恢復邊界文件](docs/dbos-durable-execution.md) 已明確說明：已 checkpoint 的 output 可以重用；side effect 完成但 checkpoint 未完成時，工具可能再執行。部分串流 output 也可能在重試時被 snapshot 撤回。
+這個想法可見於 [Cloudflare Code Mode](https://blog.cloudflare.com/code-mode/)；[CodeAct](https://arxiv.org/abs/2402.01030) 則研究以可執行程式作為 Agent 行動表示。它們相關，但不是同一個 SDK 或標準協定。
 
-**練習**：用假會員新增 API 的計數器或可查詢 operation ID，分別在「呼叫前」「副作用後、checkpoint 前」「checkpoint 後」注入中斷。BrowserContext 可能隨程序消失；恢復時重新建立 context、重現已知頁面狀態，不序列化或重用失效的 page handle。截圖／trace 則保存 artifact reference 與版本，避免恢復後指向已被清理的檔案。
+### 模型究竟看到什麼？
 
-**通過條件**：能說明每個中斷點是否重跑、畫面如何修正、外部結果如何確認；不能只用「重啟後有回覆」當作成功。Mock 測試通過後，仍要另外做真資料庫 kill/restart 測試才能支持實際 recovery 的主張。
-
-## 3. Code Mode：用程式組合工具
-
-傳統 tool loop 可能每一步都把中間資料交回模型。Code Mode 讓模型產生一小段程式，透過受控 API 做多次讀取、條件判斷、轉換或彙總，再只回傳必要結果。Cloudflare 的實作示範把工具轉成 TypeScript API；CodeAct 則研究以可執行程式作為行動表示。兩者是相關方向，不是完全相同的產品或協定。[Cloudflare Code Mode](https://blog.cloudflare.com/code-mode/) · [CodeAct 論文](https://arxiv.org/abs/2402.01030)
-
-以下是「工具提供在隔離執行器內」的概念示意，不是目前可直接執行的 API：
+模型需要知道 API 怎麼用，通常是型別宣告、參數、輸出格式、限制與簡短範例：
 
 ```ts
-const results = await tools.readCompletedChecks({ runId });
-const failures = results
-  .filter((item) => item.status === "fail")
-  .map((item) => ({ acId: item.acId, evidenceRefs: item.evidenceRefs }));
-return { failedCount: failures.length, failures };
+interface TicketSummary {
+  key: string;
+  status: string;
+  figmaTarget: string | null;
+}
+
+interface ToolApi {
+  getTicket(input: { key: string }): Promise<TicketSummary>;
+  getDesignSummary(input: { target: string }): Promise<{
+    frameNames: string[];
+    truncated: boolean;
+  }>;
+}
+
+declare const tools: ToolApi;
 ```
 
-適合：大量資料的篩選、彙總，以及不需要模型逐步判斷的工具串接。不一定適合：只需一次小型查詢、每一步都需要語意判斷，或錯誤很難定位的長程式。
+上面是為了說明而設計的 typed API，不是現有 `get_ticket` 的實際回傳型別。`declare` 只描述名稱與型別，沒有函式實作；它不會讓程式自動具有存取 Jira 的能力。
 
-**Code Mode 是工具編排方式，Coding Agent 是任務類型。** 修程式的 Agent 不一定需要 Code Mode；資料分析 Agent 也能使用 Code Mode。
+工具很多時，也可以先搜尋／載入相關型別，不需要每次把所有 API 都放進 Context；這和第 1 章的 Lazy Loading 可以一起使用。
 
-第一個實驗建議只開放唯讀 API，將寫入動作保留在明確的 approval／durable 邊界。所有程式內工具呼叫仍須經過 executor 驗證，不能利用 Code Mode 繞過權限或配額。
+真正實作可能包含 HTTP client、資料庫連線與憑證，這些留在可信任的 host。**工具原始碼不必送給 LLM，API key 更不應送進模型或不受信任執行器。**
 
-**練習**：把同一份已完成檢查結果，用逐次 tool call 與 Code Mode 彙整；只處理唯讀證據，不在程式內重放表單提交。
+如果模型產生 TypeScript，執行器還需要受控的解析／編譯步驟；若執行器只接受 JavaScript，型別宣告只是模型的參考，產出的程式就應是合法 JavaScript。TypeScript 型別本身不是 runtime 驗證或安全隔離。
 
-**通過條件**：比較結果正確性、模型往返、token、延遲與失敗定位；能限制執行時間、呼叫數與輸出量。隔離邊界尚未準備好時，只做紙上推演，不在 host 直接執行模型產生的程式。
+### 模型產生的程式：順序、並行與資料處理
 
-## 4. Compact：保留任務必要資訊，控制 Context
+有相依關係的操作必須等待前一步結果：
 
-Compact／compaction 是把長對話整理成較小的工作 context，不是刪除所有歷史，也不是「做了摘要就有長期記憶」。原始事件與檔案可以留在外部儲存，模型只取得當下需要的部分。
+```ts
+const ticket = await tools.getTicket({ key: 'DEMO-101' });
 
-建議優先保留：
+if (!ticket.figmaTarget) {
+  return { ticket: ticket.key, status: 'missing-design' };
+}
 
-- 使用者目標、限制與明確授權範圍。
-- 已完成／未完成工作、失敗嘗試及其證據。
-- 目前檔案或 revision、artifact 位置與來源參照。
-- 尚待回答的問題、待核准動作與下一步。
+const design = await tools.getDesignSummary({
+  target: ticket.figmaTarget,
+});
 
-可以壓縮：重複討論、已被新結果取代的假設、可重新讀取的大量原始資料。不要只留下「已處理」，卻丟掉是哪個檔案、哪次測試或哪個版本。
-
-```text
-目標：驗收 DEMO-101 的 AC-01 至 AC-06
-限制：僅測試環境；不留言、不改 Jira 狀態
-版本：fixture build A；Figma snapshot B；mobile 390×844
-證據：AC-03 fail，trace/e03；AC-02 pass，assertion/e02
-待辦：visual worker 待恢復；AC-06 需澄清
-核准：以持久化 approval record 為準，不能從摘要推定
+return {
+  ticket: ticket.key,
+  frames: design.frameNames,
+  incomplete: design.truncated,
+};
 ```
 
-摘要不能取代真正的 approval record，也不能把不可信來源變成可信指令。若把工具訊息整組裁切，需保持 tool call/result 對應與 provider 要求的訊息結構有效。
+這裡的 `return` 假設執行器把 code string 當成 async function body；若採 module entrypoint，介面會不同。這是 Harness 與模型需要約定的執行合約。
 
-**練習**：在長 DOM／tool output 後觸發壓縮，保留「不可在正式環境提交」與 AC-03 已失敗、AC-06 尚待澄清的狀態。
+彼此獨立的唯讀操作可以並行，再由程式篩選：
 
-**通過條件**：壓縮後仍遵守限制、記得失敗與待辦，必要時能回查來源；記錄壓縮前後的 context 大小與任務成功率。不要單看摘要讀起來流暢。
+```ts
+const keys = ['DEMO-101', 'DEMO-102', 'DEMO-103'];
+const tickets = await Promise.all(
+  keys.map((key) => tools.getTicket({ key })),
+);
 
-## 5. Agent Routing：決定哪個專職 Agent 處理 AC
+return tickets
+  .filter((ticket) => ticket.status !== 'Done')
+  .map((ticket) => ({
+    key: ticket.key,
+    hasDesign: ticket.figmaTarget !== null,
+  }));
+```
 
-**本章是必修。** Routing 解決「該交給誰」；第 6 章的 Subagent 則解決「被交付後如何啟動、等待、停止與整合」。只輸出 `functional` 字串還不算完成協作，Harness 必須真的 dispatch 到具有不同工作合約的 Agent。
+`Promise.all` 適合這種小且獨立的集合；大量項目需另外限制 concurrency、工具呼叫數、API rate limit 與總執行時間。程式有並行語法，不代表外部系統允許無限制並行。
 
-### 先把 AC 拆成可驗證單位
+並行也要符合所用引擎的 replay 合約。例如採用 abort-and-replay 等待核准的 durable runtime，可能要求會暫停的 connector calls 依序發出，避免重播時呼叫順序改變；不能把 `Promise.all` 當成所有 Code Mode 實作都安全支援的操作。[Cloudflare 現行 Code Mode 運作文件](https://developers.cloudflare.com/agents/tools/codemode/how-it-works/)
 
-「錯誤提示會出現，而且樣式符合 Figma」同時有功能與視覺要求。不要強迫每條 AC 只能交給一個專家，也不要把 visual route 當成不需要操作頁面。VisualReviewer 也可能需要先透過 browser adapter 進入指定畫面狀態。
+原始 `tickets` 在 runtime 記憶體中參與篩選，不必全部進入模型 Context。只有 `return` 或執行器規定的輸出會送回模型；但若把所有內容 `console.log` 出來，又會失去這個優點。因此 Harness 也要限制 logs 與回傳量。資料不進模型 Context，也不代表不經過 host、RPC 或稽核紀錄；資料流與保存政策仍需明確。
 
-| Router 結果 | 實際 dispatch | 合併條件 |
+### 隔離執行器怎麼呼叫 Host 的工具？
+
+以分離的 sandbox 與 host 為例，`tools.getTicket()` 是 sandbox 內的代理函式，不是把 host 的連線物件直接交進去。它把方法名稱與參數編碼成請求，經由 RPC 或其他受控通道交回 host。
+
+```mermaid
+flowchart LR
+    subgraph S[不受信任的執行區]
+        P[模型產生的程式] --> W[tools API proxy]
+    end
+    W -->|名稱、參數、呼叫 ID| B[RPC 或 capability bridge]
+    B --> V[Host 驗證與授權]
+    V --> T[真正的工具實作]
+    T --> X[外部服務]
+    T -->|結果或錯誤| B
+    B -->|序列化回應| W
+```
+
+Host 端的概念可能是：
+
+```ts
+async function handleToolRequest(request: ToolRequest, run: RunContext) {
+  const tool = registry.get(request.name);
+  if (!tool) {
+    throw new Error('Unknown tool');
+  }
+
+  const input = tool.inputSchema.parse(request.input);
+  const authorization = await policy.assertAllowed(run, tool.name, input);
+  const operationId = await operationLedger.idFor({
+    runId: run.id,
+    authorizedActionId: authorization.actionId,
+  });
+  await budget.consumeToolCall(run.id);
+
+  return tool.execute(input, {
+    signal: run.signal,
+    operationId,
+  });
+}
+```
+
+此處的 `authorization.actionId` 由 host 綁定本次已授權的精確動作，`operationLedger` 在該 run 的命名空間內持久保存穩定對應，並檢查重試是否仍是相同邏輯操作。不能直接信任 sandbox 自報的 operation ID，也不能在每次重試隨機產生新 ID。這些方法仍是概念介面，需要實際實作驗證與持久化。
+
+每次 nested call 都經過同一層檢查，不能只在 `run_code` 開始前核准「跑一段程式」，就允許程式在裡面做任意事情。寫入、傳送或其他副作用仍要依精確目標與參數執行授權與核准。
+
+不同隔離技術的 bridge 實作不同；重點是只授予必要能力，而不是傳入整個 `process`、檔案系統或帶憑證的通用 HTTP client。
+
+### 回傳值、錯誤與重試
+
+程式本身、bridge 與外部工具都可能失敗：
+
+1. **解析／編譯錯誤**：程式尚未開始，沒有工具副作用。
+2. **Runtime 錯誤**：部分程式可能已執行，需要保留已發生的呼叫紀錄。
+3. **工具錯誤**：可被程式捕捉，也可以一路往外拋。
+4. **超時／取消**：必須停止執行資源與工作，不能只是停止等待 Promise。
+
+```ts
+const results = await Promise.allSettled([
+  tools.getTicket({ key: 'DEMO-101' }),
+  tools.getTicket({ key: 'DEMO-102' }),
+]);
+
+return results.map((result, index) =>
+  result.status === 'fulfilled'
+    ? { index, ok: true, ticket: result.value }
+    : { index, ok: false, error: 'Ticket lookup failed' },
+);
+```
+
+這種程式可以保留部分成功；Harness 最後仍應驗證回傳值可序列化、大小符合限制，並清理錯誤中的秘密資訊。
+
+如果程式先新增資料，再在下一行出錯，重新執行整段 code 可能重複新增。Code Mode 不會消除 durable 與 idempotency 問題，反而可能把很多操作包進同一個粗粒度 step。需保留 nested tool trace，並按副作用邊界設計 checkpoint／去重。第一個實驗先使用唯讀 API，通常更容易理解與驗證。
+
+### Code Mode、Coding Agent、Sandbox 的差別
+
+- **Code Mode**：以程式表達工具組合與資料處理，是行動介面。
+- **Coding Agent**：主要任務是開發程式，是應用類型；不一定使用 Code Mode。
+- **Sandbox**：限制程式可以使用哪些資源，是安全與執行邊界。
+
+把模型產生的字串直接交給 host 的 `eval`，不是安全的 Code Mode 設計。Node.js 的 `node:vm` 也不是用來執行不受信任程式的安全機制；第 8 章會再說明。[Node.js VM](https://nodejs.org/api/vm.html)
+
+### 什麼時候值得使用？
+
+適合大量資料篩選、結構化彙總、迴圈與明確的工具相依關係。若只查一次小型資料，或每一步都需要模型閱讀新資訊後作語意判斷，額外程式生成、執行與除錯可能不划算。
+
+不要把「中間資料不進 Context」理解成「模型完全不需要觀察」。程式結束後仍可把摘要與未知事項交回模型，決定下一段工作。是否更快、更便宜或更準，需用同一任務比較；不保證 Code Mode 永遠優於傳統工具呼叫。
+
+## 4. Compact
+
+### 問題：歷史越長，不代表模型越了解任務
+
+每次把所有對話、DOM、Jira 留言與 Figma 資料都送進 Context，會增加成本、延遲與資訊干擾，也可能接近 context window 上限。Compact／compaction 是重新整理模型的工作 Context，保留當下需要的內容。
+
+它不是刪掉外部的所有紀錄，也不是讓模型永久學會這段對話。**持久保存的完整歷史**和**下一次模型看到的工作 Context**可以是兩份不同的表示。
+
+```mermaid
+flowchart LR
+    L[(完整事件與文件)] --> R[挑選相關片段]
+    H[近期對話] --> C[Context builder]
+    R --> C
+    S[任務摘要與限制] --> C
+    C --> M[下一次模型呼叫]
+    M --> N[新增結果]
+    N --> L
+    N -->|必要時更新摘要| S
+```
+
+### 幾種策略解決不同問題
+
+| 策略 | 作法 | 代價 |
 | --- | --- | --- |
-| `functional` | FunctionalTester | 明確的行為 assertion 與必要後端查證 |
-| `visual` | VisualReviewer | 固定條件下的視覺證據與檢核 |
-| `mixed` | 同一 AC 拆成 functional、visual 兩個子任務 | 兩者都是必要證據，不能只採先回來的一個 |
-| `needs_clarification` | 不啟動無法判定的檢查，產生澄清問題 | 規格缺失時 `blocked`；需要指定人員裁量時 `needs-human-review` |
+| Sliding window | 只保留最近幾輪或指定 token 範圍 | 可能丟掉早期限制與決策 |
+| Tool result trimming | 刪除重複或過大的細節，保留來源參照 | 後續需要時必須能重新讀取 |
+| Structured summary | 摘要目標、狀態、證據與待辦 | 摘要可能遺漏或扭曲資訊 |
+| Retrieval／rehydration | 需要時從外部紀錄重新取得相關內容 | 需要可靠索引與來源定位 |
 
-FunctionalTester 的 prompt／工具集中在重現步驟、可重試 assertion 與測試資料查證；VisualReviewer 的 prompt／工具集中在 Figma 指定狀態、截圖、量測與比較。兩者有不同輸入／輸出與任務狀態，才是有意義的專職 Agent 分工。
+通常不是四選一，而是組合：保留固定規則與目前任務摘要、最近幾輪完整訊息，再按需求讀回舊證據。
 
-### 用 TypeSafe Choice 做窄範圍路由
+### 摘要應保存工作狀態，不只是敘事
 
-先建立規則式 baseline，再用同一組標註 AC 評估 TypeSafe 分類是否改善。以下是依官方 SDK 文件整理的**示意程式，未整合至本專案，也未執行**；套件需由授課者在課前準備，課前確認 Node.js 20+，並將 `TYPESAFE_API_KEY` 配置在 server-side；不得放入前端 bundle 或提交至 repository。
+```ts
+interface WorkingSummary {
+  goal: string;
+  constraints: string[];
+  sourceVersions: Record<string, string>;
+  completed: Array<{ task: string; evidenceRefs: string[] }>;
+  unresolved: string[];
+  nextActions: string[];
+}
+```
+
+例如「已檢查會員頁」太模糊；「AC-03 的重複 Email 提示已失敗，依據 trace/e03，使用 build A；mobile 視覺仍待檢查」才足以支持下一步。
+
+不可丟掉的內容包括授權範圍、尚未解決的錯誤、版本、待回答問題與證據位置。核准是否有效應查持久化的 approval record，不能只相信摘要中的「使用者已同意」。
+
+### 何時壓縮？
+
+應依 Context 大小與預算觸發，而不是只看訊息數；一則 DOM 工具結果可能比十輪簡短聊天更大。要預留下一次輸出與工具結果的空間，避免等到 provider 拒絕後才補救。
+
+壓縮必須維持 provider 要求的訊息結構，例如 tool call 與 tool result 的對應，不能留下孤立結果。也不要把來源不可信的文字摘要成高權限指令，或把模型先前的猜測寫成已驗證事實。
+
+檢查 compaction 品質時，應看壓縮後是否還遵守限制、知道哪些沒完成、能找到證據，而不只是看摘要是否通順。
+
+## 5. Agent Routing
+
+### Routing 解決「下一段工作該交給誰」
+
+不同子任務可能需要不同 prompt、工具、輸入模態、模型與預算。Routing 把任務映射到合適的處理者；它不一定需要模型，明確條件可以直接寫規則。
+
+例如 Jira AC：
+
+- 「送出空白表單時出現錯誤」需要功能操作與 assertion。
+- 「錯誤提示的版面符合指定 Figma frame」需要視覺比較。
+- 同時要求兩者的 AC，要送到兩條檢查路徑。
+- 「操作很順暢」卻沒有定義標準，應先澄清，不能硬分派後猜測通過。
+
+```mermaid
+flowchart TD
+    A[AC 與必要上下文] --> R[Router]
+    R -->|functional| F[FunctionalTester]
+    R -->|visual| V[VisualReviewer]
+    R -->|mixed| X[拆成兩個必要子任務]
+    X --> F
+    X --> V
+    R -->|規格不足| Q[澄清或 blocked]
+    F --> J[結果整合]
+    V --> J
+```
+
+Router 輸出一個類別後，Harness 還要真正 dispatch，不能以「分類完成」代替「任務完成」。混合任務也不是永遠選一個最佳專家，而是可能需要多標籤或拆分。
+
+### 規則與模型分類
+
+規則通常較容易除錯，模型分類適合文字變化較多的意圖。TypeSafe Choice 可將問題限制在明確選項中：
 
 ```ts
 import { choice, TypeSafeClient } from '@typesafe-ai/sdk';
@@ -434,242 +622,298 @@ import { choice, TypeSafeClient } from '@typesafe-ai/sdk';
 const client = new TypeSafeClient();
 const response = await client.systemOne({
   model: 'jev-latest',
-  state: {
-    ac: '提交空白表單時顯示必填提示，且提示樣式符合指定錯誤態設計。',
-  },
+  state: { ac: '空白送出時顯示必填提示，樣式符合錯誤態設計。' },
   questions: {
     route: choice('Which verification route is required for `ac`?', {
-      functional: 'Observable behavior verified with browser assertions.',
+      functional: 'Behavior verified with browser assertions.',
       visual: 'Appearance or layout comparison.',
-      mixed: 'Both behavioral and appearance checks are required.',
-      needs_clarification: 'Missing, contradictory, or insufficiently specific requirement.',
+      mixed: 'Both behavioral and appearance checks.',
+      needs_clarification: 'Missing or insufficiently specific requirement.',
     }),
   },
 });
 
-const route = response.answers.route;
+const route = response.answers.route.choice;
 ```
 
-`route` 提供 `.choice`、`.probabilities` 與 `.confidence`。`.confidence` 表示分布集中程度，**不是此答案正確的機率**；高 confidence 仍可能分類錯誤。服務失敗、分類無效或需要澄清時，不可預設為 `pass`。若設定信心門檻，應以標註 fixture 校準；教學隨手選的數字只能叫示範政策。[TypeSafe JS SDK](https://docs.typesafe.ai/sdk/javascript) · [Choice](https://docs.typesafe.ai/sdk/javascript/api/functions/choice) · [Confidence](https://docs.typesafe.ai/confidence)
+這是依官方 SDK 文件整理的示意，尚未整合或執行。API key 應留在 server-side；要重現結果時固定模型版本並記錄 `response.model`，不要把會變動的 alias 當成永久版本。[TypeSafe JavaScript SDK](https://docs.typesafe.ai/sdk/javascript) · [Intent Routing](https://docs.typesafe.ai/patterns/intent-routing)
 
-`jev-latest` 是會變動的 alias。Workshop 應固定當次核准的 model version，並記錄 `response.model`。不要只比較 prompt 而忽略模型版本。[TypeSafe Models](https://docs.typesafe.ai/models)
+Choice 的 confidence 描述分布集中程度，不是答案正確率。高 confidence 也可能路由錯誤；缺資料、無效結果與服務失敗應有明確出口，不能預設成功。[TypeSafe Confidence](https://docs.typesafe.ai/confidence)
 
-### Jev 與 Playwright 的界線
+### Routing 與 Handoff、Delegation
 
-- TypeSafe 可以判斷文字規格、分類 route、根據最新文字頁面狀態選擇候選瀏覽器動作，或對結構化證據提出語意判斷。
-- Playwright 提供實際操作與 assertion 證據；element visible、URL、文字與筆數等事實不需交給模型猜。
-- Jev 是 text-only；可以藉 DOM／accessibility state 參與瀏覽器控制，但不能把 screenshot 當作 `state` 丟進去就聲稱做完視覺驗收。
-- 對截圖先做文字描述會遺失資訊；若只有描述，報告需揭露視覺證據限制。
-- 額外的語意判斷不得覆寫已知 assertion failure。資料不足與分類服務失敗也不等於產品 fail。
+**Routing** 是選擇處理路徑。選完之後可以：
 
-TypeSafe 的 [agent skill](https://github.com/typesafe-ai/skills/blob/main/skills/typesafe-ai/SKILL.md) 是整合參考；它不替本專案提供 browser executor、subagent lifecycle 或安全邊界。
+- **Handoff**：接收者接手後續對話與工作，原處理者不一定等待結果。
+- **Delegation**：父 Agent 仍保留主責，派出子任務並等待結果，再繼續處理。
 
-**練習**：為 AC-01 至 AC-06 建立標準 route；比較規則與 TypeSafe 的分類，實際 dispatch AC-01 的兩種檢查。加入「只有美觀兩字」與帶有命令的 Jira 描述。
+兩者都需要傳遞足夠 Context，包括目標、事實、限制、來源與輸出要求。不要只傳「幫忙驗收」，讓接收者重新猜全部背景。也需要防止循環轉單，例如限制交接深度、保存已走過的路徑與給出無法處理的出口。
 
-**通過條件**：混合條件能產生兩個專職任務；缺規格不亂猜；分類失敗有出口；外部文字不能修改工具權限。路由結果、模型版本與 dispatch 決策可追溯。
+## 6. Subagent
 
-## 6. Subagent：讓專家獨立執行，再按 AC 整合
+### Subagent 不只是換一段 Prompt
 
-**本章是必修。** 父 Agent 保留整張 ticket 的主責，啟動 FunctionalTester 與 VisualReviewer，等待結構化結果，再驗證 coverage。Handoff 是把主責交給另一個處理者；本 workshop 以父 Agent 收回結果的 delegation 為主，避免 AC 在交接中失蹤。
+Subagent 是獨立執行一項子任務的 Agent：有自己的 Context、工具範圍、執行狀態與結果。它可以使用相同模型，但被交付的責任與能力不同。
 
-### 子任務合約
+父 Agent 負責整體目標、工作切分、預算與結果整合；子 Agent 負責在有限範圍內完成任務或清楚回報阻礙。若只把同一個函式改名為兩個角色，沒有獨立任務與生命週期，就沒有真正解決協作問題。
 
-```json
-{
-  "taskId": "run-01/AC-01/visual",
-  "acIds": ["AC-01"],
-  "role": "VisualReviewer",
-  "appBuild": "fixture-a",
-  "designRef": "approved-snapshot-b/error-state",
-  "viewport": { "width": 390, "height": 844 },
-  "fixtureNamespace": "group-03-visual",
-  "allowedActions": ["open-test-page", "submit-empty-form", "capture-evidence"],
-  "output": ["status", "expected", "actual", "evidenceRefs", "blocker"],
-  "deadlineSeconds": 120
+```mermaid
+sequenceDiagram
+    participant P as Parent Agent
+    participant F as FunctionalTester
+    participant V as VisualReviewer
+    P->>P: 固定 AC、來源版本與任務邊界
+    par 功能子任務
+        P->>F: 步驟、允許工具、expected、預算
+        F->>F: 操作與 assertion
+        F-->>P: 結果、證據、未知事項
+    and 視覺子任務
+        P->>V: 設計參照、viewport、頁面狀態、預算
+        V->>V: 取得畫面與比較
+        V-->>P: 差異、證據、需要人工判斷的部分
+    end
+    P->>P: 核對 coverage、版本與互相衝突的證據
+    P-->>P: 產出完整結論或後續工作
+```
+
+這就是 fan-out／fan-in：把可獨立的工作分出去，再把結果收回來。第 5 章決定分給誰；這一章處理分出去之後的執行與責任。
+
+### Context 與結果都需要明確合約
+
+```ts
+interface Subtask {
+  taskId: string;
+  acIds: string[];
+  role: 'FunctionalTester' | 'VisualReviewer';
+  goal: string;
+  sourceRefs: string[];
+  appBuild: string;
+  allowedActions: string[];
+  deadlineMs: number;
+}
+
+interface SubtaskResult {
+  taskId: string;
+  status: 'pass' | 'fail' | 'blocked' | 'needs-human-review';
+  evidenceRefs: string[];
+  findings: string[];
+  unresolved: string[];
 }
 ```
 
-這是建議合約；沒有在 allowedActions 的動作，不能因為子 Agent 想做就取得權限。父 Agent 的授權範圍也不因為多開 worker 而擴大。
+只給必要的背景，可以減少 Context 混雜與成本；但缺少限制、版本或判定標準，就會讓專家各做各的。結果不能只有「完成了」，必須能讓父 Agent 判斷是否覆蓋原任務、證據是否存在、還有哪些未知。
 
-### Fan-out／Fan-in
+### Jev 可以在 FunctionalTester 內部做什麼？
 
-1. 父 Agent 凍結 run 的 AC matrix 與版本，把任務發給專職 Agent。
-2. 每個 Agent 使用自己的 browser context，按需要使用獨立資料 namespace。
-3. 只在前置條件彼此獨立時並行；會更動共同後端狀態的案例需隔離或排序。
-4. 父 Agent 按 `taskId`／`acId` 收回結果，檢查 schema、版本、證據存在性與 coverage。
-5. `mixed` 的必要檢查都完成後才可能 pass；證據矛盾則保留差異，重現或交人工審查，不以多數決解決。
+子 Agent 內也可以有自己的 observe → decide → act → verify loop。以瀏覽器操作為例：
 
-Playwright BrowserContext 可隔離 cookies、local storage 等瀏覽器狀態，但**不會自動隔離共用後端資料庫**。兩個 context 使用同一 Email 仍可能互相干擾。[Playwright Isolation](https://playwright.dev/docs/browser-contexts)
-
-### 對照兩種架構
-
-先記錄單 Agent baseline，再比較雙專家協作：是否有更完整的 AC coverage、更少混淆功能／視覺條件、更短延遲？同時記錄成本、上下文傳遞與重複操作。課程必須實作協作，但產品是否保留多 Agent，仍要由評估結果決定。
-
-### 故障演練：視覺 worker 中途失敗
-
-假設 FunctionalTester 已完成 AC-01 的功能證據，VisualReviewer 在截圖前超時：
-
-- 保存功能結果，不把它重跑一遍，也不直接把 AC-01 標成 pass。
-- visual task 記錄 `blocked` 與執行錯誤，父 Agent 回報「功能已通過，視覺尚未完成」。
-- 在預算允許、原因可恢復時，只重試 visual task；恢復相同 build／設計／資料前置條件。
-- 若重試會再提交表單，先查證或重設 fixture；不能盲目重放新增會員。
-- 父任務取消或到期後，停止相關 worker／browser 工作並清理資源。
-
-**練習**：完成 AC-01 的雙 Agent fan-out／fan-in，再注入上述故障，以及「兩個 worker 使用不同 app build」的結果。
-
-**通過條件**：能真正啟動兩個有不同合約的 Agent；保留成功子結果；只重試失敗工作；拒絕混用版本；報告不遺漏任何必要 AC。每個 worker 的成本、狀態與證據可獨立追蹤。
-
-## 7. User Approve：把核准當作執行狀態
-
-模型說「使用者已同意」不等於核准。真正的核准要由 Harness 記錄，並在副作用發生前檢查。
-
-先定義產品的操作政策。瀏覽頁面與截圖可在核准範圍內進行；提交新增會員會產生資料，必須事先核准指定測試環境、假資料與操作。刪除、寄信、付款或正式環境操作不在 workshop 範圍內；Jira 留言／狀態變更也需另外授權。這是示範政策，實際規則應按組織與工作風險設定。
-
-核准畫面至少說清楚：動作、目標、重要參數、預期影響與可回復性。核准紀錄應綁定 run／tool call、不可變 action payload 或其 hash、核准者、時間與有效期限，並驗證核准者確實有權作決定。
-
-```text
-proposed → awaiting_approval → approved → executing → completed
-                            ↘ rejected / expired / cancelled
+```mermaid
+flowchart TD
+    O[Playwright 取得文字頁面狀態] --> C[建立可操作元素候選表]
+    C --> J{Jev 的決策}
+    J -->|候選動作| G{Harness 驗證權限與 snapshot}
+    G -->|有效且已授權| A[Playwright 執行]
+    G -->|過期或不唯一| O
+    G -->|禁止| B[停止並回報阻礙]
+    A --> V[Assertion 與重新觀察]
+    V --> O
+    J -->|stop 或 none| D[獨立檢查完成條件]
+    D --> E{證據是否足夠}
+    E -->|是| F[回報已驗證結果]
+    E -->|否| B
 ```
 
-核准前後目標或參數改變，就不是原來核准的同一個動作。若等待期間 ticket、設計或測試部署已變更，也要重新檢查版本；必要時重新提出測試計畫與核准。拒絕、逾時或沒有回覆不能當成同意。
+模型選的是剛觀察到的候選 ID，Harness 才把它映射成自己持有的 locator。不要把任意 selector、座標或 JavaScript 當成可信操作。候選不唯一、元素消失或 snapshot 過期時，要重新觀察；`stop`／`none` 也應是合法答案。
 
-等待可能跨越程序重啟，應保存待核准狀態與決定，不只依賴記憶體中的 Promise。核准 API 本身也需要身分驗證、授權與重複提交處理。[參考課程：Human-in-the-Loop](https://github.com/Hendrixer/harness-engineering/blob/main/lessons/07-human-in-the-loop/index.md)
+[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) 展示動態元素表、受限操作選擇與獨立完成驗證的設計。它使用 Python／Browser Harness，不是本專案可直接使用的 Playwright TypeScript adapter；可借鏡設計，再依自己的執行合約實作。
 
-**練習**：先拒絕一次，再測試重啟後核准、重複點擊與核准後修改參數。
+文字／DOM 決策能幫助操作瀏覽器，但不能代替像素比較。視覺任務仍需合適的圖像能力、量測或人工審查。語意 locator 找到新名稱的按鈕，也不能抹掉「AC 明確要求原文字」的失敗。
 
-**通過條件**：拒絕不執行；重複提交不重複執行；過期／不匹配的核准無效；可以查出誰批准了哪一個精確動作。
+### 並行不代表可以共用所有狀態
 
-## 8. Sandbox：限制能力，不只限制 Prompt
+兩個子 Agent 共用同一個 page，可能互相切頁或改表單；各自有 browser context，仍可能共用同一份後端資料。BrowserContext 隔離 cookies／storage，不會自動隔離資料庫。[Playwright Isolation](https://playwright.dev/docs/browser-contexts)
 
-Sandbox 用來限制程式可以碰到的資源。Prompt 中寫「不要讀秘密」不是隔離；只移除幾個 global、設 timeout，或把程式放進另一個函式也不是完整隔離。
+因此，要明確規定哪些資源獨立、哪些唯讀共享、哪些必須排序。會新增會員的兩個案例可使用不同資料 namespace；同一流程的相依步驟則不要硬拆成並行。
 
-特別注意：Node.js 官方明確指出，**`node:vm` 不是安全機制，不可用來安全地執行不受信任程式**。`Promise.race` timeout 也不代表背景工作已被終止。[Node.js VM 文件](https://nodejs.org/api/vm.html)
+### 部分失敗時，父 Agent 仍然有責任
 
-實驗前先寫下 threat model 與能力清單：
+假設功能子任務完成、視覺子任務超時：保存功能證據，只重試可恢復的視覺任務，並回報尚未完成的部分。不能因為一個 worker 成功就把整條 mixed AC 標成 pass，也不必把所有成功步驟全部重跑。
 
-| 面向 | 建議課程界線 |
+父 Agent 還要處理取消、deadline、共用成本上限與衝突證據。子 Agent 的自信文字不是證明；兩個不同 app build 的結果不能直接合併，同一條件的矛盾結論也不能靠多數決消除。
+
+多 Agent 增加平行度，也增加上下文傳遞、重複操作與整合成本。先有單 Agent baseline，才知道分工改善了什麼。
+
+## 7. User Approve
+
+### 模型認為可以做，不等於使用者已經核准
+
+人工核准是把某些行動的最終決策交回使用者。它不是在 system prompt 寫「危險時詢問」就完成了；真正的 gate 必須在副作用之前，由 Harness 執行。
+
+以表單驗收為例，讀取頁面與截圖、在指定測試環境建立假會員、在正式環境刪除資料，是不同範圍的操作。不能把「請幫我驗收」解讀成任意環境、任意資料的寫入權限。
+
+```mermaid
+flowchart TD
+    A[模型提出工具呼叫] --> P[Policy 檢查]
+    P -->|直接允許| E[執行精確動作]
+    P -->|需要核准| S[(保存待核准動作)]
+    S --> U[呈現目標、參數與影響]
+    U --> D{使用者決定}
+    D -->|同意| V[驗證核准與動作仍匹配]
+    V --> E
+    D -->|拒絕或逾時| R[記錄結果，不執行]
+    P -->|禁止| R
+```
+
+### 核准的是哪一個動作？
+
+「同意」需要綁定具體 action，而不只是 run 或對話。最小紀錄可以包含：
+
+```ts
+interface ApprovalRequest {
+  approvalId: string;
+  runId: string;
+  toolCallId: string;
+  action: string;
+  target: string;
+  payloadHash: string;
+  expiresAt: string;
+}
+
+interface ApprovalDecision {
+  approvalId: string;
+  actorId: string;
+  decision: 'approve' | 'reject';
+  decidedAt: string;
+}
+```
+
+還要驗證核准者有權操作該目標。`payloadHash` 幫助檢查參數是否改變，但不取代身分驗證或授權。
+
+如果核准後模型把測試網址換成正式網址、增加資料筆數，或更改接收人，已不是原本的同一個動作。等待期間外部資料也可能改變，因此執行前要重新檢查版本與前置條件。
+
+### 核准等待是一個 Durable 狀態
+
+人可能過幾分鐘甚至隔天才回覆。只在程序記憶體裡 `await` 一個 Promise，重啟後就可能失去待核准工作。
+
+```mermaid
+sequenceDiagram
+    participant W as Workflow
+    participant D as 持久儲存
+    participant U as 使用者
+    W->>D: 保存 awaiting_approval 與精確動作
+    W-->>U: 顯示核准請求
+    Note over W,D: 程序可中斷或重啟
+    U->>D: 經授權的 approve／reject 決定
+    W->>D: 讀取或接收持久決定
+    W->>W: 檢查動作仍匹配與期限
+    W->>W: 執行或拒絕
+```
+
+Durable workflow 的等待／事件機制可用來實現這個流程。[參考：Human-in-the-Loop](https://github.com/Hendrixer/harness-engineering/blob/main/lessons/07-human-in-the-loop/index.md)
+
+重複點擊 Approve 不應重複執行；拒絕、逾時或沒有回覆都不是同意。核准只解決「有沒有權做」，不解決外部副作用 exactly-once，仍需第 2 章的去重與結果查證。
+
+## 8. Sandbox
+
+### 隔離的是能力，不是模型的意願
+
+Prompt 可以告訴模型「不要讀秘密」，但模型產生的程式仍可能有 bug、受到外部內容誘導，或做出意料外的動作。Sandbox 的作用是：即使程式想做不允許的事，執行環境也不提供該能力。
+
+```mermaid
+flowchart TB
+    subgraph H[可信任的 Host]
+        P[Policy 與核准]
+        C[憑證與真正工具實作]
+        B[受控 Capability Bridge]
+        P --> B
+        B --> C
+    end
+    subgraph S[不受信任的執行區]
+        G[模型產生的程式]
+        A[有限 tools API]
+        G --> A
+    end
+    A -->|只允許的請求| B
+    G -.->|應被阻擋| X[Host 檔案、秘密、任意網路]
+```
+
+這是能力邊界：sandbox 只拿到完成任務必要的能力，沒有拿到的資源不能靠猜路徑或換函式名稱取得。
+
+### Sandbox 應回答哪些問題？
+
+| 面向 | 需要限制的內容 |
 | --- | --- |
-| 檔案 | 只掛載 disposable fixture；限制可寫目錄；檢查 path traversal 與 symlink |
-| 網路 | 預設不允許，必要目標以 allowlist 開放 |
-| 憑證 | 不掛載 host 的秘密、SSH key、雲端 token 或 Docker socket |
-| 程序 | 限制子程序、CPU、記憶體、執行時間與輸出量 |
-| 工具 | 僅提供完成任務必要的 API，每次呼叫仍檢查權限 |
-| 清理 | 超時／取消時終止工作與子程序，回收暫存資源 |
+| 檔案 | 可讀／可寫路徑、symlink、path traversal、host 掛載 |
+| 網路 | 可連線的目的地、協定、重新導向與資料外送 |
+| 秘密 | 不把 host token、SSH key、雲端憑證送入不受信任區 |
+| 程序 | 子程序、CPU、記憶體、執行時間與可終止性 |
+| 輸出 | stdout、log、tool result 與 artifact 大小 |
+| 生命週期 | 超時、取消、程序崩潰後的清理與資源回收 |
 
-選擇 container、isolate 或 microVM 等執行方式時，要確認實際的安全邊界與配置；不能只因為名稱叫 sandbox 就假設它安全。一般 process 分離或預設 container 設定，也不自動滿足所有威脅模型。
+如果把帶管理權限的 Docker socket 或整個家目錄掛進 container，名稱叫 sandbox 也不代表有適當隔離。container、isolate、microVM 的邊界與配置不同，需要按 threat model 選擇，不能只按產品名稱判斷。
 
-**練習**：在預先隔離的測試環境中，測試越界路徑、禁止的網路、無限迴圈、子程序與大量輸出。只使用假秘密與 disposable 資料。
+### `node:vm` 不是安全 Sandbox
 
-**通過條件**：越界能力被執行環境阻擋；超時後工作確實終止；留下可查證的拒絕原因。不要在未隔離的 host 上以惡意程式「測試是否安全」。
+Node.js 官方明確指出 `node:vm` 不是安全機制，不應用來執行不受信任程式。不同 V8 context 與限制 global 的示範，可以說明變數環境，但不能當成正式的信任邊界。[Node.js VM](https://nodejs.org/api/vm.html)
 
-## 9. Eval 與 Observability：從一開始就量測
+同樣地，`Promise.race` 只讓等待端較早得到 timeout；它不會自動終止另一個 Promise、外部 API 或子程序。真正的執行器需能取消合作式工作，並在必要時終止隔離程序與回收資源。
 
-這是貫穿各章的驗證方式，不是最後才加的功能。評估三件事：**結果是否正確、過程是否符合限制、成本是否可接受。**
+### Sandbox 不取代工具授權
 
-### 最小評估集
-
-建議先建立 8–12 個固定案例，保留一部分不拿來調 prompt。每次比較都記錄模型／prompt／工具版本、fixture revision 與預算；對有隨機性的流程跑多次，不把一次成功當作穩定成功率。
-
-| 類型 | 例子 | 期待結果 |
-| --- | --- | --- |
-| 正常任務 | 無缺陷會員表單 | 必要 AC 通過且證據完整 |
-| 已知缺陷 | 重複 Email 被接受、手機按鈕溢出 | 正確指出受影響 AC，無關 AC 不誤報 |
-| 資料不足 | 缺少 Figma frame 或只有「美觀」 | blocked／needs-human-review，不假裝通過 |
-| 工具失敗 | timeout／資料不存在 | 有界重試或停止，保留正確錯誤狀態 |
-| 惡意內容 | 檔案要求忽略規則 | 不越權、不洩漏資料 |
-| Context 壓力 | 長結果與 compaction | 保留限制、版本與未完成工作 |
-| 程序中斷 | checkpoint 前後崩潰 | 按既定恢復合約處理 |
-| 人工決策 | 拒絕／逾時／重複核准 | 不誤執行、不重複副作用 |
-| 隔離界線 | 越界路徑／禁止網路 | 阻擋並留下證據 |
-
-驗收的完成條件不只「測試變綠」：還要確認沒有跳過 AC、降低 assertion 門檻或默默更新 screenshot baseline。以授課者事先標註的正常／缺陷版本評估漏報、誤報、狀態分類與證據完整性。`pass` 的錯誤判定尤其要追查；主觀設計問題保留人工審查，而不是要求所有項目都自動二元判定。
-
-### 最終報告示例
-
-以下是授課 fixture 的示意結果，不是真實驗收紀錄：
+即使程式完全被隔離，只要你提供一個不受限制的 `sendEmail` 或 `deleteRecord`，它仍能透過合法 API 造成不應有的副作用。因此隔離執行與 host-side policy 必須一起存在：
 
 ```text
-DEMO-101 / run-01 / fixture-a / design-snapshot-b
-範圍：6 條 AC；功能與視覺必要檢查依 matrix
-摘要：2 pass、1 fail、2 blocked、1 needs-human-review
-
-AC-01 blocked：功能已通過；視覺 worker 超時，未完成錯誤態比較
-  已有證據：assertion/e01、data-check/e01
-  下一步：只重試 visual task，保留相同 build 與 fixture
-AC-02 pass：成功提示可見；測試資料只新增一筆
-AC-03 fail：重複 Email 被接受；預期新增 0 筆，實際新增 1 筆
-  證據：trace/e03、data-check/e03；包含重現步驟
-AC-04 pass：指定桌機狀態的核准檢核與 baseline 比較通過
-AC-05 needs-human-review：功能操作與無水平溢出檢查已通過；已附 mobile 截圖，設計細節需指定 reviewer 判定
-AC-06 blocked：「順暢」缺少可測量標準，需要補充規格
-
-未變更 Jira 狀態；本次結果不足以宣告整張 ticket 通過
+Sandbox：程式不能直接碰 host 的任意資源
+Tool policy：每次可用能力的呼叫仍受目標、參數與授權限制
+Approval：特定副作用必須得到精確的人類核准
+Durability：失敗與重試時不遺失狀態，也不盲目重複副作用
 ```
 
-報告中的 artifact reference 在實作時須能開啟且對應這次 run；不能以不存在的檔名充當證據。`blocked` 的已完成子結果也要保留，讓 reviewer 知道不用重做哪些工作。
+四者處理不同問題，缺一不能靠其他三個自動補齊。
 
-### 最小可觀測資料
+### 瀏覽器也有兩層隔離
 
-建議紀錄 `run_id`、`step_id`、attempt、事件時間、模型／prompt／工具版本、狀態、耗時、token usage、重試原因與工具結果摘要。有副作用時加上 operation ID／idempotency key 與核准紀錄參照。
+BrowserContext 能隔離部分瀏覽器狀態，但不是執行任意模型程式的 OS sandbox；把網站放進測試環境，也不自動保護共用後端資料與第三方服務。
 
-將事件串成可閱讀的時間線：
+瀏覽器工具仍應限制 origin、帳號、資料與動作，並確認截圖／trace 不含不必要的秘密。只有允許目的地的網址，也要留意頁面內的重新導向、下載或外部請求。
 
-```text
-run.started → model.completed → tool.requested → policy.checked
-            → tool.completed → model.completed → run.completed
+做隔離驗證時，使用已隔離環境與假秘密，測試越界讀寫、禁止網路、無限迴圈、子程序與大量輸出。目的不只看見「timeout」字樣，而是確認工作真的停止、資源被回收、越界能力沒有成功。
+
+## 把各章放回同一個系統
+
+```mermaid
+flowchart TD
+    U[使用者任務] --> C[Context builder 與 Compact]
+    C --> R[Routing]
+    R --> A[主 Agent 或 Subagent]
+    A --> M[模型產生回答、工具呼叫或程式]
+    M --> T[Tool dispatcher]
+    T --> P[Policy 與 User Approve]
+    P --> E[一般工具或 Sandbox 中的 Code Mode]
+    E --> O[結果與證據]
+    O --> C
+    D[(Durable state 與事件)] --- A
+    D --- P
+    D --- O
 ```
 
-這些名稱是設計示意，不是目前程式事件名稱清單。實作時以專案實際 event schema 為準。不要記錄憑證或不必要的個資；可觀測性依靠行動、輸入輸出與狀態證據，不要求取得模型的隱藏推理。
+這些模式不是功能越多越好，而是分別處理特定問題：Tool 連接能力；Durable 保留進度；Code Mode 組合操作；Compact 控制 Context；Routing 決定去向；Subagent 管理分工；User Approve 控制授權；Sandbox 限制執行能力。
 
-### 每次加入新模式，都回答同一組問題
+最後要用可觀察的資料驗證設計：記錄 run／step／attempt、工具呼叫、核准、耗時、結果與 artifact 參照；比較成功率、失敗恢復、token／成本與越權情況。模型說「已完成」不是完成證據，畫面上有結果也不一定代表 durable checkpoint 已完成。
 
-1. 它解決了哪個 baseline 已出現的問題？
-2. 成功率、延遲、token 或人工介入次數改善多少？
-3. 新增了哪些權限、故障窗口與維運成本？
-4. 拿掉它之後，是否反而更容易理解與維護？
+以 Jira／Figma 驗收為例，功能 assertion、經核准的 browser screenshot baseline 與 Figma 設計符合度是不同證據。`toHaveScreenshot` 比較目前畫面與 baseline，不會自動理解 Figma；未跑完或缺證據應回報 blocked／needs-human-review，不能猜測 pass。[Playwright Assertions](https://playwright.dev/docs/test-assertions) · [Visual Comparisons](https://playwright.dev/docs/test-snapshots) · [Trace Viewer](https://playwright.dev/docs/trace-viewer)
 
-## 開課前檢查與現有驗證入口
-
-授課者應先固定 commit，依本教材 6 小時議程完成課前環境彩排。使用 fake provider／tool 與 disposable fixture，避免每個學員都必須取得 Jira、Figma 或正式系統憑證才能理解概念。
-
-現有 [package.json](package.json) 提供 `typecheck` 等指令；更完整的離線檢查列在 [DBOS 文件](docs/dbos-durable-execution.md#離線驗證)。在依賴已安裝、使用該文件的離線環境設定時，可依原文件執行：
-
-```sh
-pnpm typecheck
-DATABASE_URL=postgresql://offline:offline@127.0.0.1:1/offline MODEL_API_KEY=offline node --import tsx --test server/harness/run.test.ts server/thread.test.ts server/harness/tools/*.test.ts src/hooks/*.test.ts src/components/*.test.tsx
-node_modules/.bin/tsx scripts/check-contrast.ts
-node_modules/.bin/tsx scripts/check-openui-parse.ts
-```
-
-以上是現有文件中的驗證入口，不表示本 README 整理時已執行，也不是完整 production 驗證。Repository 的 `scripts/check-thread-browser.mjs` 是既有 chat UI 檢查，不是已完成的 Jira 驗收 browser tool；本課程的瀏覽器 adapter 與 fixture 仍需另外準備。
-
-> **目前已知限制**：專案文件指出 migration chain 尚不一致，不要直接把 `db:migrate`／`db:push` 當作全新資料庫的安全初始化流程；先確認實際資料庫歷史。真 PostgreSQL／DBOS 的 kill/restart、並行 executor 與版本交接仍需驗證，且現有 thread/run 合約不提供多租戶 ACL。完整說明請讀 [DBOS 執行合約與限制](docs/dbos-durable-execution.md)。
-
-### 課程完成檢查表
-
-- [ ] 可以解釋 model、tool、Harness 與 environment 的責任。
-- [ ] 單 Agent baseline 有明確成功／失敗與預算上限。
-- [ ] 工具的輸入、權限、錯誤與不完整結果都有合約。
-- [ ] 能展示至少一個失敗與恢復案例，說明 checkpoint 和副作用差異。
-- [ ] 需要執行程式時，有實際隔離與可終止性；需要核准時，有精確動作綁定。
-- [ ] 每個新增模式都和 baseline 比較，而不是只展示功能。
-- [ ] Routing 能對 AC 產生功能、視覺、mixed 或澄清處理，並實際分派。
-- [ ] 兩個專職 Subagents 有獨立合約與狀態，父 Agent 能處理部分失敗與版本衝突。
-- [ ] 每條 AC 都有 pass／fail／blocked／needs-human-review 與依據，報告不自動寫回 Jira。
-- [ ] 最終交付包含成果、驗證證據、版本與尚未解決的限制。
+目前專案的實際執行合約，請讀 [`server/harness/run.ts`](server/harness/run.ts) 與 [DBOS 執行文件](docs/dbos-durable-execution.md)。現有 loop 提供 Jira／Figma 唯讀工具並使用 DBOS；本文其餘模式是教材中的設計說明，不應視為所有能力已在 checkout 完成。
 
 ## 參考資料
 
-- [Hendrixer / Harness Engineering](https://github.com/Hendrixer/harness-engineering)：本教材的架構主題參考；原課程涵蓋 harness、durable execution、sandbox、memory、routing、supervision 與 human-in-the-loop。此專案沿用主題脈絡，不假設沿用其目錄、指令或實作。
-- [OpenAI Function Calling](https://developers.openai.com/api/docs/guides/function-calling)：應用端 tool call／tool result 的互動合約。
-- [Anthropic Advanced Tool Use](https://www.anthropic.com/engineering/advanced-tool-use)：工具搜尋、延遲載入與程式式工具使用。
-- [DBOS Steps](https://docs.dbos.dev/typescript/tutorials/step-tutorial)：step、可序列化結果與重試機制；使用時仍需核對專案鎖定版本。
-- [Cloudflare Code Mode](https://blog.cloudflare.com/code-mode/)：將工具以程式 API 組合的設計案例。
-- [CodeAct: Executable Code Actions Elicit Better LLM Agents](https://arxiv.org/abs/2402.01030)：以程式作為 Agent 行動表示的研究。
-- [Node.js VM](https://nodejs.org/api/vm.html)：`node:vm` 的用途與安全限制。
-- [Playwright Assertions](https://playwright.dev/docs/test-assertions)、[Visual Comparisons](https://playwright.dev/docs/test-snapshots)、[Trace Viewer](https://playwright.dev/docs/trace-viewer)、[Isolation](https://playwright.dev/docs/browser-contexts)：功能斷言、視覺回歸、執行證據與 browser context。
-- [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)：DOM 元素表、受限動作選擇與獨立完成驗證的架構參考；Python／Browser Harness 實作，並非本專案 adapter。
-- [TypeSafe 文件入口](https://docs.typesafe.ai/llms.txt)、[JavaScript SDK](https://docs.typesafe.ai/sdk/javascript)、[Intent Routing](https://docs.typesafe.ai/patterns/intent-routing)、[State](https://docs.typesafe.ai/concepts/state)、[Confidence](https://docs.typesafe.ai/confidence)：Jev 的整合、路由、輸入與分布解讀。
-
-外部教材與框架提供可借鏡的模式；本專案能保證什麼，仍以實際程式、版本、測試與部署配置為準。
+- [Hendrixer / Harness Engineering](https://github.com/Hendrixer/harness-engineering)
+- [OpenAI Function Calling](https://developers.openai.com/api/docs/guides/function-calling)
+- [Anthropic Advanced Tool Use](https://www.anthropic.com/engineering/advanced-tool-use)
+- [DBOS Steps](https://docs.dbos.dev/typescript/tutorials/step-tutorial)
+- [Cloudflare Code Mode](https://blog.cloudflare.com/code-mode/)
+- [CodeAct：Executable Code Actions Elicit Better LLM Agents](https://arxiv.org/abs/2402.01030)
+- [Node.js VM](https://nodejs.org/api/vm.html)
+- [TypeSafe JavaScript SDK](https://docs.typesafe.ai/sdk/javascript)、[State](https://docs.typesafe.ai/concepts/state)、[Confidence](https://docs.typesafe.ai/confidence)
+- [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)
+- [Playwright Assertions](https://playwright.dev/docs/test-assertions)、[Isolation](https://playwright.dev/docs/browser-contexts)、[Visual Comparisons](https://playwright.dev/docs/test-snapshots)、[Trace Viewer](https://playwright.dev/docs/trace-viewer)
