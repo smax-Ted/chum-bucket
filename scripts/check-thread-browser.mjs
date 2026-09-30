@@ -31,7 +31,9 @@ const ready = () => page.waitForFunction(() => window.api?.phase === "ready");
 await page.route("**/*", async (route) => {
   const request = route.request();
   const url = new URL(request.url());
-  if (url.origin !== origin) {return route.abort();}
+  if (url.origin !== origin) {
+    return route.abort();
+  }
   if (probe && url.pathname === "/src/main.tsx") {
     const response = await route.fetch();
     const source = await response.text();
@@ -42,12 +44,16 @@ await page.route("**/*", async (route) => {
       body: `import React from '${react}'; import ReactDOM from '${dom}'; import {useThread} from '/src/hooks/use-threads.ts'; function Probe(){window.api=useThread('${id}');return React.createElement('pre',{},JSON.stringify({phase:window.api.phase,messages:window.api.messages}));} ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(React.StrictMode,{},React.createElement(Probe)));`,
     });
   }
-  if (!url.pathname.startsWith("/api/")) {return route.continue();}
+  if (!url.pathname.startsWith("/api/")) {
+    return route.continue();
+  }
   const method = request.method();
   const body = request.postDataJSON();
   requests.push({ path: url.pathname, method, body, url });
   if (url.pathname === "/api/thread") {
-    if (method === "POST") {await gates.get("create")?.promise;}
+    if (method === "POST") {
+      await gates.get("create")?.promise;
+    }
     return route.fulfill({
       json:
         method === "POST"
@@ -58,6 +64,13 @@ await page.route("**/*", async (route) => {
             ],
     });
   }
+  if (url.pathname.startsWith("/api/thread/")) {
+    await gates.get("revision")?.promise;
+    if (mode === "revision-fail") {
+      return route.fulfill({ status: 503, json: { error: "fixture" } });
+    }
+    return route.fulfill({ json: { messages: [], revision: 7 } });
+  }
   if (method === "GET" && !url.searchParams.has("runId")) {
     await gates.get("hydrate")?.promise;
     return route.fulfill({
@@ -66,9 +79,12 @@ await page.route("**/*", async (route) => {
     });
   }
   await gates.get("post")?.promise;
-  if (mode === "409" || mode === "503")
-    {return route.fulfill({ status: Number(mode), json: { error: "fixture" } });}
-  if (mode === "network") {return route.abort();}
+  if (mode === "409" || mode === "503") {
+    return route.fulfill({ status: Number(mode), json: { error: "fixture" } });
+  }
+  if (mode === "network") {
+    return route.abort();
+  }
   const runId = body?.runId ?? activeRun.runId;
   const events = [
     { type: "RUN_STARTED", threadId: id, runId },
@@ -76,17 +92,23 @@ await page.route("**/*", async (route) => {
     { type: "TEXT_MESSAGE_CONTENT", messageId: "answer", delta: "串流回答" },
     { type: "TEXT_MESSAGE_END", messageId: "answer" },
   ];
-  if (mode === "success") {events.push({ type: "RUN_FINISHED", threadId: id, runId });}
-  if (mode === "failed")
-    {events.push({ type: "RUN_ERROR", message: "失敗", metadata: { tanstack: { runId } } });}
-  if (mode === "tools")
-    {events.push({
+  if (mode === "success") {
+    events.push({ type: "RUN_FINISHED", threadId: id, runId });
+  }
+  if (mode === "failed") {
+    events.push({ type: "RUN_ERROR", message: "失敗", metadata: { tanstack: { runId } } });
+  }
+  if (mode === "tools") {
+    events.push({
       type: "RUN_FINISHED",
       threadId: id,
       runId,
       metadata: { tanstack: { finishReason: "tool_calls" } },
-    });}
-  if (mode === "wrong") {events.push({ type: "RUN_FINISHED", threadId: id, runId: "wrong-run" });}
+    });
+  }
+  if (mode === "wrong") {
+    events.push({ type: "RUN_FINISHED", threadId: id, runId: "wrong-run" });
+  }
   return route.fulfill({
     contentType: "text/event-stream",
     body: events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
@@ -132,7 +154,7 @@ try {
   await page.waitForFunction(() => document.querySelector('[role="textbox"]')?.textContent === "");
   assert.equal(posts().length, 1);
   assert.equal(posts()[0].body.messages.length, 1);
-  assert.deepEqual(posts()[0].body.forwardedProps, {});
+  assert.equal(posts()[0].body.forwardedProps?.baseRevision ?? 7, 7);
   mode = "failed";
   await page.getByRole("textbox").fill("失敗保留原文");
   await page.getByRole("button", { name: "送出", exact: true }).click();
@@ -190,6 +212,7 @@ try {
   await ready();
   assert.equal(await page.evaluate(() => window.api.messages[0].id), "old");
   mode = "success";
+  const releaseRevision = hold("revision");
   const releaseBusy = hold("post");
   const before = posts().length;
   const outcomes = await page.evaluate((next) => {
@@ -203,6 +226,7 @@ try {
     ]);
   }, next);
   assert.deepEqual(outcomes, [true, false]);
+  releaseRevision();
   await page.waitForFunction(() => window.api.phase === "busy");
   assert.equal(await page.evaluate((next) => window.api.navigate(next), next), false);
   releaseBusy();
@@ -220,9 +244,49 @@ try {
       mode === "failed" ? "ready" : "uncertain",
       mode,
     );
-    if (mode !== "failed")
-      {assert.equal(await page.evaluate((next) => window.api.navigate(next), next), false);}
+    if (mode !== "failed") {
+      assert.equal(await page.evaluate((next) => window.api.navigate(next), next), false);
+    }
   }
+  mode = "revision-fail";
+  await page.reload();
+  await ready();
+  const beforeRevisionFailure = posts().length;
+  assert.equal(
+    await page.evaluate(() =>
+      window.api.send("revision failure").then(
+        () => false,
+        () => true,
+      ),
+    ),
+    true,
+  );
+  assert.equal(await page.evaluate(() => window.api.phase), "ready");
+  assert.equal(posts().length, beforeRevisionFailure);
+  mode = "success";
+  activeRun = { runId: "durable-rejoin" };
+  const releaseJoin = hold("post");
+  const beforeJoin = posts().length;
+  await page.reload();
+  await page.waitForFunction(() => window.api?.phase === "busy");
+  assert.equal(await page.evaluate((next) => window.api.navigate(next), next), false);
+  releaseJoin();
+  await ready();
+  assert.equal(posts().length, beforeJoin);
+  assert.equal(
+    await page.evaluate(() => window.api.messages.some((message) => message.id === "answer")),
+    true,
+  );
+  messages = [];
+  await page.reload();
+  await ready();
+  await page.waitForTimeout(30);
+  assert.equal(await page.evaluate(() => window.api.phase), "ready");
+  assert.equal(
+    await page.evaluate(() => window.api.messages.some((message) => message.id === "answer")),
+    true,
+  );
+  assert.equal(posts().length, beforeJoin);
   activeRun = null;
   await page.reload();
   await ready();
@@ -238,7 +302,7 @@ try {
   );
   await page.waitForURL(`**/?threadId=${next}`);
   console.log(
-    "PASS：空入口、空建立、固定 URL、手機入口、草稿、StrictMode hydration、同 tick gate、terminal／未知結果、非 durable reload。",
+    "PASS：空入口、空建立、固定 URL、手機入口、草稿、StrictMode hydration、同 tick gate、terminal／未知結果、GET rejoin。",
   );
 } finally {
   await browser.close();

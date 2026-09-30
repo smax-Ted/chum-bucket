@@ -76,7 +76,10 @@ test("get_figma fetches bounded design data and reports failures", async () => {
     await assert.rejects(() => execute(input), /non-JSON/);
   } finally {
     globalThis.fetch = originalFetch;
-    if (originalKey === undefined) {delete process.env.FIGMA_API_KEY;}
-    else {process.env.FIGMA_API_KEY = originalKey;}
+    if (originalKey === undefined) {
+      delete process.env.FIGMA_API_KEY;
+    } else {
+      process.env.FIGMA_API_KEY = originalKey;
+    }
   }
 });

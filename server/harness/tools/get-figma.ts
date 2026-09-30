@@ -65,13 +65,19 @@ function parseTarget(target: string, override?: string) {
       throw new Error("Expected a Figma URL.");
     }
     const match = url.pathname.match(/^\/(?:file|design)\/([a-zA-Z0-9]+)(?:\/|$)/);
-    if (!match) {throw new Error("Expected a Figma file or design URL.");}
+    if (!match) {
+      throw new Error("Expected a Figma file or design URL.");
+    }
     fileKey = url.pathname.match(/\/branch\/([a-zA-Z0-9]+)(?:\/|$)/)?.[1] ?? match[1];
     nodeId ??= url.searchParams.get("node-id") ?? undefined;
   }
-  if (!/^[a-zA-Z0-9]+$/.test(fileKey)) {throw new Error("Invalid Figma file key.");}
+  if (!/^[a-zA-Z0-9]+$/.test(fileKey)) {
+    throw new Error("Invalid Figma file key.");
+  }
   nodeId = nodeId?.replace(/-/g, ":");
-  if (nodeId && !/^\d+:\d+$/.test(nodeId)) {throw new Error("Invalid Figma node ID.");}
+  if (nodeId && !/^\d+:\d+$/.test(nodeId)) {
+    throw new Error("Invalid Figma node ID.");
+  }
   return { fileKey, nodeId };
 }
 
@@ -100,11 +106,15 @@ export const getFigma = toolDefinition({
   }),
 }).server(async ({ target, nodeId, depth = 2, offset = 0 }, context) => {
   const apiKey = process.env.FIGMA_API_KEY;
-  if (!apiKey) {throw new Error("Missing FIGMA_API_KEY environment variable.");}
+  if (!apiKey) {
+    throw new Error("Missing FIGMA_API_KEY environment variable.");
+  }
 
   const parsed = parseTarget(target, nodeId);
   const query = new URLSearchParams({ depth: String(depth) });
-  if (parsed.nodeId) {query.set("ids", parsed.nodeId);}
+  if (parsed.nodeId) {
+    query.set("ids", parsed.nodeId);
+  }
 
   const response = await fetch(
     `https://api.figma.com/v1/files/${parsed.fileKey}${parsed.nodeId ? "/nodes" : ""}?${query}`,
@@ -117,24 +127,31 @@ export const getFigma = toolDefinition({
     },
   );
 
-  if (!response.ok)
-    {throw new Error(`Figma request failed (${response.status} ${response.statusText}).`);}
+  if (!response.ok) {
+    throw new Error(`Figma request failed (${response.status} ${response.statusText}).`);
+  }
 
   if (!response.headers.get("content-type")?.includes("json")) {
     throw new Error("Figma returned a non-JSON response.");
   }
   const data = await response.json();
   const document = parsed.nodeId ? data.nodes?.[parsed.nodeId]?.document : data.document;
-  if (!document) {throw new Error("Figma node was not found.");}
+  if (!document) {
+    throw new Error("Figma node was not found.");
+  }
 
   const root = nodeSchema.parse(document);
   const nodes = root.visible === false ? [] : [compact(root)];
   const result = { fileKey: parsed.fileKey, depth, depthLimited: true, truncated: false, nodes };
-  if (Buffer.byteLength(JSON.stringify(result)) <= MAX_BYTES) {return result;}
+  if (Buffer.byteLength(JSON.stringify(result)) <= MAX_BYTES) {
+    return result;
+  }
 
   const summaries: { id: string; name: string; type: string }[] = [];
   function visit(node: FigmaNode) {
-    if (node.visible === false) {return;}
+    if (node.visible === false) {
+      return;
+    }
     summaries.push({ id: node.id, name: node.name.slice(0, 200), type: node.type });
     node.children?.forEach(visit);
   }

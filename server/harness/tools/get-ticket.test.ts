@@ -98,8 +98,11 @@ test("get_ticket returns issue details, bounds comments, and handles failures", 
   } finally {
     globalThis.fetch = originalFetch;
     names.forEach((name, index) => {
-      if (originalEnv[index] === undefined) {delete process.env[name];}
-      else {process.env[name] = originalEnv[index];}
+      if (originalEnv[index] === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = originalEnv[index];
+      }
     });
   }
 });

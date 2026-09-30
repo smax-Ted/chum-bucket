@@ -28,7 +28,9 @@ export function PaneShell({
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
-    if (!dragRef.current) {return;}
+    if (!dragRef.current) {
+      return;
+    }
     const delta = event.clientX - dragRef.current.startX;
     setWidth(clampWidth(dragRef.current.startWidth + delta));
   }

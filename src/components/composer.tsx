@@ -70,8 +70,12 @@ export function Composer({
           : {}),
       },
       handleKeyDown: (view, event) => {
-        if (event.key !== "Enter" || event.shiftKey) {return false;}
-        if (event.isComposing || view.composing) {return false;}
+        if (event.key !== "Enter" || event.shiftKey) {
+          return false;
+        }
+        if (event.isComposing || view.composing) {
+          return false;
+        }
         event.preventDefault();
         formRef.current?.requestSubmit();
         return true;
@@ -88,17 +92,21 @@ export function Composer({
   }, [editor, disabled]);
 
   async function submit() {
-    if (!canSubmit || !onSend) {return;}
+    if (!canSubmit || !onSend) {
+      return;
+    }
     setError(null);
     try {
       const result = await onSend(text.trim());
-      if (result === "succeeded") {editor.commands.clearContent();}
-      else
-        {setError(
+      if (result === "succeeded") {
+        editor.commands.clearContent();
+      } else {
+        setError(
           result === "failed"
             ? "執行失敗，原文已保留。"
             : "結果尚未確認，請重新載入對話，原文已保留。",
-        );}
+        );
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "送出失敗，請稍後再試");
     }
