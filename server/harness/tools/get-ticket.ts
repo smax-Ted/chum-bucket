@@ -98,8 +98,9 @@ export const getTicket = toolDefinition({
     },
   );
 
-  if (!response.ok)
-    {throw new Error(`Jira request failed (${response.status} ${response.statusText}).`);}
+  if (!response.ok) {
+    throw new Error(`Jira request failed (${response.status} ${response.statusText}).`);
+  }
   if (!response.headers.get("content-type")?.includes("json")) {
     throw new Error("Jira returned a non-JSON response.");
   }

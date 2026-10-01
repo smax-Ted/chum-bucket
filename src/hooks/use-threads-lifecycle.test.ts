@@ -10,7 +10,9 @@ const oldMessages: UIMessage[] = [
 
 async function until(predicate: () => boolean) {
   for (let i = 0; i < 200; i++) {
-    if (predicate()) {return;}
+    if (predicate()) {
+      return;
+    }
     await delay(5);
   }
   assert.fail("Expected client state was not observed");
@@ -29,7 +31,9 @@ function fixture(initialMessages: UIMessage[] = [], failSend = false, id = threa
         requested.resolve();
         return (await response.promise).clone();
       }
-      if (failSend) {return Response.json({ error: "Conflict" }, { status: 409 });}
+      if (failSend) {
+        return Response.json({ error: "Conflict" }, { status: 409 });
+      }
       const body = JSON.parse(String(init?.body));
       const events = [
         { type: "RUN_STARTED", threadId: id, runId: body.runId },
@@ -79,7 +83,9 @@ for (const existing of [false, true]) {
       state.response.resolve(Response.json({ messages: oldMessages, activeRun: null }));
       await state.hydration;
       await until(() => state.client.getMessages()[0]?.id === "old");
-      await state.client.sendMessage({ id: "new-user", content: "New question" });
+      await state.client.sendMessage({ id: "new-user", content: "New question" }, undefined, {
+        body: { baseRevision: existing ? 1 : 0 },
+      });
       assert.deepEqual(
         state.client.getMessages().map((message) => message.id),
         ["old", "new-user", "answer"],
@@ -98,7 +104,7 @@ test("failed submission can be followed by a fresh attachment", async () => {
     await state.requested.promise;
     state.response.resolve(Response.json({ messages: oldMessages, activeRun: null }));
     await until(() => state.client.getMessages()[0]?.id === "old");
-    await state.client.sendMessage("New question");
+    await state.client.sendMessage("New question", undefined, { body: { baseRevision: 1 } });
     assert.match(state.client.getError()!.message, /409/);
     state.client.detach();
     state.client.attach();
@@ -125,5 +131,34 @@ test("SDK hydration failure is silent in public chat status and requires applica
     assert.equal(state.requests.length, 1);
   } finally {
     state.client.dispose();
+  }
+});
+
+test("a detached document cannot rejoin after its delayed hydration completes", async () => {
+  const old = fixture();
+  const next = fixture([], false, "7d8b4d7a-7a8f-4dac-a076-7f67a8f6c451");
+  try {
+    old.client.attach();
+    await old.requested.promise;
+    old.client.detach();
+    next.client.attach();
+    await next.requested.promise;
+    next.response.resolve(Response.json({ messages: oldMessages, activeRun: null }));
+    await until(() => next.client.getMessages()[0]?.id === "old");
+    await next.client.sendMessage("New question", undefined, { body: { baseRevision: 0 } });
+    old.response.resolve(
+      Response.json({ messages: oldMessages, activeRun: { runId: "run-stale" } }),
+    );
+    await old.hydration;
+    await delay(0);
+    assert.deepEqual(old.client.getMessages(), []);
+    assert.equal(old.requests.length, 1);
+    assert.deepEqual(
+      next.client.getMessages().map((message) => message.role),
+      ["user", "user", "assistant"],
+    );
+  } finally {
+    old.client.dispose();
+    next.client.dispose();
   }
 });

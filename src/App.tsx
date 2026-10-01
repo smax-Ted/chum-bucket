@@ -22,7 +22,9 @@ function ThreadEntry() {
   const [busy, setBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   async function enter(id: string | null) {
-    if (claim.current) {return;}
+    if (claim.current) {
+      return;
+    }
     claim.current = true;
     setBusy(true);
     try {
@@ -144,23 +146,27 @@ const App = () => {
   const [entry] = useState(readPageEntry);
   useEffect(() => {
     const restore = (event: PageTransitionEvent) => {
-      if (event.persisted) {window.location.reload();}
+      if (event.persisted) {
+        window.location.reload();
+      }
     };
     window.addEventListener("pageshow", restore);
     return () => window.removeEventListener("pageshow", restore);
   }, []);
-  if (entry.kind === "invalid")
-    {return (
+  if (entry.kind === "invalid") {
+    return (
       <main role="alert" className="p-6">
         對話網址無效，請確認 threadId。
       </main>
-    );}
-  if (entry.kind === "choose")
-    {return (
+    );
+  }
+  if (entry.kind === "choose") {
+    return (
       <Provider>
         <ThreadEntry />
       </Provider>
-    );}
+    );
+  }
   return <ThreadPage threadId={entry.threadId} />;
 };
 

@@ -6,7 +6,9 @@ const parse = (value: string): Oklch => {
   const m = value.match(
     /^oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\s*\)$/,
   );
-  if (!m) {throw new Error(`not an oklch() value: ${value}`);}
+  if (!m) {
+    throw new Error(`not an oklch() value: ${value}`);
+  }
   return { l: +m[1], c: +m[2], h: +m[3], a: m[4] === undefined ? 1 : +m[4] };
 };
 
@@ -46,7 +48,9 @@ const failures: string[] = [];
 const check = (label: string, fg: string, bg: string) => {
   const ratio = contrast(fg, bg);
   const pass = ratio >= AA;
-  if (!pass) {failures.push(`${label}: ${ratio.toFixed(2)}:1 (need ${AA})`);}
+  if (!pass) {
+    failures.push(`${label}: ${ratio.toFixed(2)}:1 (need ${AA})`);
+  }
   console.log(
     `${pass ? "ok  " : "FAIL"} ${label.padEnd(34)} ${ratio.toFixed(2)}:1`,
   );
@@ -68,7 +72,9 @@ for (const [mode, t] of [
 
 if (failures.length > 0) {
   console.error(`\n${failures.length} contrast failure(s):`);
-  for (const f of failures) {console.error(`  ${f}`);}
+  for (const f of failures) {
+    console.error(`  ${f}`);
+  }
   process.exit(1);
 }
 console.log("\nall pairs meet WCAG AA");
