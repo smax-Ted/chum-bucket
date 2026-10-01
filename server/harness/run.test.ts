@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test, mock } from "node:test";
 import { Pool } from "pg";
 import { DBOS } from "@dbos-inc/dbos-sdk";
+import { createReadTool, createWriteTool, createEditTool } from "@earendil-works/pi-coding-agent";
 import { getTicket } from "./tools/get-ticket";
 import { eventResponse, parseCursor, parseRunBody } from "../chat";
 import { ChatClient, fetchServerSentEvents } from "@tanstack/ai-react";
@@ -1291,10 +1295,13 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
       Object.getPrototypeOf(adapter),
       "chatStream",
       async function* (options: {
-        tools?: { execute?: unknown; inputSchema?: unknown }[];
+        tools?: { name: string; execute?: unknown; inputSchema?: unknown }[];
         messages: unknown;
       }) {
-        assert.equal(options.tools?.length, 2);
+        assert.deepEqual(
+          options.tools?.map((tool) => tool.name),
+          ["get_figma", "get_ticket", "read", "write", "edit"],
+        );
         assert.ok(options.tools?.every((tool) => !("execute" in tool) && tool.inputSchema));
         if (rejectedStream) {
           rejectedGenerations++;
@@ -1526,6 +1533,157 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
       await assert.rejects(emit(largeRun.runId, largeEvent), /Run is terminal/);
       assert.equal(largeEvents().length, beforeTerminal);
       assert.equal(threads.get(largeThread)!.revision, 1);
+
+      const directory = await mkdtemp(join(tmpdir(), "chum-bucket-run-fs-"));
+      try {
+        const path = join(directory, "nested", "file.txt");
+        const filesystemThread = "809f0944-8807-4d57-8e67-58c530d4061a";
+        threads.set(filesystemThread, {
+          id: filesystemThread,
+          messages: [],
+          revision: 0,
+          active_run_id: null,
+        });
+        const filesystemRun = await acceptRun({
+          ...input,
+          threadId: filesystemThread,
+          runId: "native-filesystem",
+          message: { id: "filesystem-user", text: "Write, read, and edit a file" },
+        });
+        const calls = [
+          { id: "fs-write", name: "write", input: { path, content: "before\nsame\nsame\n" } },
+          { id: "fs-read-before", name: "read", input: { path } },
+          {
+            id: "fs-edit",
+            name: "edit",
+            input: { path, edits: [{ oldText: "before", newText: "after" }] },
+          },
+          { id: "fs-read-after", name: "read", input: { path } },
+          { id: "fs-invalid-write", name: "write", input: { path, content: 123 } },
+          {
+            id: "fs-ambiguous-edit",
+            name: "edit",
+            input: { path, edits: [{ oldText: "same", newText: "wrong" }] },
+          },
+          { id: "fs-missing-read", name: "read", input: { path: join(directory, "missing.txt") } },
+          { id: "fs-unknown", name: "unknown", input: {} },
+        ];
+        cached.clear();
+        provider.mock.mockImplementation(async function* (options: {
+          tools?: { name: string; description: string; execute?: unknown; inputSchema?: unknown }[];
+          messages: ReturnType<typeof convertMessagesToModelMessages>;
+        }) {
+          assert.deepEqual(
+            options.tools?.map((tool) => tool.name),
+            ["get_figma", "get_ticket", "read", "write", "edit"],
+          );
+          assert.ok(options.tools?.every((tool) => !("execute" in tool) && tool.inputSchema));
+          for (const native of [
+            createReadTool(process.cwd()),
+            createWriteTool(process.cwd()),
+            createEditTool(process.cwd()),
+          ]) {
+            const definition: NonNullable<typeof options.tools>[number] | undefined =
+              options.tools?.find((tool) => tool.name === native.name);
+            assert.equal(definition?.description, native.description);
+            assert.deepEqual(definition?.inputSchema, native.parameters);
+          }
+          const history = options.messages.filter((message) => message.role === "tool");
+          if (!history.length) {
+            yield {
+              type: EventType.TEXT_MESSAGE_START,
+              messageId: "filesystem-assistant",
+              role: "assistant",
+            };
+            for (const call of calls) {
+              yield {
+                type: EventType.TOOL_CALL_START,
+                toolCallId: call.id,
+                toolCallName: call.name,
+              };
+              yield {
+                type: EventType.TOOL_CALL_ARGS,
+                toolCallId: call.id,
+                delta: JSON.stringify(call.input),
+              };
+              yield { type: EventType.TOOL_CALL_END, toolCallId: call.id, input: call.input };
+            }
+            yield providerFinish;
+          } else {
+            assert.deepEqual(
+              history.map((message) => message.toolCallId),
+              [
+                "fs-write",
+                "fs-read-before",
+                "fs-edit",
+                "fs-read-after",
+                "fs-invalid-write",
+                "fs-ambiguous-edit",
+                "fs-missing-read",
+                "fs-unknown",
+              ],
+            );
+            assert.equal(
+              history[3]!.content,
+              '{"content":[{"type":"text","text":"after\\nsame\\nsame\\n"}]}',
+            );
+            assert.equal(history[7]!.content, '{"error":"Unknown tool"}');
+            yield* textStream();
+          }
+        });
+        await executeRun(filesystemRun);
+        assert.equal(await readFile(path, "utf8"), "after\nsame\nsame\n");
+        const results = events
+          .filter((row) => row.run_id === filesystemRun.runId)
+          .map((row) => row.payload as StreamChunk)
+          .filter((event) => event.type === EventType.TOOL_CALL_RESULT);
+        assert.deepEqual(
+          results.map((event) => event.toolCallId),
+          [
+            "fs-write",
+            "fs-read-before",
+            "fs-edit",
+            "fs-read-after",
+            "fs-invalid-write",
+            "fs-ambiguous-edit",
+            "fs-missing-read",
+            "fs-unknown",
+          ],
+        );
+        assert.deepEqual(JSON.parse(results[0]!.content), {
+          content: [{ type: "text", text: `Successfully wrote to ${path}` }],
+        });
+        assert.deepEqual(JSON.parse(results[1]!.content), {
+          content: [{ type: "text", text: "before\nsame\nsame\n" }],
+        });
+        assert.match(results[2]!.content, /Successfully replaced 1 block/);
+        assert.match(results[2]!.content, /"patch":/);
+        assert.deepEqual(JSON.parse(results[3]!.content), {
+          content: [{ type: "text", text: "after\nsame\nsame\n" }],
+        });
+        assert.match(JSON.parse(results[4]!.content).error, /expected string/);
+        assert.match(JSON.parse(results[5]!.content).error, /2 occurrences/);
+        assert.match(JSON.parse(results[6]!.content).error, /ENOENT/);
+        assert.deepEqual(JSON.parse(results[7]!.content), { error: "Unknown tool" });
+        assert.deepEqual(
+          results.map((event) => event.metadata),
+          [
+            ...Array.from({ length: 4 }, () => ({ tanstack: { state: "output-available" } })),
+            ...Array.from({ length: 4 }, () => ({ tanstack: { state: "output-error" } })),
+          ],
+        );
+        const saved = threads.get(filesystemThread)!.messages as UIMessage[];
+        assert.deepEqual(
+          saved
+            .flatMap((message) => message.parts)
+            .filter((part) => part.type === "tool-result")
+            .map((part) => part.content),
+          results.map((event) => event.content),
+        );
+        assert.equal(runs.get(filesystemRun.runId)!.state, "succeeded");
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
     } finally {
       checkpoints.mock.restore();
       provider.mock.restore();

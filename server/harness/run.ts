@@ -4,13 +4,11 @@ import {
   EventType,
   StreamProcessor,
   convertMessagesToModelMessages,
-  convertSchemaToJsonSchema,
   type StreamChunk,
   type UIMessage,
 } from "@tanstack/ai";
 import { resolveDebugOption } from "@tanstack/ai/adapter-internals";
-import { getFigma } from "./tools/get-figma";
-import { getTicket } from "./tools/get-ticket";
+import { modelTools, executeTool } from "./tools";
 import { snapshot, streamModelTurn, type ModelCall } from "./model-turn";
 import {
   BUILD,
@@ -49,13 +47,7 @@ async function toolStep(
         throw new Error("Tool custom events are not supported");
       },
     };
-    if (call.name === getFigma.name) {
-      output = await getFigma.execute!(getFigma.inputSchema.parse(call.input), context);
-    } else if (call.name === getTicket.name) {
-      output = await getTicket.execute!(getTicket.inputSchema.parse(call.input), context);
-    } else {
-      throw new Error("Unknown tool");
-    }
+    output = await executeTool(call, context);
   } catch (failure) {
     output = { error: failure instanceof Error ? failure.message.slice(0, 2000) : "Tool failed" };
     error = true;
@@ -99,11 +91,7 @@ export async function executeRun(run: AcceptedRun) {
             model: run.model,
             messages: convertMessagesToModelMessages(messages),
             systemPrompts: [run.prompt],
-            tools: [getFigma, getTicket].map((tool) => ({
-              name: tool.name,
-              description: tool.description,
-              inputSchema: convertSchemaToJsonSchema(tool.inputSchema),
-            })),
+            tools: modelTools,
             logger: resolveDebugOption(false),
             request: { signal: AbortSignal.timeout(120_000) },
           }),
