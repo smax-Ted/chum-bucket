@@ -23,6 +23,8 @@ import {
   type AcceptedRun,
 } from "./run-store";
 
+const MAX_TURN = 20
+
 export async function acceptRun(value: RunInput): Promise<AcceptedRun> {
   const accepted = await persistRun(value);
   if (accepted.pending) {
@@ -79,7 +81,7 @@ export async function executeRun(run: AcceptedRun) {
   }
   let messages = run.messages;
   let turn = 0;
-  while (turn < 5) {
+  while (turn < MAX_TURN) {
     const result = await DBOS.runStep(
       async () => {
         await emit(run.runId, snapshot(messages), messages);

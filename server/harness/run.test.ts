@@ -1300,7 +1300,15 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
       }) {
         assert.deepEqual(
           options.tools?.map((tool) => tool.name),
-          ["get_figma", "get_ticket", "read", "write", "edit"],
+          [
+            "get_figma",
+            "get_ticket",
+            "read_confluence",
+            "write_jira_command",
+            "read",
+            "write",
+            "edit",
+          ],
         );
         assert.ok(options.tools?.every((tool) => !("execute" in tool) && tool.inputSchema));
         if (rejectedStream) {
@@ -1575,7 +1583,15 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
         }) {
           assert.deepEqual(
             options.tools?.map((tool) => tool.name),
-            ["get_figma", "get_ticket", "read", "write", "edit"],
+            [
+              "get_figma",
+              "get_ticket",
+              "read_confluence",
+              "write_jira_command",
+              "read",
+              "write",
+              "edit",
+            ],
           );
           assert.ok(options.tools?.every((tool) => !("execute" in tool) && tool.inputSchema));
           for (const native of [

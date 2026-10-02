@@ -2,6 +2,7 @@ import { convertSchemaToJsonSchema, type Tool, type ToolExecutionContext } from 
 import type { ModelCall } from "../model-turn";
 import { getFigma } from "./get-figma";
 import { getTicket } from "./get-ticket";
+import { readConfluence } from "./read-confluence";
 import { writeJiraCommand } from "./write-jira-command";
 import { read, write, edit } from "./fs";
 
@@ -20,6 +21,11 @@ const registrations: readonly ToolRegistration[] = [
     definition: getTicket,
     handler: async (input, context) =>
       getTicket.execute!(getTicket.inputSchema.parse(input), context),
+  },
+  {
+    definition: readConfluence,
+    handler: async (input, context) =>
+      readConfluence.execute!(readConfluence.inputSchema.parse(input), context),
   },
   {
     definition: writeJiraCommand,
