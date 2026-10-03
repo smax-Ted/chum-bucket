@@ -18,7 +18,8 @@
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "lint:fix": "oxlint --fix-dangerously"
+    "lint:fix": "oxlint --fix-dangerously",
+    "mcp:atlassian": "tsx scripts/mcp-atlassian.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
@@ -31,6 +32,7 @@
     "@openuidev/react-ui": "^0.16.2",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/ai": "^0.58.0",
+    "@tanstack/ai-mcp": "0.4.3",
     "@tanstack/ai-openai": "^0.23.1",
     "@tanstack/ai-react": "^0.27.3",
     "@tiptap/pm": "^3.31.3",

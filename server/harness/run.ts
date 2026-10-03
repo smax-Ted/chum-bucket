@@ -8,7 +8,7 @@ import {
   type UIMessage,
 } from "@tanstack/ai";
 import { resolveDebugOption } from "@tanstack/ai/adapter-internals";
-import { modelTools, executeTool } from "./tools";
+import { withRunTools, type RunTools } from "./tools";
 import { snapshot, streamModelTurn, type ModelCall } from "./model-turn";
 import {
   BUILD,
@@ -23,7 +23,7 @@ import {
   type AcceptedRun,
 } from "./run-store";
 
-const MAX_TURN = 20
+const MAX_TURN = 20;
 
 export async function acceptRun(value: RunInput): Promise<AcceptedRun> {
   const accepted = await persistRun(value);
@@ -37,6 +37,7 @@ async function toolStep(
   runId: string,
   messages: UIMessage[],
   call: ModelCall,
+  tools: RunTools,
 ): Promise<UIMessage[]> {
   await emit(runId, snapshot(messages), messages);
   let output: unknown;
@@ -49,7 +50,7 @@ async function toolStep(
         throw new Error("Tool custom events are not supported");
       },
     };
-    output = await executeTool(call, context);
+    output = await tools.executeTool(call, context);
   } catch (failure) {
     output = { error: failure instanceof Error ? failure.message.slice(0, 2000) : "Tool failed" };
     error = true;
@@ -79,50 +80,53 @@ export async function executeRun(run: AcceptedRun) {
   if (run.build !== BUILD || run.model !== MODEL) {
     throw new Error("Incompatible run build");
   }
-  let messages = run.messages;
-  let turn = 0;
-  while (turn < MAX_TURN) {
-    const result = await DBOS.runStep(
-      async () => {
-        await emit(run.runId, snapshot(messages), messages);
-        const { deepinfra } = await import("./provider");
-        const adapter = deepinfra(run.model);
-        const result = await streamModelTurn({
-          messages,
-          stream: adapter.chatStream({
-            model: run.model,
-            messages: convertMessagesToModelMessages(messages),
-            systemPrompts: [run.prompt],
-            tools: modelTools,
-            logger: resolveDebugOption(false),
-            request: { signal: AbortSignal.timeout(120_000) },
-          }),
-          append: (event) => emit(run.runId, event),
+  return withRunTools(async (tools) => {
+    let messages = run.messages;
+    let turn = 0;
+    while (turn < MAX_TURN) {
+      const result = await DBOS.runStep(
+        async () => {
+          await emit(run.runId, snapshot(messages), messages);
+          const { deepinfra } = await import("./provider");
+          const adapter = deepinfra(run.model);
+          const definitions = await tools.getModelTools();
+          const result = await streamModelTurn({
+            messages,
+            stream: adapter.chatStream({
+              model: run.model,
+              messages: convertMessagesToModelMessages(messages),
+              systemPrompts: [run.prompt],
+              tools: definitions,
+              logger: resolveDebugOption(false),
+              request: { signal: AbortSignal.timeout(120_000) },
+            }),
+            append: (event) => emit(run.runId, event),
+          });
+          await emit(run.runId, snapshot(result.messages), result.messages);
+          return result;
+        },
+        {
+          name: `model:${turn}`,
+          retriesAllowed: true,
+          maxAttempts: 3,
+          intervalSeconds: 1,
+          backoffRate: 2,
+        },
+      );
+      messages = result.messages;
+      if (!result.calls.length) {
+        await DBOS.runStep(() => finishRun(run.runId, messages), { name: "finish" });
+        return;
+      }
+      for (const [index, call] of result.calls.entries()) {
+        messages = await DBOS.runStep(() => toolStep(run.runId, messages, call, tools), {
+          name: `tool:${turn}:${index}`,
         });
-        await emit(run.runId, snapshot(result.messages), result.messages);
-        return result;
-      },
-      {
-        name: `model:${turn}`,
-        retriesAllowed: true,
-        maxAttempts: 3,
-        intervalSeconds: 1,
-        backoffRate: 2,
-      },
-    );
-    messages = result.messages;
-    if (!result.calls.length) {
-      await DBOS.runStep(() => finishRun(run.runId, messages), { name: "finish" });
-      return;
+      }
+      turn++;
     }
-    for (const [index, call] of result.calls.entries()) {
-      messages = await DBOS.runStep(() => toolStep(run.runId, messages, call), {
-        name: `tool:${turn}:${index}`,
-      });
-    }
-    turn++;
-  }
-  throw new Error("Model iteration limit exceeded");
+    throw new Error("Model iteration limit exceeded");
+  });
 }
 
 const workflow = DBOS.registerWorkflow(executeRun, { name: BUILD });

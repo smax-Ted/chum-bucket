@@ -38,6 +38,9 @@ importers:
       '@tanstack/ai':
         specifier: ^0.58.0
         version: 0.58.0(zod@4.6.5)
+      '@tanstack/ai-mcp':
+        specifier: 0.4.3
+        version: 0.4.3(zod@4.6.5)
       '@tanstack/ai-openai':
         specifier: ^0.23.1
         version: 0.23.1(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(@tanstack/ai@0.58.0(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)
@@ -2356,6 +2359,10 @@ packages:
 
   '@tanstack/ai-event-client@0.12.1':
     resolution: {integrity: sha512-rQZ94m4FDyGPJA868/Z7ipZGQ9QA4taxYnC7jwIbRm9eRYf5ig+cmwirBmd/adPSsvL8Qr6hgEX8SULrpJpIyA==}
+
+  '@tanstack/ai-mcp@0.4.3':
+    resolution: {integrity: sha512-1c2b9iBlS/fue5pChKHnP/d2F3CmURGt8uSHLed1jy4UMftrDlRb2al2xjcT8WqeBgXyERkvWlHSI5OdC+I5fg==}
+    hasBin: true
 
   '@tanstack/ai-openai@0.23.1':
     resolution: {integrity: sha512-E9IYtYaegdpZHz2XyDBS81Wa1o/xJbtk6rZ9pVmKmk97hafirTqC4ad/pcqTzoayKbw1T87LSPLya7Be43rIdA==}
@@ -6455,7 +6462,6 @@ snapshots:
       zod-to-json-schema: 3.25.2(zod@4.6.5)
     transitivePeerDependencies:
       - supports-color
-    optional: true
 
   '@neodrag/core@3.0.0-next.11': {}
 
@@ -7498,6 +7504,16 @@ snapshots:
   '@tanstack/ai-event-client@0.12.1':
     dependencies:
       '@tanstack/devtools-event-client': 0.4.4
+
+  '@tanstack/ai-mcp@0.4.3(zod@4.6.5)':
+    dependencies:
+      '@modelcontextprotocol/sdk': 1.30.0(zod@4.6.5)
+      '@tanstack/ai': 0.58.0(zod@4.6.5)
+    transitivePeerDependencies:
+      - '@cfworker/json-schema'
+      - '@opentelemetry/api'
+      - supports-color
+      - zod
 
   '@tanstack/ai-openai@0.23.1(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(@tanstack/ai@0.58.0(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)':
     dependencies:
@@ -10756,7 +10772,6 @@ snapshots:
   zod-to-json-schema@3.25.2(zod@4.6.5):
     dependencies:
       zod: 4.6.5
-    optional: true
 
   zod@3.25.76: {}
 

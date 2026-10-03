@@ -8,7 +8,7 @@ import { chatEventsTable, chatRunsTable, threadsTable } from "../db/schema";
 import { openuiInstructions } from "./prompts";
 import { snapshot } from "./model-turn";
 
-export const BUILD = "durable-chat-loop-v2";
+export const BUILD = "durable-chat-loop-v4";
 export const MODEL = "deepseek-ai/DeepSeek-V4.1-Flash";
 export const runIdSchema = z
   .string()

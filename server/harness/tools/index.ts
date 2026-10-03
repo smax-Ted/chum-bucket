@@ -1,64 +1,69 @@
 import { convertSchemaToJsonSchema, type Tool, type ToolExecutionContext } from "@tanstack/ai";
 import type { ModelCall } from "../model-turn";
+import {
+  withAtlassianScope,
+  type AtlassianCatalog,
+  type LocalToolHandler,
+  type ModelTool,
+} from "./atlassian";
 import { getFigma } from "./get-figma";
-import { getTicket } from "./get-ticket";
-import { readConfluence } from "./read-confluence";
-import { writeJiraCommand } from "./write-jira-command";
 import { read, write, edit } from "./fs";
 
-type ToolRegistration = {
-  definition: Pick<Tool, "name" | "description" | "inputSchema">;
-  handler: (input: unknown, context: ToolExecutionContext) => Promise<unknown>;
-};
+type Registration = Readonly<{
+  definition: ModelTool;
+  handler: LocalToolHandler;
+}>;
+type Catalog = ReadonlyMap<string, Registration>;
 
-const registrations: readonly ToolRegistration[] = [
-  {
-    definition: getFigma,
-    handler: async (input, context) =>
-      getFigma.execute!(getFigma.inputSchema.parse(input), context),
-  },
-  {
-    definition: getTicket,
-    handler: async (input, context) =>
-      getTicket.execute!(getTicket.inputSchema.parse(input), context),
-  },
-  {
-    definition: readConfluence,
-    handler: async (input, context) =>
-      readConfluence.execute!(readConfluence.inputSchema.parse(input), context),
-  },
-  {
-    definition: writeJiraCommand,
-    handler: async (input, context) =>
-      writeJiraCommand.execute!(writeJiraCommand.inputSchema.parse(input), context),
-  },
-  {
-    definition: read,
-    handler: async (input, context) => read.execute!(input, context),
-  },
-  {
-    definition: write,
-    handler: async (input, context) => write.execute!(input, context),
-  },
-  {
-    definition: edit,
-    handler: async (input, context) => edit.execute!(input, context),
-  },
-];
+export type RunTools = Readonly<{
+  getModelTools: () => Promise<ModelTool[]>;
+  executeTool: (call: ModelCall, context: ToolExecutionContext) => Promise<unknown>;
+}>;
 
-export const modelTools = registrations.map(({ definition }) => ({
-  name: definition.name,
-  description: definition.description,
-  inputSchema: convertSchemaToJsonSchema(definition.inputSchema),
-}));
+class ToolBoundaryError extends Error {}
 
-export async function executeTool(
-  call: ModelCall,
-  context: ToolExecutionContext,
-): Promise<unknown> {
-  const registration = registrations.find(({ definition }) => definition.name === call.name);
-  if (!registration) {
-    throw new Error("Unknown tool");
+function registration(
+  tool: Pick<Tool, "name" | "description" | "inputSchema">,
+  handler: Registration["handler"],
+): Registration {
+  const inputSchema = convertSchemaToJsonSchema(tool.inputSchema);
+  if (!inputSchema) {
+    throw new ToolBoundaryError("Tool schema is unavailable");
   }
-  return registration.handler(call.input, context);
+  return {
+    definition: { name: tool.name, description: tool.description, inputSchema },
+    handler,
+  };
+}
+
+const localCatalog: Catalog = new Map(
+  [
+    registration(getFigma, async (input, context) =>
+      getFigma.execute!(getFigma.inputSchema.parse(input), context),
+    ),
+    registration(read, async (input, context) => read.execute!(input, context)),
+    registration(write, async (input, context) => write.execute!(input, context)),
+    registration(edit, async (input, context) => edit.execute!(input, context)),
+  ].map((entry) => [entry.definition.name, entry]),
+);
+
+function mergeLocalDefinitions(remote: AtlassianCatalog): ModelTool[] {
+  const definitions = new Map([...localCatalog].map(([name, entry]) => [name, entry.definition]));
+  for (const [name, definition] of remote) {
+    if (definitions.has(name)) {
+      throw new ToolBoundaryError("Atlassian MCP catalog is invalid");
+    }
+    definitions.set(name, definition);
+  }
+  return [...definitions.values()];
+}
+
+export async function withRunTools<T>(use: (tools: RunTools) => Promise<T>): Promise<T> {
+  return withAtlassianScope((scope) =>
+    use({
+      getModelTools: () => scope.getModelTools(mergeLocalDefinitions),
+      executeTool: (call, context) =>
+        scope.executeTool(call, context, localCatalog.get(call.name)?.handler),
+    }),
+  );
 }

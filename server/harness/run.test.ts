@@ -6,7 +6,18 @@ import { test, mock } from "node:test";
 import { Pool } from "pg";
 import { DBOS } from "@dbos-inc/dbos-sdk";
 import { createReadTool, createWriteTool, createEditTool } from "@earendil-works/pi-coding-agent";
-import { getTicket } from "./tools/get-ticket";
+import { read } from "./tools/fs";
+import type { ModelTool } from "./tools/atlassian";
+import { withRunTools } from "./tools";
+import {
+  mcpFixture,
+  jiraSchema,
+  coreTools,
+  allTools,
+  fakeEmail,
+  fakeToken,
+  withMcpEnvironment,
+} from "./tools/mcp-fixture";
 import { eventResponse, parseCursor, parseRunBody } from "../chat";
 import { ChatClient, fetchServerSentEvents } from "@tanstack/ai-react";
 import { openaiCompatibleText } from "@tanstack/ai-openai/compatible";
@@ -33,6 +44,15 @@ import {
 } from "./run-store";
 
 const deferred = () => Promise.withResolvers<void>();
+const readSchema = convertSchemaToJsonSchema(read.inputSchema);
+assert.ok(readSchema);
+const readDefinitions: ModelTool[] = [
+  {
+    name: read.name,
+    description: read.description,
+    inputSchema: readSchema,
+  },
+];
 const baseline: UIMessage[] = [
   { id: "user-1", role: "user", parts: [{ type: "text", content: "Hello" }] },
 ];
@@ -246,22 +266,22 @@ const accepted: AcceptedRun = {
   messages: baseline,
   prompt: "offline",
   model: "deepseek-ai/DeepSeek-V4.1-Flash",
-  build: "durable-chat-loop-v2",
+  build: "durable-chat-loop-v4",
 };
 const toolTurn: Turn = {
   messages: baseline,
   calls: [
     {
       id: "tool-1",
-      name: "get_ticket",
-      arguments: '{"ticket":"TEST-1"}',
-      input: { ticket: "TEST-1" },
+      name: "read",
+      arguments: '{"path":"TEST-1"}',
+      input: { path: "TEST-1" },
     },
     {
       id: "tool-2",
-      name: "get_ticket",
-      arguments: '{"ticket":"TEST-2"}',
-      input: { ticket: "TEST-2" },
+      name: "read",
+      arguments: '{"path":"TEST-2"}',
+      input: { path: "TEST-2" },
     },
   ],
 };
@@ -288,18 +308,18 @@ test("reasoning-first and two native tool calls survive snapshots and model hist
   async function* provider(): AsyncGenerator<AdapterYieldChunk> {
     yield { type: EventType.REASONING_MESSAGE_CONTENT, messageId: "thought", delta: "thinking" };
     yield { type: EventType.TEXT_MESSAGE_START, messageId: "provider-message", role: "assistant" };
-    for (const [id, ticket] of [
+    for (const [id, path] of [
       ["provider-one", "TEST-1"],
       ["provider-two", "TEST-2"],
     ]) {
       yield {
         type: EventType.TOOL_CALL_START,
         toolCallId: id!,
-        toolCallName: "get_ticket",
+        toolCallName: "read",
         parentMessageId: "provider-message",
       };
-      yield { type: EventType.TOOL_CALL_ARGS, toolCallId: id!, delta: JSON.stringify({ ticket }) };
-      yield { type: EventType.TOOL_CALL_END, toolCallId: id!, input: { ticket } };
+      yield { type: EventType.TOOL_CALL_ARGS, toolCallId: id!, delta: JSON.stringify({ path }) };
+      yield { type: EventType.TOOL_CALL_END, toolCallId: id!, input: { path } };
     }
     yield { type: EventType.RUN_FINISHED, threadId: "thread", runId: "provider-run" };
   }
@@ -317,7 +337,7 @@ test("reasoning-first and two native tool calls survive snapshots and model hist
   );
   assert.deepEqual(
     result.calls.map((call) => call.input),
-    [{ ticket: "TEST-1" }, { ticket: "TEST-2" }],
+    [{ path: "TEST-1" }, { path: "TEST-2" }],
   );
   const processor = new StreamProcessor({ initialMessages: baseline });
   for (const event of events) {
@@ -399,12 +419,12 @@ test("tool-only reasoning, encrypted signatures, and provider metadata retain na
     yield {
       type: EventType.TOOL_CALL_START,
       toolCallId: "provider-tool",
-      toolCallName: "get_ticket",
+      toolCallName: "read",
     };
     yield {
       type: EventType.TOOL_CALL_ARGS,
       toolCallId: "provider-tool",
-      delta: '{"ticket":"T-1"}',
+      delta: '{"path":"T-1"}',
     };
     yield {
       type: EventType.TOOL_CALL_END,
@@ -414,7 +434,7 @@ test("tool-only reasoning, encrypted signatures, and provider metadata retain na
           threadId: "provider-thread",
           runId: "provider-run",
           toolCallId: "provider-tool",
-          input: { ticket: "T-1" },
+          input: { path: "T-1" },
         },
       },
     };
@@ -461,7 +481,7 @@ test("tool-only reasoning, encrypted signatures, and provider metadata retain na
       threadId: "provider-thread",
       runId: "provider-run",
       toolCallId: "provider-tool",
-      input: { ticket: "T-1" },
+      input: { path: "T-1" },
     },
   });
   let visible: UIMessage[] = [];
@@ -534,7 +554,7 @@ test("real compatible adapter reasoning-first and tool-only streams reach ChatCl
                 index: 0,
                 id: "native-call",
                 type: "function",
-                function: { name: "get_ticket", arguments: '{"ticket":' },
+                function: { name: "read", arguments: '{"path":' },
               },
             ],
           },
@@ -556,13 +576,7 @@ test("real compatible adapter reasoning-first and tool-only streams reach ChatCl
       stream: adapter.chatStream({
         model: "offline-model",
         messages: convertMessagesToModelMessages(baseline),
-        tools: [
-          {
-            name: getTicket.name,
-            description: getTicket.description,
-            inputSchema: convertSchemaToJsonSchema(getTicket.inputSchema),
-          },
-        ],
+        tools: readDefinitions,
         logger: resolveDebugOption(false),
       }),
       append: async (event) => {
@@ -573,9 +587,9 @@ test("real compatible adapter reasoning-first and tool-only streams reach ChatCl
     assert.deepEqual(turn.calls, [
       {
         id: "native-call",
-        name: "get_ticket",
-        arguments: '{"ticket":"TEST-1"}',
-        input: { ticket: "TEST-1" },
+        name: "read",
+        arguments: '{"path":"TEST-1"}',
+        input: { path: "TEST-1" },
       },
     ]);
     assert.equal(
@@ -652,11 +666,92 @@ test("real compatible adapter reasoning-first and tool-only streams reach ChatCl
   }
 });
 
+const representativeConfluenceSearch: ModelTool = {
+  name: "confluence_search",
+  description: "Representative Confluence search",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: { type: "string" },
+      limit: { type: "integer", default: 10, minimum: 1, maximum: 50 },
+      spaces_filter: { type: "string", default: null },
+    },
+    required: ["query"],
+  },
+};
+
+test("real compatible adapter accepts representative confluence_search optional-null arguments", async () => {
+  const definitions = [representativeConfluenceSearch];
+  const argumentsJson = '{"query":"space = SMAXH","limit":10,"spaces_filter":null}';
+  const adapter = openaiCompatibleText("offline-model", {
+    apiKey: "offline",
+    baseURL: "http://offline/v1",
+    fetch: async () =>
+      new Response(
+        [
+          {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "search-call",
+                      type: "function",
+                      function: { name: "confluence_search", arguments: argumentsJson },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          },
+          { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+        ]
+          .map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`)
+          .join("") + "data: [DONE]\n\n",
+        { headers: { "Content-Type": "text/event-stream" } },
+      ),
+  });
+  const events: StreamChunk[] = [];
+  const turn = await streamModelTurn({
+    messages: baseline,
+    stream: adapter.chatStream({
+      model: "offline-model",
+      messages: convertMessagesToModelMessages(baseline),
+      tools: definitions,
+      logger: resolveDebugOption(false),
+    }),
+    append: async (event) => {
+      events.push(event);
+    },
+  });
+  assert.deepEqual(turn.calls, [
+    {
+      id: "search-call",
+      name: "confluence_search",
+      arguments: argumentsJson,
+      input: { query: "space = SMAXH", limit: 10 },
+    },
+  ]);
+  const end = events.find((event) => event.type === EventType.TOOL_CALL_END);
+  assert.deepEqual(end?.metadata?.tanstack?.input, {
+    query: "space = SMAXH",
+    limit: 10,
+  });
+  const part = turn.messages.at(-1)?.parts.find((part) => part.type === "tool-call");
+  assert.equal(part?.arguments, argumentsJson);
+  assert.deepEqual(part?.input, { query: "space = SMAXH", limit: 10 });
+  assert.equal(part?.state, "input-complete");
+  assert.deepEqual(JSON.parse(JSON.stringify(turn)), turn);
+});
+
 test("large chunked tool arguments finish intact without model output byte limits", async () => {
-  const input = { ticket: "x".repeat(2_000_001) };
+  const input = { path: "x".repeat(2_000_001) };
   const argumentsJson = JSON.stringify(input);
   async function* provider(): AsyncGenerator<AdapterYieldChunk> {
-    yield { type: EventType.TOOL_CALL_START, toolCallId: "id", toolCallName: "get_ticket" };
+    yield { type: EventType.TOOL_CALL_START, toolCallId: "id", toolCallName: "read" };
     for (let offset = 0; offset < argumentsJson.length; offset += 64_000) {
       yield {
         type: EventType.TOOL_CALL_ARGS,
@@ -672,45 +767,60 @@ test("large chunked tool arguments finish intact without model output byte limit
     stream: provider(),
     append: async () => {},
   });
-  assert.deepEqual(result.calls, [
-    { id: "id", name: "get_ticket", arguments: argumentsJson, input },
-  ]);
+  assert.deepEqual(result.calls, [{ id: "id", name: "read", arguments: argumentsJson, input }]);
   const part = result.messages.at(-1)?.parts.find((part) => part.type === "tool-call");
   assert.equal(part?.arguments, argumentsJson);
   assert.deepEqual(part?.input, input);
   assert.equal(part?.state, "input-complete");
 });
 
-test("raw tool arguments cannot be replaced by a provider's normalized input", async () => {
-  async function* provider(): AsyncGenerator<AdapterYieldChunk> {
-    yield { type: EventType.TOOL_CALL_START, toolCallId: "id", toolCallName: "get_ticket" };
-    yield { type: EventType.TOOL_CALL_ARGS, toolCallId: "id", delta: '{"ticket":"TEST-1"}' };
-    yield { type: EventType.TOOL_CALL_END, toolCallId: "id", input: { ticket: "TEST-2" } };
-  }
-  await assert.rejects(
-    streamModelTurn({
+test("normalized tool input is trusted while original raw arguments remain intact", async () => {
+  const argumentsJson = '{ "path": "TEST-1", "offset": null }';
+  const input = { path: "TEST-2" };
+  for (const end of [{ input }, { metadata: { tanstack: { input } } }]) {
+    const events: StreamChunk[] = [];
+    const result = await streamModelTurn({
       messages: baseline,
-      stream: provider(),
-      append: async () => {},
-    }),
-    /disagrees/,
-  );
+      stream: (async function* (): AsyncGenerator<AdapterYieldChunk> {
+        yield { type: EventType.TOOL_CALL_START, toolCallId: "id", toolCallName: "read" };
+        yield { type: EventType.TOOL_CALL_ARGS, toolCallId: "id", delta: argumentsJson };
+        yield { type: EventType.TOOL_CALL_END, toolCallId: "id", ...end };
+        yield { type: EventType.RUN_FINISHED, threadId: "thread", runId: "provider-run" };
+      })(),
+      append: async (event) => {
+        events.push(event);
+      },
+    });
+    assert.deepEqual(result.calls, [{ id: "id", name: "read", arguments: argumentsJson, input }]);
+    const part = result.messages.at(-1)?.parts.find((part) => part.type === "tool-call");
+    assert.equal(part?.arguments, argumentsJson);
+    assert.deepEqual(part?.input, input);
+    assert.equal(part?.state, "input-complete");
+    const completed = events.at(-1);
+    assert.ok(completed?.type === EventType.TOOL_CALL_END);
+    assert.deepEqual(completed.metadata?.tanstack?.input, input);
+    assert.deepEqual(JSON.parse(JSON.stringify(result)), result);
+    assert.equal(
+      convertMessagesToModelMessages(result.messages).at(-1)?.toolCalls?.[0]?.function.arguments,
+      argumentsJson,
+    );
+  }
 });
 
 const toolStart: AdapterYieldChunk = {
   type: EventType.TOOL_CALL_START,
   toolCallId: "id",
-  toolCallName: "get_ticket",
+  toolCallName: "read",
 };
 const toolArgs: AdapterYieldChunk = {
   type: EventType.TOOL_CALL_ARGS,
   toolCallId: "id",
-  delta: '{"ticket":"TEST-1"}',
+  delta: '{"path":"TEST-1"}',
 };
 const toolEnd: AdapterYieldChunk = {
   type: EventType.TOOL_CALL_END,
   toolCallId: "id",
-  input: { ticket: "TEST-1" },
+  input: { path: "TEST-1" },
 };
 const providerFinish: AdapterYieldChunk = {
   type: EventType.RUN_FINISHED,
@@ -720,7 +830,7 @@ const providerFinish: AdapterYieldChunk = {
 const invalidStreams: { name: string; events: AdapterYieldChunk[]; error: RegExp }[] = [
   {
     name: "truncated JSON with plausible input",
-    events: [toolStart, { ...toolArgs, delta: '{"ticket":"TEST-1"' }, toolEnd, providerFinish],
+    events: [toolStart, { ...toolArgs, delta: '{"path":"TEST-1"' }, toolEnd, providerFinish],
     error: /JSON/,
   },
   ...["null", "1", '"text"', "[]"].map((delta) => ({
@@ -774,21 +884,6 @@ const invalidStreams: { name: string; events: AdapterYieldChunk[]; error: RegExp
     ],
     error: /upstream failure/,
   },
-  {
-    name: "declared null cannot hide behind metadata",
-    events: [
-      toolStart,
-      toolArgs,
-      { ...toolEnd, input: null, metadata: { tanstack: { input: { ticket: "TEST-1" } } } },
-      providerFinish,
-    ],
-    error: /disagrees/,
-  },
-  {
-    name: "mismatched declared input",
-    events: [toolStart, toolArgs, { ...toolEnd, input: { ticket: "TEST-2" } }, providerFinish],
-    error: /disagrees/,
-  },
 ];
 
 for (const { name, events, error } of invalidStreams) {
@@ -806,8 +901,8 @@ for (const { name, events, error } of invalidStreams) {
   });
 }
 
-test("get_figma optional-null normalization agrees while raw arguments remain intact", async () => {
-  const input = { fileKey: "file" };
+test("get_figma normalized input is retained while optional-null raw arguments remain intact", async () => {
+  const input = { target: "file" };
   const argumentsJson = JSON.stringify({ ...input, nodeId: null, depth: null, offset: null });
   const result = await streamModelTurn({
     messages: baseline,
@@ -827,6 +922,195 @@ test("get_figma optional-null normalization agrees while raw arguments remain in
     input,
   );
   assert.deepEqual(JSON.parse(JSON.stringify(result)), result);
+});
+
+test("real compatible adapter preserves native MCP schema advertisement and canonical HTTP arguments", async () => {
+  const fixture = mcpFixture();
+  const input = { issue_key: "TEST-1", expand: null };
+  const argumentsJson = JSON.stringify(input);
+  await withMcpEnvironment(
+    () =>
+      withRunTools(async (tools) => {
+        const definitions = await tools.getModelTools();
+        assert.deepEqual(
+          definitions.find((tool) => tool.name === "jira_get_issue")!.inputSchema,
+          jiraSchema,
+        );
+        const adapter = openaiCompatibleText("offline-model", {
+          apiKey: "offline",
+          baseURL: "http://offline/v1",
+          fetch: async () =>
+            new Response(
+              [
+                {
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {
+                        tool_calls: [
+                          {
+                            index: 0,
+                            id: "native-mcp-call",
+                            type: "function",
+                            function: { name: "jira_get_issue", arguments: argumentsJson },
+                          },
+                        ],
+                      },
+                      finish_reason: null,
+                    },
+                  ],
+                },
+                { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+              ]
+                .map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`)
+                .join("") + "data: [DONE]\n\n",
+              { headers: { "Content-Type": "text/event-stream" } },
+            ),
+        });
+        const result = await streamModelTurn({
+          messages: baseline,
+          stream: adapter.chatStream({
+            model: "offline-model",
+            messages: convertMessagesToModelMessages(baseline),
+            tools: definitions,
+            logger: resolveDebugOption(false),
+          }),
+          append: async () => {},
+        });
+        assert.deepEqual(result.calls, [
+          {
+            id: "native-mcp-call",
+            name: "jira_get_issue",
+            arguments: argumentsJson,
+            input: { issue_key: "TEST-1" },
+          },
+        ]);
+        assert.deepEqual(
+          await tools.executeTool(result.calls[0]!, {
+            toolCallId: "native-mcp-call",
+            emitCustomEvent: () => {},
+          }),
+          { issue: "TEST-1" },
+        );
+        assert.deepEqual(fixture.calls()[0]!.message.params, {
+          name: "jira_get_issue",
+          arguments: { issue_key: "TEST-1", update_history: false },
+        });
+      }),
+    true,
+    fixture,
+  );
+});
+
+test("representative confluence_search MCP catalog and real adapter dispatch canonical arguments", async () => {
+  const fixture = mcpFixture({
+    pages: [[...coreTools, representativeConfluenceSearch]],
+    rules: [
+      {
+        method: "tools/call",
+        name: "confluence_search",
+        result: { content: [{ type: "text", text: "Representative search result" }] },
+      },
+    ],
+  });
+  const argumentsJson = '{"query":"space = SMAXH","limit":10,"spaces_filter":null}';
+  await withMcpEnvironment(
+    () =>
+      withRunTools(async (tools) => {
+        const definitions = await tools.getModelTools();
+        assert.deepEqual(
+          definitions.find((tool) => tool.name === "confluence_search"),
+          representativeConfluenceSearch,
+        );
+        const adapter = openaiCompatibleText("offline-model", {
+          apiKey: "offline",
+          baseURL: "http://offline/v1",
+          fetch: async (_url, init) => {
+            const body = JSON.parse(String(init?.body)) as {
+              tools: { function: { name: string; strict: boolean } }[];
+            };
+            assert.equal(
+              body.tools.find((tool) => tool.function.name === "confluence_search")?.function
+                .strict,
+              true,
+            );
+            return new Response(
+              [
+                {
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {
+                        tool_calls: [
+                          {
+                            index: 0,
+                            id: "representative-mcp-call",
+                            type: "function",
+                            function: { name: "confluence_search", arguments: argumentsJson },
+                          },
+                        ],
+                      },
+                      finish_reason: null,
+                    },
+                  ],
+                },
+                { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+              ]
+                .map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`)
+                .join("") + "data: [DONE]\n\n",
+              { headers: { "Content-Type": "text/event-stream" } },
+            );
+          },
+        });
+        const events: StreamChunk[] = [];
+        const turn = await streamModelTurn({
+          messages: baseline,
+          stream: adapter.chatStream({
+            model: "offline-model",
+            messages: convertMessagesToModelMessages(baseline),
+            tools: definitions,
+            logger: resolveDebugOption(false),
+          }),
+          append: async (event) => {
+            events.push(event);
+          },
+        });
+        assert.deepEqual(turn.calls, [
+          {
+            id: "representative-mcp-call",
+            name: "confluence_search",
+            arguments: argumentsJson,
+            input: { query: "space = SMAXH", limit: 10 },
+          },
+        ]);
+        assert.deepEqual(
+          events.find((event) => event.type === EventType.TOOL_CALL_END)?.metadata?.tanstack?.input,
+          { query: "space = SMAXH", limit: 10 },
+        );
+        const part = turn.messages.at(-1)?.parts.find((part) => part.type === "tool-call");
+        assert.equal(part?.arguments, argumentsJson);
+        assert.deepEqual(part?.input, { query: "space = SMAXH", limit: 10 });
+        assert.deepEqual(JSON.parse(JSON.stringify(turn)), turn);
+        assert.deepEqual(
+          await tools.executeTool(turn.calls[0]!, {
+            toolCallId: "representative-mcp-call",
+            emitCustomEvent: () => {},
+          }),
+          "Representative search result",
+        );
+        assert.deepEqual(
+          fixture.calls().map((request) => request.message!.params),
+          [
+            {
+              name: "confluence_search",
+              arguments: { query: "space = SMAXH", limit: 10 },
+            },
+          ],
+        );
+      }),
+    true,
+    fixture,
+  );
 });
 
 test("AG-UI boundary ignores forged history, requires revision, and keeps run identity", () => {
@@ -1096,15 +1380,20 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
     const released = deferred();
     tail = released.promise;
     await previous;
-    const saved = structuredClone({ threads, runs, events });
+    let saved: { threads: typeof threads; runs: typeof runs; events: typeof events } | undefined =
+      structuredClone({ threads, runs, events });
     return {
       query: async (config: string | { text: string }, values?: unknown[]) => {
         if (config === "rollback" || (typeof config !== "string" && config.text === "rollback")) {
+          assert.ok(saved);
           ({ threads, runs, events } = saved);
         }
         return query(config, values);
       },
-      release: () => released.resolve(),
+      release: () => {
+        saved = undefined;
+        released.resolve();
+      },
     };
   });
   const queried = mock.method(pool, "query", query);
@@ -1273,18 +1562,18 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
       ...input,
       runId: "replayed-loop",
       baseRevision: 1,
-      message: { id: "user-2", text: "Read tickets" },
+      message: { id: "user-2", text: "Read files" },
     });
     process.env.MODEL_API_KEY = "offline";
     const { deepinfra } = await import("./provider");
     const adapter = deepinfra(nextRun.model);
     const external: string[] = [];
-    const ticketTool = getTicket as typeof getTicket & {
-      execute: NonNullable<typeof getTicket.execute>;
+    const readTool = read as typeof read & {
+      execute: NonNullable<typeof read.execute>;
     };
-    const tool = mock.method(ticketTool, "execute", async (input: { ticket: string }) => {
+    const tool = mock.method(readTool, "execute", async (input: { path: string }) => {
       assert.ok(cached.has("model:0"));
-      external.push(input.ticket);
+      external.push(input.path);
       throw new Error(`Offline result ${external.length}`);
     });
     let modelCalls = 0;
@@ -1300,15 +1589,7 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
       }) {
         assert.deepEqual(
           options.tools?.map((tool) => tool.name),
-          [
-            "get_figma",
-            "get_ticket",
-            "read_confluence",
-            "write_jira_command",
-            "read",
-            "write",
-            "edit",
-          ],
+          ["get_figma", "read", "write", "edit"],
         );
         assert.ok(options.tools?.every((tool) => !("execute" in tool) && tool.inputSchema));
         if (rejectedStream) {
@@ -1542,6 +1823,7 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
       assert.equal(largeEvents().length, beforeTerminal);
       assert.equal(threads.get(largeThread)!.revision, 1);
 
+      tool.mock.restore();
       const directory = await mkdtemp(join(tmpdir(), "chum-bucket-run-fs-"));
       try {
         const path = join(directory, "nested", "file.txt");
@@ -1583,15 +1865,7 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
         }) {
           assert.deepEqual(
             options.tools?.map((tool) => tool.name),
-            [
-              "get_figma",
-              "get_ticket",
-              "read_confluence",
-              "write_jira_command",
-              "read",
-              "write",
-              "edit",
-            ],
+            ["get_figma", "read", "write", "edit"],
           );
           assert.ok(options.tools?.every((tool) => !("execute" in tool) && tool.inputSchema));
           for (const native of [
@@ -1700,6 +1974,359 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
       } finally {
         await rm(directory, { recursive: true, force: true });
       }
+      const fixture = mcpFixture({
+        pages: [allTools],
+        rules: [
+          {
+            method: "tools/call",
+            name: "jira_search",
+            arguments: { jql: "invalid" },
+            result: { isError: true, content: [{ type: "text", text: "Permission denied" }] },
+          },
+          {
+            method: "tools/call",
+            name: "confluence_get_page",
+            result: { content: [{ type: "text", text: `Unsafe ${fakeToken}` }] },
+          },
+        ],
+      });
+      await withMcpEnvironment(
+        async () => {
+          const mcpThread = "7924517c-815a-4c26-9022-5101f3ed5c84";
+          threads.set(mcpThread, { id: mcpThread, messages: [], revision: 0, active_run_id: null });
+          const mcpRun = await acceptRun({
+            ...input,
+            threadId: mcpThread,
+            runId: "native-mcp-checkpoints",
+            message: { id: "mcp-user", text: "Read native Atlassian tools" },
+          });
+          const nativeCalls = [
+            { id: "mcp-search", name: "jira_search", input: { jql: "project = TEST" } },
+            {
+              id: "mcp-issue",
+              name: "jira_get_issue",
+              input: { issue_key: "TEST-1" },
+            },
+            {
+              id: "mcp-error",
+              name: "jira_search",
+              input: { jql: "invalid" },
+            },
+            {
+              id: "mcp-secret",
+              name: "confluence_get_page",
+              input: { page_id: "123" },
+            },
+          ];
+          const advertised: unknown[] = [];
+          let nativeModelCalls = 0;
+          provider.mock.mockImplementation(async function* (options: {
+            tools?: { name: string; description: string; inputSchema: unknown }[];
+            messages: ReturnType<typeof convertMessagesToModelMessages>;
+          }) {
+            nativeModelCalls++;
+            advertised.push(structuredClone(options.tools));
+            assert.deepEqual(
+              options.tools?.map((tool) => tool.name),
+              [
+                "get_figma",
+                "read",
+                "write",
+                "edit",
+                "jira_get_issue",
+                "jira_search",
+                "confluence_get_page",
+                "confluence_search",
+                "confluence_get_comments",
+              ],
+            );
+            assert.deepEqual(
+              options.tools?.find((tool) => tool.name === "jira_get_issue")?.inputSchema,
+              jiraSchema,
+            );
+            assert.ok(options.tools?.every((tool) => !("execute" in tool)));
+            if (!options.messages.some((message) => message.role === "tool")) {
+              yield {
+                type: EventType.TEXT_MESSAGE_START,
+                messageId: "mcp-assistant",
+                role: "assistant",
+              };
+              for (const call of nativeCalls) {
+                yield {
+                  type: EventType.TOOL_CALL_START,
+                  toolCallId: call.id,
+                  toolCallName: call.name,
+                };
+                yield {
+                  type: EventType.TOOL_CALL_ARGS,
+                  toolCallId: call.id,
+                  delta: JSON.stringify(call.input),
+                };
+                yield { type: EventType.TOOL_CALL_END, toolCallId: call.id, input: call.input };
+              }
+              yield providerFinish;
+            } else {
+              yield* textStream();
+            }
+          });
+          cached.clear();
+          try {
+            await executeRun(mcpRun);
+            const persisted = events
+              .filter((row) => row.run_id === mcpRun.runId)
+              .map((row) => row.payload as StreamChunk);
+            const results = persisted.filter((event) => event.type === EventType.TOOL_CALL_RESULT);
+            assert.deepEqual(
+              results.map((event) => event.toolCallId),
+              nativeCalls.map((call) => call.id),
+            );
+            assert.deepEqual(JSON.parse(results[1]!.content), { issue: "TEST-1" });
+            assert.match(JSON.parse(results[2]!.content).error, /Atlassian MCP tool failed/);
+            assert.deepEqual(JSON.parse(results[3]!.content), {
+              error: "Tool data contains configured Atlassian credentials",
+            });
+            assert.deepEqual(
+              results.map((event) => event.metadata),
+              [
+                { tanstack: { state: "output-available" } },
+                { tanstack: { state: "output-available" } },
+                { tanstack: { state: "output-error" } },
+                { tanstack: { state: "output-error" } },
+              ],
+            );
+            assert.deepEqual(
+              fixture.calls().map((request) => request.message!.params),
+              [
+                { name: "jira_search", arguments: { jql: "project = TEST" } },
+                {
+                  name: "jira_get_issue",
+                  arguments: { issue_key: "TEST-1", update_history: false },
+                },
+                { name: "jira_search", arguments: { jql: "invalid" } },
+                { name: "confluence_get_page", arguments: { page_id: "123" } },
+              ],
+            );
+            assert.equal(fixture.sessions.length, 3);
+            assert.equal(nativeModelCalls, 2);
+            assert.equal(runs.get(mcpRun.runId)!.state, "succeeded");
+            assert.equal(threads.get(mcpThread)!.revision, 1);
+            const saved = threads.get(mcpThread)!.messages as UIMessage[];
+            assert.deepEqual(
+              saved
+                .flatMap((message) => message.parts)
+                .filter((part) => part.type === "tool-result")
+                .map((part) => part.content),
+              results.map((result) => result.content),
+            );
+            const durableData = JSON.stringify({
+              run: runs.get(mcpRun.runId),
+              events: persisted,
+              checkpoints: [...cached],
+              advertised,
+            });
+            for (const secret of [
+              fakeToken,
+              `${fakeEmail}:${fakeToken}`,
+              Buffer.from(`${fakeEmail}:${fakeToken}`).toString("base64"),
+            ]) {
+              assert.equal(durableData.includes(secret), false);
+            }
+            await fixture.assertClosed();
+            const beforeReplay = fixture.requests.length;
+            const eventsBeforeReplay = events.length;
+            await executeRun(mcpRun);
+            assert.equal(fixture.requests.length, beforeReplay);
+            assert.equal(events.length, eventsBeforeReplay);
+            assert.equal(nativeModelCalls, 2);
+            assert.deepEqual(threads.get(mcpThread)!.messages, saved);
+
+            const gapThread = "e3f930ba-c52b-49df-af9b-14b04498737b";
+            threads.set(gapThread, {
+              id: gapThread,
+              messages: [],
+              revision: 0,
+              active_run_id: null,
+            });
+            const gapRun = await acceptRun({
+              ...input,
+              threadId: gapThread,
+              runId: "mcp-read-checkpoint-gap",
+              message: { id: "mcp-gap-user", text: "Read a synthetic issue" },
+            });
+            cached.clear();
+            gaps.add("tool:0:0");
+            provider.mock.mockImplementation(async function* (options: {
+              messages: ReturnType<typeof convertMessagesToModelMessages>;
+            }) {
+              if (!options.messages.some((message) => message.role === "tool")) {
+                const input = { issue_key: "TEST-1" };
+                yield {
+                  ...toolStart,
+                  toolCallId: "mcp-gap",
+                  toolCallName: "jira_get_issue",
+                };
+                yield { ...toolArgs, toolCallId: "mcp-gap", delta: JSON.stringify(input) };
+                yield { ...toolEnd, toolCallId: "mcp-gap", input };
+                yield providerFinish;
+              } else {
+                yield* textStream();
+              }
+            });
+            const beforeGap = fixture.calls().length;
+            await assert.rejects(executeRun(gapRun), /Uncheckpointed tool:0:0/);
+            assert.equal(cached.has("model:0"), true);
+            assert.equal(cached.has("tool:0:0"), false);
+            await executeRun(gapRun);
+            assert.deepEqual(
+              fixture
+                .calls()
+                .slice(beforeGap)
+                .map((request) => request.message!.params),
+              [
+                {
+                  name: "jira_get_issue",
+                  arguments: { issue_key: "TEST-1", update_history: false },
+                },
+                {
+                  name: "jira_get_issue",
+                  arguments: { issue_key: "TEST-1", update_history: false },
+                },
+              ],
+            );
+            const afterGap = fixture.requests.length;
+            await executeRun(gapRun);
+            assert.equal(fixture.requests.length, afterGap);
+            assert.equal(threads.get(gapThread)!.revision, 1);
+          } finally {
+            await fixture.assertClosed();
+          }
+        },
+        true,
+        fixture,
+      );
+
+      const limitFixture = mcpFixture({ pages: [coreTools] });
+      await withMcpEnvironment(
+        async () => {
+          const limitThread = "d5b0a14a-5218-47fb-ad6a-4bf89731c1a6";
+          threads.set(limitThread, {
+            id: limitThread,
+            messages: [],
+            revision: 0,
+            active_run_id: null,
+          });
+          const limitRun = await acceptRun({
+            ...input,
+            threadId: limitThread,
+            runId: "mcp-turn-limit",
+            message: { id: "mcp-limit-user", text: "Never finish" },
+          });
+          let turns = 0;
+          provider.mock.mockImplementation(async function* () {
+            const id = `limit-${turns++}`;
+            const input = { issue_key: "TEST-1" };
+            yield { ...toolStart, toolCallId: id, toolCallName: "jira_get_issue" };
+            yield { ...toolArgs, toolCallId: id, delta: JSON.stringify(input) };
+            yield { ...toolEnd, toolCallId: id, input };
+            yield providerFinish;
+          });
+          cached.clear();
+          try {
+            await assert.rejects(executeRun(limitRun), /Model iteration limit exceeded/);
+            assert.equal(turns, 20);
+            assert.equal(limitFixture.calls().length, 20);
+            assert.equal(limitFixture.sessions.length, 1);
+            await limitFixture.assertClosed();
+            assert.equal(cached.has("finish"), false);
+            assert.equal(runs.get(limitRun.runId)!.state, "pending");
+          } finally {
+            await limitFixture.assertClosed();
+          }
+        },
+        true,
+        limitFixture,
+      );
+
+      const legacyThread = "58b47547-a3b2-4f61-9d92-f29cf9f6cb83";
+      threads.set(legacyThread, {
+        id: legacyThread,
+        messages: [],
+        revision: 0,
+        active_run_id: null,
+      });
+      const legacyRun = await acceptRun({
+        ...input,
+        threadId: legacyThread,
+        runId: "official-v3-saved-checkpoint",
+        message: { id: "official-user", text: "Resume official Jira read" },
+      });
+      (legacyRun as unknown as Record<string, unknown>).build = "durable-chat-loop-v3";
+      (runs.get(legacyRun.runId)!.accepted as Record<string, unknown>).build =
+        "durable-chat-loop-v3";
+      const legacyInput = { cloudId: "offline-cloud-id", issueIdOrKey: "TEST-1" };
+      const legacyCall = {
+        id: "official-v3-call",
+        name: "getJiraIssue",
+        arguments: JSON.stringify(legacyInput),
+        input: legacyInput,
+      };
+      const legacyProcessor = new StreamProcessor({
+        initialMessages: structuredClone(legacyRun.messages),
+      });
+      legacyProcessor.processChunk({
+        type: EventType.TOOL_CALL_START,
+        toolCallId: legacyCall.id,
+        toolCallName: legacyCall.name,
+      });
+      legacyProcessor.processChunk({
+        type: EventType.TOOL_CALL_ARGS,
+        toolCallId: legacyCall.id,
+        delta: legacyCall.arguments,
+      });
+      legacyProcessor.processChunk({
+        type: EventType.TOOL_CALL_END,
+        toolCallId: legacyCall.id,
+        input: legacyInput,
+      });
+      const savedOfficialTurn: Turn = {
+        messages: legacyProcessor.getMessages(),
+        calls: [legacyCall],
+      };
+      cached.clear();
+      gaps.clear();
+      cached.set("model:0", savedOfficialTurn);
+      provider.mock.mockImplementation(async function* () {
+        yield* textStream();
+      });
+      const legacyFixture = mcpFixture();
+      await withMcpEnvironment(
+        async () => {
+          const beforeLegacyEvents = events.length;
+          const beforeLegacySteps = checkpoints.mock.callCount();
+          const failure = await executeRun(legacyRun).then(
+            () => undefined,
+            (error: Error) => error,
+          );
+          const persistedResults = events
+            .slice(beforeLegacyEvents)
+            .map((row) => row.payload as StreamChunk)
+            .filter((event) => event.type === EventType.TOOL_CALL_RESULT);
+          assert.deepEqual(
+            persistedResults,
+            [],
+            "Old v3 checkpoint must not persist native-dispatch errors",
+          );
+          assert.match(failure?.message ?? "Run resolved", /Incompatible run build/);
+          assert.equal(checkpoints.mock.callCount(), beforeLegacySteps);
+          assert.deepEqual(cached.get("model:0"), savedOfficialTurn);
+          assert.equal(cached.has("tool:0:0"), false);
+          assert.equal(runs.get(legacyRun.runId)!.state, "pending");
+          assert.equal(threads.get(legacyThread)!.active_run_id, legacyRun.runId);
+          assert.deepEqual(legacyFixture.sessions, []);
+        },
+        true,
+        legacyFixture,
+      );
     } finally {
       checkpoints.mock.restore();
       provider.mock.restore();
@@ -1713,14 +2340,19 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
       message: { id: "user-3", text: "Old build" },
     });
     const oldRow = runs.get(oldRun.runId)!;
-    (oldRow.accepted as Record<string, unknown>).build = "durable-chat-stream-v1";
     statuses.delete(oldRun.runId);
     const beforeOldStart = started.length;
-    await reconcileRuns();
-    assert.equal(started.length, beforeOldStart);
-    await assert.rejects(acceptRun(oldRow.request as typeof input), /Incompatible run build/);
-    await assert.rejects(executeRun(oldRow.accepted as AcceptedRun), /Incompatible run build/);
-    assert.equal(threads.get(oldRun.threadId)!.active_run_id, oldRun.runId);
+    const beforeOldEvents = events.length;
+    for (const legacyBuild of ["durable-chat-loop-v3", "durable-chat-loop-v2"]) {
+      (oldRow.accepted as Record<string, unknown>).build = legacyBuild;
+      await reconcileRuns();
+      assert.equal(started.length, beforeOldStart);
+      await assert.rejects(acceptRun(oldRow.request as typeof input), /Incompatible run build/);
+      await assert.rejects(executeRun(oldRow.accepted as AcceptedRun), /Incompatible run build/);
+      assert.equal(oldRow.state, "pending");
+      assert.equal(threads.get(oldRun.threadId)!.active_run_id, oldRun.runId);
+      assert.equal(events.length, beforeOldEvents);
+    }
   } finally {
     start.mock.restore();
     status.mock.restore();

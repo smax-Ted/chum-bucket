@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
 import {
   EventType,
   StreamProcessor,
@@ -19,36 +18,9 @@ type ModelStream = {
   stream: AsyncIterable<AdapterYieldChunk>;
   append: (event: StreamChunk) => Promise<void>;
 };
-type ToolCallEnd = Extract<StreamChunk, { type: "TOOL_CALL_END" }>;
 
 export function snapshot(messages: UIMessage[]): StreamChunk {
   return { type: EventType.MESSAGES_SNAPSHOT, messages: uiMessagesToWire(messages) };
-}
-
-function canonicalToolInput(
-  call: Pick<ModelCall, "name" | "arguments">,
-  event: ToolCallEnd,
-): unknown {
-  const parsed: unknown = JSON.parse(call.arguments);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Invalid tool arguments");
-  }
-  const adjusted = { ...parsed } as Record<string, unknown>;
-  if (call.name === "get_figma") {
-    for (const key of ["nodeId", "depth", "offset"]) {
-      if (adjusted[key] === null) {
-        delete adjusted[key];
-      }
-    }
-  }
-  const declared =
-    event.input !== undefined
-      ? event.input
-      : (event.metadata as { tanstack?: { input?: unknown } } | undefined)?.tanstack?.input;
-  if (!isDeepStrictEqual(adjusted, declared)) {
-    throw new Error("Tool input disagrees with arguments");
-  }
-  return declared;
 }
 
 export async function streamModelTurn(input: ModelStream): Promise<Turn> {
@@ -93,7 +65,10 @@ export async function streamModelTurn(input: ModelStream): Promise<Turn> {
             throw new Error("Invalid tool lifecycle");
           }
           if (event.type === "TOOL_CALL_END") {
-            canonicalToolInput(call, event);
+            const parsed: unknown = JSON.parse(call.arguments);
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+              throw new Error("Invalid tool arguments");
+            }
           }
         }
         await input.append(event);
