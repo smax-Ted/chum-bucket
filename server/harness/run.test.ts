@@ -8,7 +8,7 @@ import { DBOS } from "@dbos-inc/dbos-sdk";
 import { createReadTool, createWriteTool, createEditTool } from "@earendil-works/pi-coding-agent";
 import { read } from "./tools/fs";
 import type { ModelTool } from "./tools/atlassian";
-import { withRunTools } from "./tools";
+import { withRunTools, type RunTools } from "./tools";
 import {
   mcpFixture,
   jiraSchema,
@@ -56,6 +56,37 @@ const readDefinitions: ModelTool[] = [
 const baseline: UIMessage[] = [
   { id: "user-1", role: "user", parts: [{ type: "text", content: "Hello" }] },
 ];
+let runDiscoverySequence = 0;
+async function discoveryHistory(tools: RunTools, toolNames: string[]): Promise<UIMessage[]> {
+  const id = `run-discovery-${++runDiscoverySequence}`;
+  const argumentsText = JSON.stringify({ toolNames });
+  const output = await tools.executeTool(
+    [],
+    { id, name: "discover_atlassian_tools", arguments: argumentsText, input: { toolNames } },
+    { toolCallId: id, emitCustomEvent: () => {} },
+  );
+  return [
+    {
+      id: `${id}-message`,
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-call",
+          id,
+          name: "discover_atlassian_tools",
+          arguments: argumentsText,
+          state: "complete",
+        },
+        {
+          type: "tool-result",
+          toolCallId: id,
+          content: JSON.stringify(output),
+          state: "complete",
+        },
+      ],
+    },
+  ];
+}
 
 async function* textStream(wait?: Promise<void>): AsyncGenerator<AdapterYieldChunk> {
   yield { type: EventType.RUN_STARTED, threadId: "provider-thread", runId: "provider-run" };
@@ -266,7 +297,7 @@ const accepted: AcceptedRun = {
   messages: baseline,
   prompt: "offline",
   model: "deepseek-ai/DeepSeek-V4.1-Flash",
-  build: "durable-chat-loop-v4",
+  build: "durable-chat-loop-v5",
 };
 const toolTurn: Turn = {
   messages: baseline,
@@ -931,7 +962,8 @@ test("real compatible adapter preserves native MCP schema advertisement and cano
   await withMcpEnvironment(
     () =>
       withRunTools(async (tools) => {
-        const definitions = await tools.getModelTools();
+        const history = await discoveryHistory(tools, ["jira_get_issue"]);
+        const definitions = await tools.getModelTools(history);
         assert.deepEqual(
           definitions.find((tool) => tool.name === "jira_get_issue")!.inputSchema,
           jiraSchema,
@@ -986,7 +1018,7 @@ test("real compatible adapter preserves native MCP schema advertisement and cano
           },
         ]);
         assert.deepEqual(
-          await tools.executeTool(result.calls[0]!, {
+          await tools.executeTool(history, result.calls[0]!, {
             toolCallId: "native-mcp-call",
             emitCustomEvent: () => {},
           }),
@@ -1017,7 +1049,8 @@ test("representative confluence_search MCP catalog and real adapter dispatch can
   await withMcpEnvironment(
     () =>
       withRunTools(async (tools) => {
-        const definitions = await tools.getModelTools();
+        const history = await discoveryHistory(tools, ["confluence_search"]);
+        const definitions = await tools.getModelTools(history);
         assert.deepEqual(
           definitions.find((tool) => tool.name === "confluence_search"),
           representativeConfluenceSearch,
@@ -1092,7 +1125,7 @@ test("representative confluence_search MCP catalog and real adapter dispatch can
         assert.deepEqual(part?.input, { query: "space = SMAXH", limit: 10 });
         assert.deepEqual(JSON.parse(JSON.stringify(turn)), turn);
         assert.deepEqual(
-          await tools.executeTool(turn.calls[0]!, {
+          await tools.executeTool(history, turn.calls[0]!, {
             toolCallId: "representative-mcp-call",
             emitCustomEvent: () => {},
           }),
@@ -2018,6 +2051,9 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
               input: { page_id: "123" },
             },
           ];
+          const discoveryInput = {
+            toolNames: ["jira_search", "jira_get_issue", "confluence_get_page"],
+          };
           const advertised: unknown[] = [];
           let nativeModelCalls = 0;
           provider.mock.mockImplementation(async function* (options: {
@@ -2026,31 +2062,50 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
           }) {
             nativeModelCalls++;
             advertised.push(structuredClone(options.tools));
-            assert.deepEqual(
-              options.tools?.map((tool) => tool.name),
-              [
-                "get_figma",
-                "read",
-                "write",
-                "edit",
-                "jira_get_issue",
-                "jira_search",
-                "confluence_get_page",
-                "confluence_search",
-                "confluence_get_comments",
-              ],
-            );
-            assert.deepEqual(
-              options.tools?.find((tool) => tool.name === "jira_get_issue")?.inputSchema,
-              jiraSchema,
-            );
-            assert.ok(options.tools?.every((tool) => !("execute" in tool)));
-            if (!options.messages.some((message) => message.role === "tool")) {
+            assert.ok(options.tools?.every((tool) => !("execute" in tool) && tool.inputSchema));
+            const toolIds = options.messages
+              .filter((message) => message.role === "tool")
+              .map((message) => message.toolCallId);
+            if (!toolIds.length) {
+              assert.deepEqual(
+                options.tools?.map((tool) => tool.name),
+                ["get_figma", "read", "write", "edit", "discover_atlassian_tools"],
+              );
               yield {
                 type: EventType.TEXT_MESSAGE_START,
                 messageId: "mcp-assistant",
                 role: "assistant",
               };
+              yield {
+                ...toolStart,
+                toolCallId: "mcp-discovery",
+                toolCallName: "discover_atlassian_tools",
+              };
+              yield {
+                ...toolArgs,
+                toolCallId: "mcp-discovery",
+                delta: JSON.stringify(discoveryInput),
+              };
+              yield { ...toolEnd, toolCallId: "mcp-discovery", input: discoveryInput };
+              yield providerFinish;
+            } else if (!toolIds.some((id) => nativeCalls.some((call) => call.id === id))) {
+              assert.deepEqual(
+                options.tools?.map((tool) => tool.name),
+                [
+                  "get_figma",
+                  "read",
+                  "write",
+                  "edit",
+                  "jira_get_issue",
+                  "jira_search",
+                  "confluence_get_page",
+                  "discover_atlassian_tools",
+                ],
+              );
+              assert.deepEqual(
+                options.tools?.find((tool) => tool.name === "jira_get_issue")?.inputSchema,
+                jiraSchema,
+              );
               for (const call of nativeCalls) {
                 yield {
                   type: EventType.TOOL_CALL_START,
@@ -2078,16 +2133,23 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
             const results = persisted.filter((event) => event.type === EventType.TOOL_CALL_RESULT);
             assert.deepEqual(
               results.map((event) => event.toolCallId),
-              nativeCalls.map((call) => call.id),
+              ["mcp-discovery", ...nativeCalls.map((call) => call.id)],
             );
-            assert.deepEqual(JSON.parse(results[1]!.content), { issue: "TEST-1" });
-            assert.match(JSON.parse(results[2]!.content).error, /Atlassian MCP tool failed/);
-            assert.deepEqual(JSON.parse(results[3]!.content), {
+            assert.deepEqual(
+              (JSON.parse(results[0]!.content) as { tools: ModelTool[] }).tools.map(
+                (tool) => tool.name,
+              ),
+              discoveryInput.toolNames,
+            );
+            assert.deepEqual(JSON.parse(results[2]!.content), { issue: "TEST-1" });
+            assert.match(JSON.parse(results[3]!.content).error, /Atlassian MCP tool failed/);
+            assert.deepEqual(JSON.parse(results[4]!.content), {
               error: "Tool data contains configured Atlassian credentials",
             });
             assert.deepEqual(
               results.map((event) => event.metadata),
               [
+                { tanstack: { state: "output-available" } },
                 { tanstack: { state: "output-available" } },
                 { tanstack: { state: "output-available" } },
                 { tanstack: { state: "output-error" } },
@@ -2107,7 +2169,7 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
               ],
             );
             assert.equal(fixture.sessions.length, 3);
-            assert.equal(nativeModelCalls, 2);
+            assert.equal(nativeModelCalls, 3);
             assert.equal(runs.get(mcpRun.runId)!.state, "succeeded");
             assert.equal(threads.get(mcpThread)!.revision, 1);
             const saved = threads.get(mcpThread)!.messages as UIMessage[];
@@ -2137,7 +2199,7 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
             await executeRun(mcpRun);
             assert.equal(fixture.requests.length, beforeReplay);
             assert.equal(events.length, eventsBeforeReplay);
-            assert.equal(nativeModelCalls, 2);
+            assert.equal(nativeModelCalls, 3);
             assert.deepEqual(threads.get(mcpThread)!.messages, saved);
 
             const gapThread = "e3f930ba-c52b-49df-af9b-14b04498737b";
@@ -2154,28 +2216,44 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
               message: { id: "mcp-gap-user", text: "Read a synthetic issue" },
             });
             cached.clear();
-            gaps.add("tool:0:0");
+            gaps.add("tool:0:1");
             provider.mock.mockImplementation(async function* (options: {
               messages: ReturnType<typeof convertMessagesToModelMessages>;
             }) {
-              if (!options.messages.some((message) => message.role === "tool")) {
-                const input = { issue_key: "TEST-1" };
-                yield {
-                  ...toolStart,
-                  toolCallId: "mcp-gap",
-                  toolCallName: "jira_get_issue",
-                };
-                yield { ...toolArgs, toolCallId: "mcp-gap", delta: JSON.stringify(input) };
-                yield { ...toolEnd, toolCallId: "mcp-gap", input };
-                yield providerFinish;
-              } else {
+              const toolIds = options.messages
+                .filter((message) => message.role === "tool")
+                .map((message) => message.toolCallId);
+              if (toolIds.includes("mcp-gap")) {
                 yield* textStream();
+                return;
               }
+              const discoveryInput = { toolNames: ["jira_get_issue"] };
+              yield {
+                ...toolStart,
+                toolCallId: "mcp-gap-discovery",
+                toolCallName: "discover_atlassian_tools",
+              };
+              yield {
+                ...toolArgs,
+                toolCallId: "mcp-gap-discovery",
+                delta: JSON.stringify(discoveryInput),
+              };
+              yield { ...toolEnd, toolCallId: "mcp-gap-discovery", input: discoveryInput };
+              const input = { issue_key: "TEST-1" };
+              yield {
+                ...toolStart,
+                toolCallId: "mcp-gap",
+                toolCallName: "jira_get_issue",
+              };
+              yield { ...toolArgs, toolCallId: "mcp-gap", delta: JSON.stringify(input) };
+              yield { ...toolEnd, toolCallId: "mcp-gap", input };
+              yield providerFinish;
             });
             const beforeGap = fixture.calls().length;
-            await assert.rejects(executeRun(gapRun), /Uncheckpointed tool:0:0/);
+            await assert.rejects(executeRun(gapRun), /Uncheckpointed tool:0:1/);
             assert.equal(cached.has("model:0"), true);
-            assert.equal(cached.has("tool:0:0"), false);
+            assert.equal(cached.has("tool:0:0"), true);
+            assert.equal(cached.has("tool:0:1"), false);
             await executeRun(gapRun);
             assert.deepEqual(
               fixture
@@ -2224,6 +2302,20 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
           let turns = 0;
           provider.mock.mockImplementation(async function* () {
             const id = `limit-${turns++}`;
+            if (turns === 1) {
+              const input = { toolNames: ["jira_get_issue"] };
+              yield {
+                ...toolStart,
+                toolCallId: "limit-discovery",
+                toolCallName: "discover_atlassian_tools",
+              };
+              yield {
+                ...toolArgs,
+                toolCallId: "limit-discovery",
+                delta: JSON.stringify(input),
+              };
+              yield { ...toolEnd, toolCallId: "limit-discovery", input };
+            }
             const input = { issue_key: "TEST-1" };
             yield { ...toolStart, toolCallId: id, toolCallName: "jira_get_issue" };
             yield { ...toolArgs, toolCallId: id, delta: JSON.stringify(input) };
@@ -2343,7 +2435,11 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
     statuses.delete(oldRun.runId);
     const beforeOldStart = started.length;
     const beforeOldEvents = events.length;
-    for (const legacyBuild of ["durable-chat-loop-v3", "durable-chat-loop-v2"]) {
+    for (const legacyBuild of [
+      "durable-chat-loop-v4",
+      "durable-chat-loop-v3",
+      "durable-chat-loop-v2",
+    ]) {
       (oldRow.accepted as Record<string, unknown>).build = legacyBuild;
       await reconcileRuns();
       assert.equal(started.length, beforeOldStart);

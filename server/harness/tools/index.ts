@@ -1,4 +1,9 @@
-import { convertSchemaToJsonSchema, type Tool, type ToolExecutionContext } from "@tanstack/ai";
+import {
+  convertSchemaToJsonSchema,
+  type Tool,
+  type ToolExecutionContext,
+  type UIMessage,
+} from "@tanstack/ai";
 import type { ModelCall } from "../model-turn";
 import {
   withAtlassianScope,
@@ -16,8 +21,12 @@ type Registration = Readonly<{
 type Catalog = ReadonlyMap<string, Registration>;
 
 export type RunTools = Readonly<{
-  getModelTools: () => Promise<ModelTool[]>;
-  executeTool: (call: ModelCall, context: ToolExecutionContext) => Promise<unknown>;
+  getModelTools: (messages: readonly UIMessage[]) => Promise<ModelTool[]>;
+  executeTool: (
+    messages: readonly UIMessage[],
+    call: ModelCall,
+    context: ToolExecutionContext,
+  ) => Promise<unknown>;
 }>;
 
 class ToolBoundaryError extends Error {}
@@ -61,9 +70,9 @@ function mergeLocalDefinitions(remote: AtlassianCatalog): ModelTool[] {
 export async function withRunTools<T>(use: (tools: RunTools) => Promise<T>): Promise<T> {
   return withAtlassianScope((scope) =>
     use({
-      getModelTools: () => scope.getModelTools(mergeLocalDefinitions),
-      executeTool: (call, context) =>
-        scope.executeTool(call, context, localCatalog.get(call.name)?.handler),
+      getModelTools: (messages) => scope.getModelTools(messages, mergeLocalDefinitions),
+      executeTool: (messages, call, context) =>
+        scope.executeTool(messages, call, context, localCatalog.get(call.name)?.handler),
     }),
   );
 }

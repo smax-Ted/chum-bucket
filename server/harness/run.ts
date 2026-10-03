@@ -50,7 +50,7 @@ async function toolStep(
         throw new Error("Tool custom events are not supported");
       },
     };
-    output = await tools.executeTool(call, context);
+    output = await tools.executeTool(messages, call, context);
   } catch (failure) {
     output = { error: failure instanceof Error ? failure.message.slice(0, 2000) : "Tool failed" };
     error = true;
@@ -89,7 +89,7 @@ export async function executeRun(run: AcceptedRun) {
           await emit(run.runId, snapshot(messages), messages);
           const { deepinfra } = await import("./provider");
           const adapter = deepinfra(run.model);
-          const definitions = await tools.getModelTools();
+          const definitions = await tools.getModelTools(messages);
           const result = await streamModelTurn({
             messages,
             stream: adapter.chatStream({

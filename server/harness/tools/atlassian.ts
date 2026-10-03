@@ -2,8 +2,10 @@ import {
   convertSchemaToJsonSchema,
   type JSONSchema,
   type ToolExecutionContext,
+  type UIMessage,
 } from "@tanstack/ai";
 import { createMCPClient, type MCPClient } from "@tanstack/ai-mcp";
+import { z } from "zod";
 import type { ModelCall } from "../model-turn";
 import {
   atlassianTools,
@@ -19,8 +21,12 @@ export type ModelTool = Readonly<{
 export type AtlassianCatalog = ReadonlyMap<string, ModelTool>;
 export type LocalToolHandler = (input: unknown, context: ToolExecutionContext) => Promise<unknown>;
 export type AtlassianScope = Readonly<{
-  getModelTools: (compose: (remote: AtlassianCatalog) => ModelTool[]) => Promise<ModelTool[]>;
+  getModelTools: (
+    messages: readonly UIMessage[],
+    compose: (remote: AtlassianCatalog) => ModelTool[],
+  ) => Promise<ModelTool[]>;
   executeTool: (
+    messages: readonly UIMessage[],
     call: ModelCall,
     context: ToolExecutionContext,
     local: LocalToolHandler | undefined,
@@ -43,7 +49,176 @@ type RemoteSession = Readonly<{
 
 const MCP_TIMEOUT_MS = 60_000;
 
+export const discoveryToolName = "discover_atlassian_tools";
+
+const discoveryRequestSchema = z.object({ toolNames: z.array(z.string()).min(1) }).strict();
+
+const discoveryResultSchema = z
+  .object({
+    tools: z.array(
+      z
+        .object({
+          name: z.string(),
+          description: z.string(),
+          inputSchema: z.record(z.string(), z.unknown()),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+function discoveryDefinition(names: readonly string[]): ModelTool {
+  return {
+    name: discoveryToolName,
+    description:
+      "List the available Atlassian tool definitions by exact tool name. Call this before using Atlassian tools.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        toolNames: {
+          type: "array",
+          items: { type: "string", enum: [...names] },
+          minItems: 1,
+        },
+      },
+      required: ["toolNames"],
+      additionalProperties: false,
+    },
+  };
+}
+
 class ToolBoundaryError extends Error {}
+
+function parseDiscoveryRequest(argumentsText: string): readonly string[] | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(argumentsText);
+  } catch {
+    return undefined;
+  }
+  const request = discoveryRequestSchema.safeParse(parsed);
+  return request.success ? [...new Set(request.data.toolNames)] : undefined;
+}
+
+function grantedNames(
+  messages: readonly UIMessage[],
+  config: AtlassianConfiguration,
+): ReadonlySet<string> {
+  type Call = Readonly<{ order: number; arguments: string; state: string; flagged: boolean }>;
+  type Result = Readonly<{
+    order: number;
+    content: unknown;
+    state: string;
+    error: string | undefined;
+    name: string | undefined;
+    flagged: boolean;
+  }>;
+  const calls = new Map<string, Call>();
+  const results = new Map<string, Result>();
+  const callIds = new Set<string>();
+  const resultIds = new Set<string>();
+  const ambiguous = new Set<string>();
+  let order = 0;
+  for (const message of messages) {
+    if (message.role !== "assistant") {
+      continue;
+    }
+    for (const part of message.parts) {
+      if (part.type === "tool-call") {
+        if (callIds.has(part.id) || resultIds.has(part.id) || part.id.length === 0) {
+          ambiguous.add(part.id);
+        }
+        callIds.add(part.id);
+        if (part.name === discoveryToolName && !calls.has(part.id)) {
+          const flag = (part.metadata as { tanstack?: unknown } | undefined)?.tanstack;
+          calls.set(part.id, {
+            order,
+            arguments: part.arguments,
+            state: part.state,
+            flagged:
+              !!flag &&
+              typeof flag === "object" &&
+              (flag as { state?: unknown }).state === "output-error",
+          });
+        }
+      } else if (part.type === "tool-result") {
+        if (resultIds.has(part.toolCallId) || part.toolCallId.length === 0) {
+          ambiguous.add(part.toolCallId);
+        }
+        resultIds.add(part.toolCallId);
+        if (!results.has(part.toolCallId)) {
+          const flag = part.metadata?.tanstack;
+          results.set(part.toolCallId, {
+            order,
+            content: part.content,
+            state: part.state,
+            error: part.error,
+            name: part.name,
+            flagged:
+              !!flag &&
+              typeof flag === "object" &&
+              (flag as { state?: unknown }).state === "output-error",
+          });
+        }
+      }
+      order++;
+    }
+  }
+  const granted = new Set<string>();
+  for (const [id, call] of calls) {
+    const result = results.get(id);
+    if (!result || ambiguous.has(id)) {
+      continue;
+    }
+    if (result.order <= call.order || call.state !== "complete" || result.state !== "complete") {
+      continue;
+    }
+    if (call.flagged) {
+      continue;
+    }
+    if (
+      result.error !== undefined ||
+      result.flagged ||
+      (result.name !== undefined && result.name !== discoveryToolName)
+    ) {
+      continue;
+    }
+    if (typeof result.content !== "string") {
+      continue;
+    }
+    const requested = parseDiscoveryRequest(call.arguments);
+    if (!requested) {
+      continue;
+    }
+    let parsedResult: unknown;
+    try {
+      parsedResult = JSON.parse(result.content);
+    } catch {
+      continue;
+    }
+    const output = discoveryResultSchema.safeParse(parsedResult);
+    if (!output.success) {
+      continue;
+    }
+    try {
+      guardCredentials(output.data, config);
+    } catch {
+      continue;
+    }
+    const names = output.data.tools.map((tool) => tool.name);
+    if (
+      names.length !== requested.length ||
+      names.some((name, index) => name !== requested[index]) ||
+      !names.every((name) => atlassianTools.has(name))
+    ) {
+      continue;
+    }
+    for (const name of names) {
+      granted.add(name);
+    }
+  }
+  return granted;
+}
 
 type Deadline = Readonly<{ signal: AbortSignal; release: () => void }>;
 
@@ -225,17 +400,24 @@ export async function withAtlassianScope<T>(
   };
   try {
     return await use({
-      async getModelTools(compose) {
+      async getModelTools(messages, compose) {
         const config = await getConfiguration();
         const session = config.mode === "http" ? getRemote(config) : undefined;
         try {
           const catalog = await session?.catalog;
-          const remoteDefinitions: AtlassianCatalog = new Map(
-            [...(catalog?.registrations ?? [])].map(([name, entry]) => [name, entry.definition]),
+          const granted = grantedNames(messages, config);
+          const selected: AtlassianCatalog = new Map(
+            [...(catalog?.registrations ?? [])]
+              .filter(([name]) => granted.has(name))
+              .map(([name, entry]) => [name, entry.definition]),
           );
-          const definitions = compose(remoteDefinitions);
-          guardCredentials(definitions, config);
-          return structuredClone(definitions);
+          const definitions = compose(selected);
+          const advertised =
+            session && catalog
+              ? [...definitions, discoveryDefinition([...catalog.registrations.keys()])]
+              : definitions;
+          guardCredentials(advertised, config);
+          return structuredClone(advertised);
         } catch (failure) {
           if (session) {
             await retire(session);
@@ -244,7 +426,7 @@ export async function withAtlassianScope<T>(
           throw new Error(failure instanceof Error ? failure.message : "Tool composition failed");
         }
       },
-      async executeTool(call, context, local) {
+      async executeTool(messages, call, context, local) {
         const config = await getConfiguration();
         if (local) {
           try {
@@ -256,8 +438,24 @@ export async function withAtlassianScope<T>(
             throw new Error(failure instanceof Error ? failure.message : "Tool failed");
           }
         }
-        if (!atlassianTools.has(call.name) || config.mode === "local") {
+        if (config.mode === "local") {
           throw new Error("Unknown tool");
+        }
+        const requested =
+          call.name === discoveryToolName ? parseDiscoveryRequest(call.arguments) : undefined;
+        if (call.name === discoveryToolName) {
+          if (!requested) {
+            throw new ToolBoundaryError("Invalid discover_atlassian_tools input");
+          }
+          if (!requested.every((name) => atlassianTools.has(name))) {
+            throw new Error("Unknown tool");
+          }
+        } else if (!atlassianTools.has(call.name)) {
+          throw new Error("Unknown tool");
+        } else if (!grantedNames(messages, config).has(call.name)) {
+          throw new ToolBoundaryError(
+            `Tool ${call.name} is not discovered; call ${discoveryToolName} first`,
+          );
         }
         if (context.abortSignal?.aborted) {
           throw new ToolBoundaryError("Atlassian MCP tool was cancelled");
@@ -273,6 +471,18 @@ export async function withAtlassianScope<T>(
         signal.addEventListener("abort", onAbort, { once: true });
         try {
           const catalog = await withAbort(session.catalog, signal);
+          if (requested) {
+            const tools = requested.map((name) => {
+              const entry = catalog.registrations.get(name);
+              if (!entry) {
+                throw new ToolBoundaryError(`Atlassian tool is unavailable: ${name}`);
+              }
+              return entry.definition;
+            });
+            const output = structuredClone({ tools });
+            guardCredentials(output, config);
+            return output;
+          }
           const entry = catalog.registrations.get(call.name);
           if (!entry) {
             throw new ToolBoundaryError("Unknown tool");
