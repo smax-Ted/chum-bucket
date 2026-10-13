@@ -60,7 +60,7 @@ When already operating a TaskSpace for this verification goal, pass `existingSpa
 
 For manual features, create one TaskSpace, print its ID, obtain `page = task.page("p1")`, and navigate to `instance.json`'s origin. Reuse that TaskSpace in every later invocation. The feature recipes assume these variables. Stable handles include `建立新對話`, `新 thread`, `收合 thread 清單`, and `section[aria-label="主對話"] [role="textbox"]`. Save the action before dispatch, wait for its specified result, then save the snapshot and screenshot.
 
-Existing `pnpm check:thread-browser` requires externally supplied `PLAYWRIGHT_MODULE` and optionally `CHROMIUM_EXECUTABLE`; its companion server is `pnpm dev:thread-browser`. It mocks the entire API and sometimes installs `window.api`; it is useful regression coverage but does not prove the real app, persistence, or provider integration. `pnpm check:compaction-offline` is likewise supplementary, not a substitute for browser proof.
+Run the mock thread regression through `THREAD_TEST_ORIGIN=http://127.0.0.1:4187 pnpm test tests/scripts/thread-browser.test.js` against its companion server, `pnpm dev:thread-browser`. It uses installed Playwright by default; `PLAYWRIGHT_MODULE` and `CHROMIUM_EXECUTABLE` can override the browser installation. It mocks the entire API and sometimes installs `window.api`; it is useful regression coverage but does not prove the real app, persistence, or provider integration. The compaction, model-turn, and run tests are included in `pnpm test`; they are supplementary, not a substitute for browser proof.
 
 ## Evidence
 

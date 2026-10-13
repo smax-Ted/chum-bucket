@@ -32,6 +32,11 @@ function withFixture(files: Record<string, string>, fn: (fixtureDir: string) => 
   }
 }
 
+test("repository obeys architecture and test separation boundaries", () => {
+  const rootDir = fileURLToPath(new URL("../", import.meta.url));
+  assert.deepEqual(checkBoundaries({ rootDir }).violations, []);
+});
+
 test("accepts colocated test files and skips production-only checks for them", () => {
   withFixture(
     {
