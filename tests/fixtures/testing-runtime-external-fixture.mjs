@@ -243,7 +243,9 @@ export function scriptedEvents(options, control = {}) {
   if (role === "atlassian") {
     if (toolOutputs.length === 0) {
       return toolEvents(identity, "discover_atlassian_tools", {
-        toolNames: ["jira_get_issue"],
+        toolNames: control.jiraComment
+          ? ["jira_get_issue", "jira_add_comment"]
+          : ["jira_get_issue"],
       });
     }
 
@@ -251,6 +253,30 @@ export function scriptedEvents(options, control = {}) {
       return toolEvents(identity, "jira_get_issue", {
         issue_key: task.sources?.[0]?.issueKey,
       });
+    }
+
+    if (control.jiraComment && toolOutputs.length === 2) {
+      return toolEvents(identity, "jira_add_comment", {
+        issue_key: "CHUM-42",
+        body: "Approval fixture **exact body**\nSecond line. No live Jira write.",
+      });
+    }
+    if (control.jiraComment && toolOutputs.length >= 3) {
+      const source = parseJson(textOf(toolOutputs[1]));
+      return textEvents(
+        identity,
+        JSON.stringify({
+          criteria: [
+            {
+              key: "AC-1",
+              statement: "Checkout succeeds",
+              source: task.sources[0],
+              anchorId: source?.sourceCapture?.anchorRefs?.[0]?.id,
+            },
+          ],
+          unresolved: [],
+        }),
+      );
     }
 
     const sourceOutput = [...toolOutputs].reverse()[0];

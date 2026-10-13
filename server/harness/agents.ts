@@ -71,7 +71,7 @@ export const agentRegistry = {
     tools: [atlassianToolFactory],
     registration: "atlassian_read",
     codeMode: "enabled",
-    profile: "requirements-v2",
+    profile: "requirements-v3",
     systemPrompt: qaSystemPrompts.atlassian,
   },
   planner: {

@@ -87,7 +87,7 @@ test("role definitions keep distinct responsibilities within their capabilities"
   assert.deepEqual(
     ROLE_IDS.map((role) => [...toolNamesFor(role)].sort()),
     [
-      ["confluence_get_page", "jira_get_issue"],
+      ["confluence_get_page", "jira_add_comment", "jira_get_issue"],
       [],
       ["verify_ac"],
       ["get_figma", "verify_ui"],
@@ -142,7 +142,10 @@ test("changed role semantics have new profiles and cannot resume under old profi
   };
 
   for (const role of ROLE_IDS) {
-    assert.equal(roleRegistry[role].profile, previous[role].replace("-v1", "-v2"));
+    assert.equal(
+      roleRegistry[role].profile,
+      role === "atlassian" ? "requirements-v3" : previous[role].replace("-v1", "-v2"),
+    );
     assert.throws(() => roleSystemPrompt(role, previous[role]), /profile is incompatible/);
     assert.throws(() => roleSystemPrompt(role, "unknown-profile"), /profile is incompatible/);
   }
@@ -211,7 +214,7 @@ test("one registry owns every model and the provider derives its model list", ()
   );
   assert.deepEqual(
     ROLE_IDS.map((role) => agentRegistry[role].profile),
-    ["requirements-v2", "planning-v2", "functional-v2", "style-v2"],
+    ["requirements-v3", "planning-v2", "functional-v2", "style-v2"],
   );
 });
 
@@ -269,6 +272,7 @@ test("registry tools are the advertised definitions and factories, not a name li
 test("QA roles keep their capability policy inside the shared registry", () => {
   assert.deepEqual([...toolNamesFor("atlassian")].sort(), [
     "confluence_get_page",
+    "jira_add_comment",
     "jira_get_issue",
   ]);
   assert.equal(allowsTool("atlassian", "discover_atlassian_tools", "direct"), true);

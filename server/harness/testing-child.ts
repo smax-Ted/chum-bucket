@@ -1,4 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { gateToolApproval } from "./tool-approval";
+import type { ModelCall } from "./model-turn";
 import { createPlaywrightFixture } from "./playwright-check";
 import { DBOS } from "@dbos-inc/dbos-sdk";
 import type { UIMessage } from "@tanstack/ai";
@@ -1175,6 +1177,21 @@ function reviewProposal(
   );
 }
 
+async function orchestrateComment(run: ChildRun, call: ModelCall) {
+  return gateToolApproval(
+    {
+      parentRunId: run.input.parentRunId,
+      operationId: run.input.operationId,
+      taskId: run.input.taskId,
+      childWorkflowId: run.input.childWorkflowId,
+      attemptNonce: run.input.attemptNonce,
+      role: run.input.role,
+    },
+    call,
+    run.signal,
+  );
+}
+
 async function runRoleLoops(run: ChildRun, tools: RunTools): Promise<TestingChildResult> {
   const { input, execution, signal } = run;
   const step = { current: "model-0" };
@@ -1202,6 +1219,7 @@ async function runRoleLoops(run: ChildRun, tools: RunTools): Promise<TestingChil
       prompt: run.systemPrompt,
       compaction: { kind: "bounded", maxTurn },
       checkpoint: prefixed(checkpoint, prefix),
+      orchestration: (call) => orchestrateComment(run, call),
       signal,
     });
   const first = await loop(initial, Math.min(6, execution.runtime.limits.turns), "a");
