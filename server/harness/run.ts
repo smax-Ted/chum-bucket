@@ -1,6 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { DBOS, DBOSClient } from "@dbos-inc/dbos-sdk";
-import type { SideAccess } from "../../shared/side-chat";
 import {
   runAgentLoop,
   type AgentCheckpoint,
@@ -21,7 +20,7 @@ import {
   assertExecution,
   beginSideDiscard,
   purgeSideChat,
-  listDiscardableSides,
+  listSideChats,
   RunRequestError,
   database,
   persistRun,
@@ -32,8 +31,8 @@ import {
   type AcceptedRun,
 } from "./run-store";
 
-export async function acceptRun(value: RunInput, access?: SideAccess): Promise<AcceptedRun> {
-  const accepted = await persistRun(value, access);
+export async function acceptRun(value: RunInput): Promise<AcceptedRun> {
+  const accepted = await persistRun(value);
 
   if (accepted.pending) {
     await ensureStarted(accepted.run);
@@ -329,8 +328,8 @@ async function discardRunWorkflow(runId: string) {
   priorProcessQuiet.delete(runId);
 }
 
-export async function discardSideChat(id: string, access?: SideAccess) {
-  const ids = await beginSideDiscard(id, access);
+export async function discardSideChat(id: string) {
+  const ids = await beginSideDiscard(id);
   const prior = discards.get(id);
 
   if (prior) {
@@ -356,7 +355,7 @@ export async function discardSideChat(id: string, access?: SideAccess) {
 }
 
 async function abandonPriorProcessSides() {
-  const sides = await listDiscardableSides(true);
+  const sides = await listSideChats();
   const ids: string[] = [];
 
   for (const side of sides) {
@@ -428,7 +427,7 @@ export async function launchChatRuntime() {
     await abandonPriorProcessSides();
     await DBOS.launch();
 
-    for (const side of await listDiscardableSides(true)) {
+    for (const side of await listSideChats()) {
       await discardSideChat(side.id);
     }
 
@@ -452,7 +451,7 @@ export async function launchChatRuntime() {
       }
 
       try {
-        for (const side of await listDiscardableSides()) {
+        for (const side of await listSideChats("closing")) {
           await discardSideChat(side.id);
         }
 
@@ -469,7 +468,7 @@ export async function shutdownChatRuntime() {
   stopReconciliation?.abort();
   await reconciliation;
 
-  for (const side of await listDiscardableSides(true)) {
+  for (const side of await listSideChats()) {
     await discardSideChat(side.id);
   }
 

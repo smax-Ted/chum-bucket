@@ -2,7 +2,6 @@ import { Hono, type Context } from "hono";
 import { DBOS } from "@dbos-inc/dbos-sdk";
 import { z } from "zod";
 import type { StreamChunk } from "@tanstack/ai";
-import { SIDE_SCOPE_HEADER, sideScopeSchema, type SideAccess } from "../shared/side-chat";
 import { acceptRun } from "./harness/run";
 import { approvalDecisionKey, toolApprovalDecisionSchema } from "../shared/tool-approval";
 import type {
@@ -152,20 +151,6 @@ export function eventResponse(
   });
 }
 
-function sideAccess(header?: string): SideAccess | undefined {
-  if (header === undefined) {
-    return undefined;
-  }
-
-  const scope = sideScopeSchema.safeParse(header);
-
-  if (!scope.success) {
-    throw new RunRequestError(400, "Invalid side chat page scope");
-  }
-
-  return { scope: scope.data };
-}
-
 const requestError: Parameters<typeof app.onError>[0] = (error, c) => {
   if (error instanceof RunRequestError) {
     return c.json({ error: error.message }, error.status);
@@ -181,18 +166,14 @@ compact.onError(requestError);
 compact.post("/", async (c) => {
   const input = parseCompactBody(await c.req.json().catch(() => null), c.req.header("X-Run-Id"));
   const cursor = parseCursor(c.req.header("Last-Event-ID"));
-  const access = sideAccess(c.req.header(SIDE_SCOPE_HEADER));
-  await acceptRun(input, access);
-  await checkCursor(input.runId, cursor, undefined, access);
+  await acceptRun(input);
+  await checkCursor(input.runId, cursor);
 
-  return eventResponse(
-    (signal) => observeRun(input.runId, cursor, signal, access),
-    c.req.raw.signal,
-  );
+  return eventResponse((signal) => observeRun(input.runId, cursor, signal), c.req.raw.signal);
 });
 
 function requireApprovalDecisionOrigin(c: Context) {
-  if (c.req.header(SIDE_SCOPE_HEADER) || c.req.header("X-Tool-Approval") !== "1") {
+  if (c.req.header("X-Tool-Approval") !== "1") {
     throw new RunRequestError(409, "Same-origin main thread required");
   }
 
@@ -282,33 +263,28 @@ app.post("/approvals/:id/decision", async (c) => {
 app.post("/", async (c) => {
   const input = parseRunBody(await c.req.json().catch(() => null), c.req.header("X-Run-Id"));
   const cursor = parseCursor(c.req.header("Last-Event-ID"));
-  const access = sideAccess(c.req.header(SIDE_SCOPE_HEADER));
-  await acceptRun(input, access);
-  await checkCursor(input.runId, cursor, undefined, access);
+  await acceptRun(input);
+  await checkCursor(input.runId, cursor);
 
-  return eventResponse(
-    (signal) => observeRun(input.runId, cursor, signal, access),
-    c.req.raw.signal,
-  );
+  return eventResponse((signal) => observeRun(input.runId, cursor, signal), c.req.raw.signal);
 });
 
 app.get("/", async (c) => {
-  const access = sideAccess(c.req.header(SIDE_SCOPE_HEADER));
   const runId = c.req.query("runId");
   const threadId = c.req.query("threadId");
 
   if (runId !== undefined) {
     const cursor = parseCursor(c.req.header("Last-Event-ID"), c.req.query("offset"));
-    await checkCursor(runId, cursor, threadId, access);
+    await checkCursor(runId, cursor, threadId);
 
-    return eventResponse((signal) => observeRun(runId, cursor, signal, access), c.req.raw.signal);
+    return eventResponse((signal) => observeRun(runId, cursor, signal), c.req.raw.signal);
   }
 
   if (threadId === undefined) {
     throw new RunRequestError(400, "A thread or run ID is required");
   }
 
-  return c.json(await hydrateThread(threadId, access));
+  return c.json(await hydrateThread(threadId));
 });
 
 export default app;

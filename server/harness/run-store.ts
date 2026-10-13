@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { DBOS } from "@dbos-inc/dbos-sdk";
@@ -10,20 +10,10 @@ import {
   chatModelSlotsTable,
   chatRunsTable,
   sideChatsTable,
-  sideTransfersTable,
   testingOperationsTable,
   threadsTable,
 } from "../db/schema";
-import {
-  SIDE_LEASE_MS,
-  classifySideConversation,
-  originalSideTranscript,
-  type SideAccess,
-  type SideChatSeed,
-  type SideFence,
-  type SummaryDraft,
-  type TransferReceipt,
-} from "../../shared/side-chat";
+import { sideTranscript, sideTransferRunId, type SideChatSeed } from "../../shared/side-chat";
 import { agentRegistry, type AgentModel } from "./agents";
 import { snapshot } from "./model-turn";
 import { projectConversation, readProjection, type ConversationState } from "./conversation";
@@ -102,7 +92,7 @@ export type AcceptedRun = z.output<typeof runInputSchema> & {
   prompt: string;
   model: AgentModel;
   build: typeof BUILD | typeof PREVIOUS_BUILD | typeof TESTING_ROOT_BUILD;
-  side?: SideFence;
+  side?: boolean;
 };
 type RunRow = typeof chatRunsTable.$inferSelect;
 type ThreadRow = typeof threadsTable.$inferSelect;
@@ -138,11 +128,7 @@ async function lockRun(tx: Transaction, id: string): Promise<{ run: RunRow; thre
   const [run] = await tx.select().from(chatRunsTable).where(eq(chatRunsTable.id, id)).for("update");
 
   if (side) {
-    assertSideOpen(side, { scope: run?.accepted.side?.scope ?? "" });
-
-    if (run?.accepted.side?.epoch !== side.epoch) {
-      throw new RunRequestError(409, "Side chat execution expired");
-    }
+    assertSideOpen(side);
   }
 
   return { run: run!, thread: thread! };
@@ -254,7 +240,7 @@ async function committedModelContext(tx: Transaction, thread: ThreadRow): Promis
     : anchoredContext(anchor, thread);
 }
 
-export async function persistRun(value: RunInput, access?: SideAccess) {
+export async function persistRun(value: RunInput) {
   const parsed = runInputSchema.safeParse(value);
 
   if (!parsed.success) {
@@ -267,7 +253,7 @@ export async function persistRun(value: RunInput, access?: SideAccess) {
     const side = await lockSide(tx, input.threadId);
 
     if (side) {
-      assertSideOpen(side, access);
+      assertSideOpen(side);
     }
 
     const [thread] = await tx
@@ -315,19 +301,6 @@ function chatAdditions(
       ...(metadata ? { metadata } : {}),
     },
   ];
-}
-
-function withSideSeed(run: AcceptedRun, side: SideRow | undefined, threadId: string): void {
-  if (!side?.seed) {
-    return;
-  }
-
-  run.messages = classifySideConversation(run.messages, side.seed, threadId);
-  const byId = new Map(run.messages.map((message) => [message.id, message]));
-  run.context = run.context.map((message) => ({
-    ...message,
-    metadata: byId.get(message.id)?.metadata ?? message.metadata,
-  }));
 }
 
 async function insertAcceptedRun(
@@ -389,9 +362,8 @@ async function acceptInTransaction(
     prompt: agent.systemPrompt(),
     model: agent.model,
     build: BUILD,
-    ...(side ? { side: { epoch: side.epoch, scope: side.page_scope } } : {}),
+    ...(side ? { side: true } : {}),
   };
-  withSideSeed(run, side, thread.id);
   await insertAcceptedRun(tx, run, input);
 
   return { run, pending: true };
@@ -401,14 +373,6 @@ export async function emit(runId: string, event: StreamChunk, conversation?: Con
   const db = await database();
   await db.transaction(async (tx) => {
     const { run } = await lockRun(tx, runId);
-
-    if (conversation) {
-      conversation = await classifyProjection(tx, run, conversation);
-
-      if (event.type === EventType.MESSAGES_SNAPSHOT) {
-        event = snapshot(conversation.display);
-      }
-    }
 
     await appendEvent(tx, run, randomUUID(), event);
 
@@ -430,7 +394,6 @@ export async function checkpointCompaction(
   const db = await database();
   await db.transaction(async (tx) => {
     const { run, thread } = await lockRun(tx, runId);
-    conversation = await classifyProjection(tx, run, conversation);
     const key = `compact:${operationId}`;
     const [receipt] = await tx
       .select()
@@ -533,10 +496,7 @@ async function committedConversation(
   run: RunRow,
   conversation: ConversationState | undefined,
 ): Promise<ConversationState | undefined> {
-  const committed =
-    conversation ?? (await failedConversation(tx, run)) ?? transferConversation(run);
-
-  return committed ? classifyProjection(tx, run, committed) : undefined;
+  return conversation ?? (await failedConversation(tx, run)) ?? transferConversation(run);
 }
 
 async function commitThreadSnapshot(
@@ -643,14 +603,14 @@ export async function listPendingRuns() {
     .where(
       and(
         eq(chatRunsTable.state, "pending"),
-        sql`not exists (select 1 from ${sideChatsTable} where ${sideChatsTable.id} = ${chatRunsTable.thread_id} and (${sideChatsTable.state} <> 'open' or ${sideChatsTable.lease_until} <= now()))`,
+        sql`not exists (select 1 from ${sideChatsTable} where ${sideChatsTable.id} = ${chatRunsTable.thread_id} and ${sideChatsTable.state} <> 'open')`,
         sql`not exists (select 1 from ${testingOperationsTable} where ${testingOperationsTable.id} = ${chatRunsTable.id} and ${testingOperationsTable.parent_run_id} = ${chatRunsTable.id})`,
       ),
     )
     .orderBy(chatRunsTable.created_at);
 }
 
-export async function hydrateThread(threadId: string, access?: SideAccess) {
+export async function hydrateThread(threadId: string) {
   if (!z.uuid().safeParse(threadId).success) {
     throw new RunRequestError(400, "Invalid thread ID");
   }
@@ -661,7 +621,7 @@ export async function hydrateThread(threadId: string, access?: SideAccess) {
     const side = await lockSide(tx, threadId);
 
     if (side) {
-      assertSideOpen(side, access);
+      assertSideOpen(side);
     }
 
     const [thread] = await tx
@@ -911,12 +871,7 @@ async function wakePendingApprovals(ownerRunId: string, operationId: string): Pr
   }
 }
 
-export async function checkCursor(
-  runId: string,
-  cursor: number,
-  threadId?: string,
-  access?: SideAccess,
-) {
+export async function checkCursor(runId: string, cursor: number, threadId?: string) {
   if (!runIdSchema.safeParse(runId).success || !Number.isSafeInteger(cursor) || cursor < -1) {
     throw new RunRequestError(400, "Invalid run cursor");
   }
@@ -926,12 +881,6 @@ export async function checkCursor(
 
   if (!run) {
     throw new RunRequestError(404, "Unknown run");
-  }
-
-  const [side] = await db.select().from(sideChatsTable).where(eq(sideChatsTable.id, run.thread_id));
-
-  if (side) {
-    assertSideOpen(side, access);
   }
 
   if (threadId !== undefined && run.thread_id !== threadId) {
@@ -953,37 +902,10 @@ async function lockSide(tx: Transaction, id: string): Promise<SideRow | undefine
   return side;
 }
 
-function assertSideOpen(side: SideRow, access?: SideAccess) {
-  if (access?.scope !== side.page_scope) {
-    throw new RunRequestError(404, "Unknown side chat scope");
+function assertSideOpen(side: SideRow) {
+  if (side.state !== "open") {
+    throw new RunRequestError(409, "Side chat is closed");
   }
-
-  if (side.state !== "open" || side.lease_until.getTime() <= Date.now() || !side.seed) {
-    throw new RunRequestError(409, "Side chat is closed or expired");
-  }
-}
-
-async function classifyProjection(tx: Transaction, run: RunRow, state: ConversationState) {
-  if (!run.accepted.side) {
-    return state;
-  }
-
-  const [side] = await tx.select().from(sideChatsTable).where(eq(sideChatsTable.id, run.thread_id));
-
-  if (!side?.seed) {
-    throw new RunRequestError(409, "Side chat seed is discarded");
-  }
-
-  const display = classifySideConversation(state.display, side.seed, run.thread_id);
-  const originals = new Map(display.map((message) => [message.id, message]));
-
-  return {
-    display,
-    context: state.context.map((message) => ({
-      ...message,
-      metadata: originals.get(message.id)?.metadata ?? message.metadata,
-    })),
-  };
 }
 
 export async function assertExecution(run: AcceptedRun) {
@@ -994,40 +916,17 @@ export async function assertExecution(run: AcceptedRun) {
   const db = await database();
   const [side] = await db.select().from(sideChatsTable).where(eq(sideChatsTable.id, run.threadId));
 
-  if (!side || side.epoch !== run.side.epoch) {
-    throw new RunRequestError(409, "Side chat execution expired");
+  if (!side) {
+    throw new RunRequestError(409, "Side chat is closed");
   }
 
-  assertSideOpen(side, { scope: run.side.scope });
+  assertSideOpen(side);
 }
 
-export async function openSideChat(parentThreadId: string, openKey: string, access: SideAccess) {
+export async function openSideChat(parentThreadId: string) {
   const db = await database();
 
   return db.transaction(async (tx) => {
-    await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtext(${access.scope}), hashtext(${openKey}))`,
-    );
-    const [prior] = await tx
-      .select()
-      .from(sideChatsTable)
-      .where(and(eq(sideChatsTable.page_scope, access.scope), eq(sideChatsTable.open_key, openKey)))
-      .for("update");
-
-    if (prior) {
-      if (prior.parent_thread_id !== parentThreadId) {
-        throw new RunRequestError(409, "Open key collision");
-      }
-
-      assertSideOpen(prior, access);
-
-      return { id: prior.id, parentRevision: prior.seed!.parentRevision };
-    }
-
-    if (await lockSide(tx, parentThreadId)) {
-      throw new RunRequestError(409, "Nested side chats are not supported");
-    }
-
     const [parent] = await tx
       .select()
       .from(threadsTable)
@@ -1038,24 +937,20 @@ export async function openSideChat(parentThreadId: string, openKey: string, acce
       throw new RunRequestError(404, "Unknown parent thread");
     }
 
-    if (parent.parent_thread_id || parent.active_run_id) {
+    if (parent.parent_thread_id) {
+      throw new RunRequestError(409, "Nested side chats are not supported");
+    }
+
+    if (parent.active_run_id) {
       throw new RunRequestError(409, "Parent thread must be ready");
     }
 
     const seed: SideChatSeed = {
-      parentRevision: parent.revision,
       display: parent.messages,
       context: await committedModelContext(tx, parent),
     };
     const id = randomUUID();
-    await tx.insert(sideChatsTable).values({
-      id,
-      parent_thread_id: parentThreadId,
-      page_scope: access.scope,
-      open_key: openKey,
-      lease_until: new Date(Date.now() + SIDE_LEASE_MS),
-      seed,
-    });
+    await tx.insert(sideChatsTable).values({ id, parent_thread_id: parentThreadId, seed });
     await tx.insert(threadsTable).values({
       id,
       parent_thread_id: parentThreadId,
@@ -1064,145 +959,44 @@ export async function openSideChat(parentThreadId: string, openKey: string, acce
       messages: seed.display,
     });
 
-    return { id, parentRevision: seed.parentRevision };
+    return { id };
   });
 }
 
-export async function readSideSummaryRange(id: string, access: SideAccess) {
-  const db = await database();
-
-  return db.transaction(async (tx) => {
-    const side = await lockSide(tx, id);
-
-    if (!side) {
-      throw new RunRequestError(404, "Unknown side chat");
-    }
-
-    assertSideOpen(side, access);
-    const [thread] = await tx
-      .select()
-      .from(threadsTable)
-      .where(eq(threadsTable.id, id))
-      .for("update");
-
-    if (!thread || thread.active_run_id) {
-      throw new RunRequestError(409, "Side chat must be idle");
-    }
-
-    const transcript = originalSideTranscript(thread.messages, id);
-
-    if (!transcript.length) {
-      throw new RunRequestError(409, "Side chat has no original discussion");
-    }
-
-    return {
-      epoch: side.epoch,
-      sideRevision: thread.revision,
-      through: transcript.length,
-      transcript,
-    };
-  });
-}
-
-export async function saveSideDraft(
-  id: string,
-  access: SideAccess,
-  epoch: number,
-  draft: SummaryDraft,
-) {
-  const db = await database();
-
-  return db.transaction(async (tx) => {
-    const side = await lockSide(tx, id);
-
-    if (!side) {
-      throw new RunRequestError(404, "Unknown side chat");
-    }
-
-    assertSideOpen(side, access);
-    const [thread] = await tx
-      .select()
-      .from(threadsTable)
-      .where(eq(threadsTable.id, id))
-      .for("update");
-
-    if (
-      side.epoch !== epoch ||
-      !thread ||
-      thread.active_run_id ||
-      thread.revision !== draft.sideRevision
-    ) {
-      throw new RunRequestError(409, "Summary draft is stale");
-    }
-
-    await tx.update(sideChatsTable).set({ draft }).where(eq(sideChatsTable.id, id));
-
-    return draft;
-  });
-}
-
-type SideTransferRow = typeof sideTransfersTable.$inferSelect;
-type SideDraft = NonNullable<SideRow["draft"]>;
-
-async function replayTransfer(
-  tx: Transaction,
-  prior: SideTransferRow,
-  access: SideAccess,
-  digest: string,
-) {
-  if (prior.page_scope !== access.scope || prior.digest !== digest) {
-    throw new RunRequestError(409, "Transfer key collision");
-  }
-
-  const [run] = await tx
-    .select()
-    .from(chatRunsTable)
-    .where(eq(chatRunsTable.id, prior.receipt.mainRunId));
-
-  if (!run) {
-    throw new RunRequestError(409, "Accepted main run is unavailable");
-  }
-
-  return { receipt: prior.receipt, run: run.accepted, pending: run.state === "pending" };
-}
-
-function draftCurrent(
-  child: ThreadRow | undefined,
-  draft: SideRow["draft"],
-  draftId: string,
-  id: string,
-): draft is SideDraft {
-  return Boolean(
-    child &&
-    !child.active_run_id &&
-    draft &&
-    draft.id === draftId &&
-    draft.sideRevision === child.revision &&
-    draft.through === originalSideTranscript(child.messages, id).length,
-  );
-}
-
-async function lockTransferSide(
-  tx: Transaction,
-  id: string,
-  access: SideAccess,
-  draftId: string,
-): Promise<{ side: SideRow; draft: SideDraft }> {
+async function lockIdleSide(tx: Transaction, id: string) {
   const side = await lockSide(tx, id);
 
   if (!side) {
     throw new RunRequestError(404, "Unknown side chat");
   }
 
-  assertSideOpen(side, access);
-  const [child] = await tx.select().from(threadsTable).where(eq(threadsTable.id, id)).for("update");
-  const draft = side.draft;
+  assertSideOpen(side);
+  const [thread] = await tx
+    .select()
+    .from(threadsTable)
+    .where(eq(threadsTable.id, id))
+    .for("update");
 
-  if (!draftCurrent(child, draft, draftId, id)) {
-    throw new RunRequestError(409, "Summary draft is stale or side chat is busy");
+  if (!thread || thread.active_run_id) {
+    throw new RunRequestError(409, "Side chat must be idle");
   }
 
-  return { side, draft };
+  return { side, thread };
+}
+
+export async function readSideTranscript(id: string) {
+  const db = await database();
+
+  return db.transaction(async (tx) => {
+    const { side, thread } = await lockIdleSide(tx, id);
+    const transcript = sideTranscript(thread.messages, side.seed);
+
+    if (!transcript.length) {
+      throw new RunRequestError(409, "Side chat has no new discussion");
+    }
+
+    return transcript;
+  });
 }
 
 async function lockIdleParent(tx: Transaction, parentId: string): Promise<ThreadRow> {
@@ -1219,101 +1013,59 @@ async function lockIdleParent(tx: Transaction, parentId: string): Promise<Thread
   return parent;
 }
 
-export async function transferSideSummary(
-  id: string,
-  access: SideAccess,
-  input: { draftId: string; transferKey: string; text: string },
-) {
+export async function transferSideSummary(id: string, text: string) {
+  const runId = sideTransferRunId(id);
   const db = await database();
-  const digest = createHash("sha256")
-    .update(JSON.stringify({ id, draftId: input.draftId, text: input.text }))
-    .digest("hex");
 
   return db.transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${input.transferKey}))`);
-    const [prior] = await tx
-      .select()
-      .from(sideTransfersTable)
-      .where(eq(sideTransfersTable.transfer_key, input.transferKey));
+    const locked = await lockSide(tx, id);
+    const [prior] = await tx.select().from(chatRunsTable).where(eq(chatRunsTable.id, runId));
 
     if (prior) {
-      return replayTransfer(tx, prior, access, digest);
+      if (prior.request.kind !== "chat" || prior.request.message.text !== text) {
+        throw new RunRequestError(409, "Side chat summary was already transferred");
+      }
+
+      return { run: prior.accepted, pending: prior.state === "pending" };
     }
 
-    const { side, draft } = await lockTransferSide(tx, id, access, input.draftId);
+    if (!locked) {
+      throw new RunRequestError(404, "Unknown side chat");
+    }
+
+    const { side } = await lockIdleSide(tx, id);
     const parent = await lockIdleParent(tx, side.parent_thread_id);
-    const receipt: TransferReceipt = {
-      transferKey: input.transferKey,
-      parentThreadId: parent.id,
-      sideChatId: id,
-      messageId: `transfer-${input.transferKey}`,
-      mainRunId: `transfer-${input.transferKey}`,
-    };
     const accepted = await acceptInTransaction(
       tx,
       parent,
       {
         kind: "chat",
         threadId: parent.id,
-        runId: receipt.mainRunId,
+        runId,
         baseRevision: parent.revision,
-        message: { id: receipt.messageId, text: input.text },
+        message: { id: runId, text },
       },
       undefined,
-      {
-        sideChatTransfer: {
-          sideChatId: id,
-          draftId: draft.id,
-          through: draft.through,
-          transferKey: input.transferKey,
-        },
-      },
+      { sideChatTransfer: { sideChatId: id } },
     );
-    await tx
-      .insert(sideTransfersTable)
-      .values({ transfer_key: input.transferKey, page_scope: access.scope, digest, receipt });
-    await tx
-      .update(sideChatsTable)
-      .set({ state: "closing", epoch: side.epoch + 1 })
-      .where(eq(sideChatsTable.id, id));
+    await tx.update(sideChatsTable).set({ state: "closing" }).where(eq(sideChatsTable.id, id));
 
-    return { ...accepted, receipt };
+    return accepted;
   });
 }
 
-export async function heartbeatSideScope(access: SideAccess) {
-  const db = await database();
-  await db
-    .update(sideChatsTable)
-    .set({ lease_until: new Date(Date.now() + SIDE_LEASE_MS) })
-    .where(
-      and(
-        eq(sideChatsTable.page_scope, access.scope),
-        eq(sideChatsTable.state, "open"),
-        gt(sideChatsTable.lease_until, new Date()),
-      ),
-    );
-}
-
-export async function beginSideDiscard(id: string, access?: SideAccess) {
+export async function beginSideDiscard(id: string) {
   const db = await database();
 
   return db.transaction(async (tx) => {
     const side = await lockSide(tx, id);
 
-    if (!side || (access && side.page_scope !== access.scope)) {
-      throw new RunRequestError(404, "Unknown side chat");
-    }
-
-    if (side.state === "closed") {
+    if (!side) {
       return [];
     }
 
     if (side.state === "open") {
-      await tx
-        .update(sideChatsTable)
-        .set({ state: "closing", epoch: side.epoch + 1 })
-        .where(eq(sideChatsTable.id, id));
+      await tx.update(sideChatsTable).set({ state: "closing" }).where(eq(sideChatsTable.id, id));
     }
 
     const runs = await tx
@@ -1330,7 +1082,7 @@ export async function purgeSideChat(id: string) {
   await db.transaction(async (tx) => {
     const side = await lockSide(tx, id);
 
-    if (!side || side.state === "closed") {
+    if (!side) {
       return;
     }
 
@@ -1351,24 +1103,17 @@ export async function purgeSideChat(id: string) {
     }
 
     await tx.delete(threadsTable).where(eq(threadsTable.id, id));
-    await tx
-      .update(sideChatsTable)
-      .set({ state: "closed", seed: null, draft: null })
-      .where(eq(sideChatsTable.id, id));
+    await tx.delete(sideChatsTable).where(eq(sideChatsTable.id, id));
   });
 }
 
-export async function listDiscardableSides(all = false) {
+export async function listSideChats(state?: "closing") {
   const db = await database();
 
   return db
     .select({ id: sideChatsTable.id })
     .from(sideChatsTable)
-    .where(
-      all
-        ? sql`${sideChatsTable.state} <> 'closed'`
-        : sql`${sideChatsTable.state} = 'closing' or (${sideChatsTable.state} = 'open' and ${sideChatsTable.lease_until} <= now())`,
-    );
+    .where(state ? eq(sideChatsTable.state, state) : undefined);
 }
 
 const TERMINAL_RUN_EVENTS = new Set<StreamChunk["type"]>([
@@ -1402,9 +1147,8 @@ export async function* observeRun(
   runId: string,
   cursor: number,
   signal: AbortSignal,
-  access?: SideAccess,
 ): AsyncGenerator<{ sequence: number; event: StreamChunk }> {
-  await checkCursor(runId, cursor, undefined, access);
+  await checkCursor(runId, cursor);
   const db = await database();
 
   while (!signal.aborted) {

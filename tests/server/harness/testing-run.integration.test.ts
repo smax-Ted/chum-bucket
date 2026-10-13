@@ -356,9 +356,7 @@ test(
       try {
         for (const scope of ["main", "side"] as const) {
           const parent = await createThread();
-          const access = { scope: randomUUID() };
-          const thread =
-            scope === "side" ? await openSideChat(parent.id, randomUUID(), access) : parent;
+          const thread = scope === "side" ? await openSideChat(parent.id) : parent;
           const input = {
             threadId: thread.id,
             runId: `registry-${randomUUID()}`,
@@ -369,7 +367,7 @@ test(
           const prompt = mock.method(agentRegistry.main, "systemPrompt", () => expectedPrompt);
           let admitted: Awaited<ReturnType<typeof persistRun>>;
           try {
-            admitted = await persistRun(input, scope === "side" ? access : undefined);
+            admitted = await persistRun(input);
           } finally {
             prompt.mock.restore();
           }
@@ -386,17 +384,17 @@ test(
             Object.defineProperty(agentRegistry.main, "model", { value: selectedModel });
           }
           await ensureStarted(admitted.run);
-          let state = await hydrateThread(thread.id, scope === "side" ? access : undefined);
+          let state = await hydrateThread(thread.id);
           for (let attempt = 0; attempt < 200 && state.activeRun; attempt += 1) {
             await delay(20);
-            state = await hydrateThread(thread.id, scope === "side" ? access : undefined);
+            state = await hydrateThread(thread.id);
           }
           assert.equal(state.activeRun, null);
           assert.equal(JSON.stringify(state.messages).includes("Registry reply"), true);
           assert.equal(requests.at(-1)?.systemPrompts?.[0], expectedPrompt);
           assert.equal(requests.at(-1)?.model, "deepseek-ai/DeepSeek-V4.1-Flash");
           assert.equal(requests.at(-1)?.adapterModel, "deepseek-ai/DeepSeek-V4.1-Flash");
-          const replay = await persistRun(input, scope === "side" ? access : undefined);
+          const replay = await persistRun(input);
           assert.equal(replay.run.prompt, expectedPrompt);
           assert.equal(replay.pending, false);
           const db = await database();

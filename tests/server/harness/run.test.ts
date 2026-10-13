@@ -1438,7 +1438,7 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
         assertSql(
           text,
           `select ${runColumns} from chat_runs where (state`,
-          `select ${runColumns} from chat_runs where (state = $1 and not exists (select 1 from side_chats where side_chats.id = thread_id and (side_chats.state <> 'open' or side_chats.lease_until <= now())) and not exists (select 1 from testing_operations where testing_operations.id = id and testing_operations.parent_run_id = id)) order by created_at`,
+          `select ${runColumns} from chat_runs where (state = $1 and not exists (select 1 from side_chats where side_chats.id = thread_id and side_chats.state <> 'open') and not exists (select 1 from testing_operations where testing_operations.id = id and testing_operations.parent_run_id = id)) order by created_at`,
         ),
       execute: (values) => {
         assert.equal(values[0], "pending");

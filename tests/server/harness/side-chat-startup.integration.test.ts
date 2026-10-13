@@ -62,8 +62,8 @@ DBOS.setConfig({name:'chum-bucket-chat', applicationVersion:BUILD, systemDatabas
 await DBOS.launch();
 const parentId = randomUUID();
 await db.insert(threadsTable).values({id:parentId,title:'Startup parent',messages:[]});
-const side = await openSideChat(parentId, randomUUID(), {scope:randomUUID()});
-const accepted = await persistRun({threadId:side.id,runId:'abandoned-'+randomUUID(),baseRevision:0,message:{id:'abandoned-user',text:'STARTUP CHILD'}},{scope:(await db.select().from(sideChatsTable).where(eq(sideChatsTable.id,side.id)))[0].page_scope});
+const side = await openSideChat(parentId);
+const accepted = await persistRun({threadId:side.id,runId:'abandoned-'+randomUUID(),baseRevision:0,message:{id:'abandoned-user',text:'STARTUP CHILD'}});
 await ensureStarted(accepted.run);
 while (!called) await delay(10);
 const oldSideRun = {...accepted.run,build:PREVIOUS_BUILD};
@@ -97,16 +97,14 @@ for(let attempt=0;attempt<200 && (await hydrateThread(${JSON.stringify(child.thr
 const side = (await db.select().from(sideChatsTable).where(eq(sideChatsTable.id,${JSON.stringify(child.childId)})))[0];
 const state = await hydrateThread(${JSON.stringify(child.threadId)});
 const status = await DBOS.getWorkflowStatus(${JSON.stringify(child.runId)});
-console.log('EVIDENCE '+JSON.stringify({childCalls,mainCalls,state:side.state,seed:side.seed,draft:side.draft,status,mainRoles:state.messages.map(message=>message.role),mainActive:state.activeRun}));
+console.log('EVIDENCE '+JSON.stringify({childCalls,mainCalls,side:side ?? null,status,mainRoles:state.messages.map(message=>message.role),mainActive:state.activeRun}));
 await shutdownChatRuntime();
 `,
     );
     assert.deepEqual(result, {
       childCalls: 0,
       mainCalls: 1,
-      state: "closed",
-      seed: null,
-      draft: null,
+      side: null,
       status: null,
       mainRoles: ["user", "assistant"],
       mainActive: null,
@@ -123,7 +121,7 @@ test(
         `
 const parentId = randomUUID();
 await db.insert(threadsTable).values({id:parentId,title:'Cutover parent',messages:[]});
-const side = await openSideChat(parentId, randomUUID(), {scope:randomUUID()});
+const side = await openSideChat(parentId);
 const main = await persistRun({threadId:parentId,runId:'legacy-cutover-'+randomUUID(),baseRevision:0,message:{id:'legacy-user',text:'Pending legacy main'}});
 await db.update(chatRunsTable).set({accepted:{...main.run,build:PREVIOUS_BUILD}}).where(eq(chatRunsTable.id,main.run.runId));
 const before = {run:(await db.select().from(chatRunsTable).where(eq(chatRunsTable.id,main.run.runId)))[0],side:(await db.select().from(sideChatsTable).where(eq(sideChatsTable.id,side.id)))[0],thread:(await db.select().from(threadsTable).where(eq(threadsTable.id,parentId)))[0]};

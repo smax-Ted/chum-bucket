@@ -18,13 +18,6 @@ import {
 } from "@/shared/testing-event";
 import type { TestRunId, TestView } from "@/shared/testing";
 import { mergeHydratedTestingView, mergeTestingView } from "../lib/testing-projections";
-import {
-  SIDE_SCOPE_HEADER,
-  SideChatOperationError,
-  isDefinitiveTransferRejection,
-  transferReceiptSchema,
-  type TransferReceipt,
-} from "@/shared/side-chat";
 
 const threadSchema = z.object({ id: z.uuid(), title: z.string() });
 type ThreadRecord = z.infer<typeof threadSchema>;
@@ -171,7 +164,6 @@ type ThreadOwner = {
   terminal: SendResult | null;
   compactOperationId: string | null;
   commandRejected: boolean;
-  unresolvedTransferKey: string | null;
   hydrationTimer: ReturnType<typeof setTimeout> | undefined;
   terminalTimer: ReturnType<typeof setTimeout> | undefined;
   commandController: AbortController | null;
@@ -200,22 +192,9 @@ function createOwner(): ThreadOwner {
     terminal: null,
     compactOperationId: null,
     commandRejected: false,
-    unresolvedTransferKey: null,
     hydrationTimer: undefined,
     terminalTimer: undefined,
     commandController: null,
-  };
-}
-
-function scopedFetcher(sideScope: string | undefined): typeof fetch {
-  return (url, init) => {
-    const headers = new Headers(init?.headers);
-
-    if (sideScope) {
-      headers.set(SIDE_SCOPE_HEADER, sideScope);
-    }
-
-    return fetch(url, { ...init, headers });
   };
 }
 
@@ -289,7 +268,7 @@ function observeApproval(state: ThreadState, chunk: StreamChunk) {
   }
 }
 
-function observeChunk(state: ThreadState, chunk: StreamChunk, sideScope: string | undefined) {
+function observeChunk(state: ThreadState, chunk: StreamChunk, side: boolean) {
   const { owner } = state;
   const terminal = terminalResult(chunk, owner.runId);
 
@@ -300,17 +279,17 @@ function observeChunk(state: ThreadState, chunk: StreamChunk, sideScope: string 
 
   observeCompaction(state, chunk);
 
-  if (!sideScope) {
+  if (!side) {
     observeProjection(state, chunk);
     observeApproval(state, chunk);
   }
 }
 
-function streamObserver(state: ThreadState, sideScope: string | undefined): StreamObserver {
+function streamObserver(state: ThreadState, side: boolean): StreamObserver {
   return async function* (stream) {
     try {
       for await (const chunk of stream) {
-        observeChunk(state, chunk, sideScope);
+        observeChunk(state, chunk, side);
         yield chunk;
       }
     } finally {
@@ -362,15 +341,11 @@ function absorbPublishedTesting(state: ThreadState, response: Response) {
     .catch(() => undefined);
 }
 
-function hydrationFetcher(
-  state: ThreadState,
-  scopedFetch: typeof fetch,
-  sideScope: string | undefined,
-): typeof fetch {
+function hydrationFetcher(state: ThreadState, side: boolean): typeof fetch {
   return async (url, init) => {
-    const response = await scopedFetch(url, init);
+    const response = await fetch(url, init);
 
-    if (!sideScope && isHydrationRequest(url, init)) {
+    if (!side && isHydrationRequest(url, init)) {
       absorbPublishedTesting(state, response);
     }
 
@@ -421,11 +396,9 @@ function hydrationFailed(state: ThreadState, cause: unknown): never {
   throw cause;
 }
 
-function createConnection(state: ThreadState, sideScope: string | undefined) {
-  const base = fetchServerSentEvents("/api/chat", {
-    fetchClient: hydrationFetcher(state, scopedFetcher(sideScope), sideScope),
-  });
-  const observe = streamObserver(state, sideScope);
+function createConnection(state: ThreadState, side: boolean) {
+  const base = fetchServerSentEvents("/api/chat", { fetchClient: hydrationFetcher(state, side) });
+  const observe = streamObserver(state, side);
   let hydration: Promise<HydrationResult> | undefined;
 
   return {
@@ -458,16 +431,16 @@ type ThreadConnection = ReturnType<typeof createConnection>["connection"];
 type ThreadRuntime = Readonly<{
   state: ThreadState;
   threadId: string;
-  sideScope: string | undefined;
+  side: boolean;
   chat: ReturnType<typeof useChat>;
   connection: ThreadConnection;
   observe: StreamObserver;
 }>;
 
 async function currentRevision(runtime: ThreadRuntime) {
-  const { threadId, sideScope } = runtime;
-  const response = await scopedFetcher(sideScope)(
-    sideScope
+  const { threadId, side } = runtime;
+  const response = await fetch(
+    side
       ? `/api/chat?threadId=${encodeURIComponent(threadId)}`
       : `/api/thread/${encodeURIComponent(threadId)}`,
   );
@@ -508,7 +481,7 @@ async function sendCompact(runtime: ThreadRuntime, revision: number, command: "c
   owner.commandController = controller;
   const transport = fetchServerSentEvents("/api/compact", {
     fetchClient: async (_url, init) => {
-      const response = await scopedFetcher(runtime.sideScope)("/api/compact", {
+      const response = await fetch("/api/compact", {
         ...init,
         body: JSON.stringify({
           threadId,
@@ -544,63 +517,13 @@ function beginSubmission(state: ThreadState, phase: ThreadPhase) {
   state.setCompactNotice(null);
 }
 
-function transferBlocked(owner: ThreadOwner, transferKey: string): boolean {
-  if (owner.submitting) {
-    return true;
-  }
-
-  return (
-    owner.phase !== "ready" &&
-    !(owner.phase === "uncertain" && owner.unresolvedTransferKey === transferKey)
-  );
-}
-
-async function acceptedReceipt(
-  runtime: ThreadRuntime,
-  accept: () => Promise<TransferReceipt>,
-  transferKey: string,
-): Promise<TransferReceipt> {
-  const { state } = runtime;
-
-  try {
-    const receipt = transferReceiptSchema.parse(await accept());
-
-    if (receipt.parentThreadId !== runtime.threadId || receipt.transferKey !== transferKey) {
-      throw new Error("摘要回填收據不符");
-    }
-
-    return receipt;
-  } catch (cause) {
-    state.owner.submitting = false;
-
-    if (isDefinitiveTransferRejection(cause)) {
-      state.owner.unresolvedTransferKey = null;
-      publish(state, "ready");
-      throw cause;
-    }
-
-    const uncertain = new SideChatOperationError(
-      "uncertain",
-      "回填結果尚未確認。請在原附屬對話重試同一筆回填，請勿另行送出。",
-      { cause },
-    );
-    publish(state, "uncertain");
-    state.setError(uncertain.message);
-    throw uncertain;
-  }
-}
-
-function joinAcceptedRun(runtime: ThreadRuntime, receipt: TransferReceipt) {
+function joinAcceptedRun(runtime: ThreadRuntime, runId: string) {
   const { state } = runtime;
   const { owner } = state;
-  owner.unresolvedTransferKey = null;
-  owner.runId = receipt.mainRunId;
+  owner.runId = runId;
   const controller = new AbortController();
   owner.commandController = controller;
-  void consumeAcceptedStream(
-    runtime,
-    runtime.connection.joinRun(receipt.mainRunId, controller.signal),
-  )
+  void consumeAcceptedStream(runtime, runtime.connection.joinRun(runId, controller.signal))
     .catch((cause: unknown) => {
       if (owner.mounted) {
         state.setError(errorMessage(cause));
@@ -613,29 +536,26 @@ function joinAcceptedRun(runtime: ThreadRuntime, receipt: TransferReceipt) {
     });
 }
 
-async function acceptExternalRun(
-  runtime: ThreadRuntime,
-  accept: () => Promise<TransferReceipt>,
-  transferKey: string,
-): Promise<TransferReceipt> {
+async function acceptExternalRun(runtime: ThreadRuntime, accept: () => Promise<string>) {
   const { state } = runtime;
   const { owner } = state;
 
-  if (transferBlocked(owner, transferKey)) {
-    throw new SideChatOperationError(
-      "blocked",
-      owner.unresolvedTransferKey
-        ? "主對話有尚未確認的回填，請先在原附屬對話重試同一筆回填。"
-        : "主對話忙碌或結果尚未確認，摘要草稿已保留。",
-    );
+  if (owner.submitting || owner.phase !== "ready") {
+    throw new Error("主對話忙碌中，摘要草稿已保留。");
   }
 
-  owner.unresolvedTransferKey = transferKey;
   beginSubmission(state, "busy");
-  const receipt = await acceptedReceipt(runtime, accept, transferKey);
-  joinAcceptedRun(runtime, receipt);
+  let runId: string;
 
-  return receipt;
+  try {
+    runId = await accept();
+  } catch (cause) {
+    owner.submitting = false;
+    publish(state, "ready");
+    throw cause;
+  }
+
+  joinAcceptedRun(runtime, runId);
 }
 
 async function dispatchTurn(
@@ -715,7 +635,7 @@ async function requestTestingCancel(threadId: string, runId: TestRunId): Promise
 }
 
 async function cancelTesting(runtime: ThreadRuntime, runId: TestRunId): Promise<void> {
-  if (runtime.sideScope) {
+  if (runtime.side) {
     throw new Error("附屬對話不支援測試取消。");
   }
 
@@ -742,7 +662,7 @@ function navigate(runtime: ThreadRuntime, id: string | null) {
   return true;
 }
 
-export function useThread(threadId: string, sideScope?: string) {
+export function useThread(threadId: string, side = false) {
   const [phase, setPhase] = useState<ThreadPhase>("loading");
   const [error, setError] = useState<string | null>(null);
   const [compactNotice, setCompactNotice] = useState<CompactNotice | null>(null);
@@ -759,11 +679,11 @@ export function useThread(threadId: string, sideScope?: string) {
   };
   const observedStream = useRef<StreamObserver | null>(null);
   const connection = useMemo(() => {
-    const created = createConnection(state, sideScope);
+    const created = createConnection(state, side);
     observedStream.current = created.observe;
 
     return created.connection;
-  }, [threadId, sideScope]);
+  }, [threadId, side]);
   const chat = useChat({ connection, threadId, persistence: true });
   useEffect(() => {
     owner.mounted = true;
@@ -778,7 +698,7 @@ export function useThread(threadId: string, sideScope?: string) {
   const runtime: ThreadRuntime = {
     state,
     threadId,
-    sideScope,
+    side,
     chat,
     connection,
     observe: (stream) => observedStream.current!(stream),
@@ -811,8 +731,7 @@ export function useThread(threadId: string, sideScope?: string) {
     cancelTesting: (runId: TestRunId) => cancelTesting(runtime, runId),
     send: (text: string) => send(runtime, text),
     compact: () => send(runtime, "/compact"),
-    acceptExternalRun: (accept: () => Promise<TransferReceipt>, transferKey: string) =>
-      acceptExternalRun(runtime, accept, transferKey),
+    acceptExternalRun: (accept: () => Promise<string>) => acceptExternalRun(runtime, accept),
     navigate: (id: string | null) => navigate(runtime, id),
   };
 }

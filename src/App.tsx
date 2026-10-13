@@ -169,7 +169,6 @@ function ThreadPage({ threadId }: { threadId: string }) {
               <SideChatPane
                 key={entry.id}
                 entry={entry}
-                scope={sideChats.scope}
                 mainBusy={
                   thread.phase === "busy" ||
                   thread.phase === "compacting" ||

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import app from "../../server/chat";
-import { SIDE_SCOPE_HEADER } from "../../shared/side-chat";
 
 const id = "48c8797e-b4d7-4db3-aa7e-87a5a166710c";
 const headers = {
@@ -12,12 +11,11 @@ const headers = {
   Referer: "http://localhost/",
 };
 
-test("approval commands reject cross-origin, side scope, and missing main-thread markers", async () => {
+test("approval commands reject cross-origin and missing approval markers", async () => {
   for (const patch of [
     { "Sec-Fetch-Site": "cross-site", Origin: "", Referer: "" },
     { "Sec-Fetch-Site": "", Origin: "https://foreign.example.test", Referer: "" },
     { "Sec-Fetch-Site": "", Origin: "", Referer: "not a URL" },
-    { [SIDE_SCOPE_HEADER]: id },
     { "X-Tool-Approval": "" },
   ] as Record<string, string>[]) {
     const response = await app.request(`/approvals/${id}/decision`, {

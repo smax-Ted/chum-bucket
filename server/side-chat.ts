@@ -1,23 +1,18 @@
-import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
-import {
-  SIDE_SCOPE_HEADER,
-  sideOpenSchema,
-  sideScopeSchema,
-  sideTransferSchema,
-} from "../shared/side-chat";
+import { sideTransferSchema } from "../shared/side-chat";
 import {
   RunRequestError,
-  heartbeatSideScope,
   openSideChat,
-  readSideSummaryRange,
-  saveSideDraft,
+  readSideTranscript,
   transferSideSummary,
 } from "./harness/run-store";
 import { discardSideChat, ensureStarted, trackSideSummary } from "./harness/run";
 import { summarizeTranscript } from "./harness/compaction";
+
+const FRAGMENT_CHARS = 12_000;
+const BATCH_BYTES = 60_000;
 
 const app = new Hono();
 app.use("*", bodyLimit({ maxSize: 40_000 }));
@@ -31,16 +26,6 @@ app.onError((error, c) => {
   return c.json({ error: "附屬對話操作失敗，草稿已保留。" }, 503);
 });
 
-function access(header?: string) {
-  const parsed = sideScopeSchema.safeParse(header);
-
-  if (!parsed.success) {
-    throw new RunRequestError(400, "A valid side chat page scope is required");
-  }
-
-  return { scope: parsed.data };
-}
-
 function sideId(value: string) {
   const parsed = z.uuid().safeParse(value);
 
@@ -51,38 +36,18 @@ function sideId(value: string) {
   return parsed.data;
 }
 
-app.post("/open/:parentId", async (c) => {
-  const input = sideOpenSchema.safeParse(await c.req.json().catch(() => null));
-
-  if (!input.success) {
-    throw new RunRequestError(400, "Invalid open command");
-  }
-
-  return c.json(
-    await openSideChat(
-      sideId(c.req.param("parentId")),
-      input.data.openKey,
-      access(c.req.header(SIDE_SCOPE_HEADER)),
-    ),
-  );
-});
-
-app.post("/heartbeat", async (c) => {
-  await heartbeatSideScope(access(c.req.header(SIDE_SCOPE_HEADER)));
-
-  return c.json({ renewed: true });
-});
+app.post("/open/:parentId", async (c) =>
+  c.json(await openSideChat(sideId(c.req.param("parentId")))),
+);
 
 app.post("/:id/summary", async (c) => {
   const id = sideId(c.req.param("id"));
-  const owner = access(c.req.header(SIDE_SCOPE_HEADER));
 
   return c.json(
     await trackSideSummary(id, async (signal) => {
-      const range = await readSideSummaryRange(id, owner);
-      signal.throwIfAborted();
+      const transcript = await readSideTranscript(id);
       let text: string | null = null;
-      let batch = [] as typeof range.transcript;
+      let batch = [] as typeof transcript;
       let bytes = 0;
 
       async function flush() {
@@ -99,18 +64,20 @@ app.post("/:id/summary", async (c) => {
         bytes = 0;
       }
 
-      for (const message of range.transcript) {
+      for (const message of transcript) {
         const original = JSON.stringify(message);
 
-        for (let offset = 0; offset < original.length; offset += 12_000) {
+        for (let offset = 0; offset < original.length; offset += FRAGMENT_CHARS) {
           const fragment = {
             id: `${message.id}/fragment/${offset}`,
             role: "user" as const,
-            parts: [{ type: "text" as const, content: original.slice(offset, offset + 12_000) }],
+            parts: [
+              { type: "text" as const, content: original.slice(offset, offset + FRAGMENT_CHARS) },
+            ],
           };
           const size = Buffer.byteLength(JSON.stringify(fragment));
 
-          if (bytes + size > 60_000) {
+          if (bytes + size > BATCH_BYTES) {
             await flush();
           }
 
@@ -120,14 +87,8 @@ app.post("/:id/summary", async (c) => {
       }
 
       await flush();
-      signal.throwIfAborted();
 
-      return saveSideDraft(id, owner, range.epoch, {
-        id: randomUUID(),
-        sideRevision: range.sideRevision,
-        through: range.through,
-        text: text!,
-      });
+      return { text: text! };
     }),
   );
 });
@@ -140,8 +101,7 @@ app.post("/:id/transfer", async (c) => {
   }
 
   const id = sideId(c.req.param("id"));
-  const owner = access(c.req.header(SIDE_SCOPE_HEADER));
-  const accepted = await transferSideSummary(id, owner, input.data);
+  const accepted = await transferSideSummary(id, input.data.text);
 
   if (accepted.pending) {
     await ensureStarted(accepted.run).catch((error: unknown) =>
@@ -149,15 +109,15 @@ app.post("/:id/transfer", async (c) => {
     );
   }
 
-  void discardSideChat(id, owner).catch((error: unknown) =>
+  void discardSideChat(id).catch((error: unknown) =>
     console.error("Accepted transfer cleanup retries via the side scanner", error),
   );
 
-  return c.json(accepted.receipt);
+  return c.json({ runId: accepted.run.runId });
 });
 
 app.delete("/:id", async (c) => {
-  await discardSideChat(sideId(c.req.param("id")), access(c.req.header(SIDE_SCOPE_HEADER)));
+  await discardSideChat(sideId(c.req.param("id")));
 
   return c.json({ discarded: true });
 });
