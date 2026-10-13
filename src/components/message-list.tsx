@@ -1,49 +1,164 @@
-import { createParser, Renderer, type ParseResult } from "@openuidev/react-lang";
+import { Renderer, type ActionEvent } from "@openuidev/react-lang";
 import { MarkDownRenderer } from "@openuidev/react-ui";
 import { openuiLibrary } from "@openuidev/react-ui/genui-lib";
-import { useMemo } from "react";
+import { useMemo, useRef, useState } from "react";
 import remarkGfm from "remark-gfm";
+
+import type { SendResult } from "../hooks/use-threads";
+import type { TestRunId, TestView } from "../../shared/testing";
+import { testingTimeline } from "../lib/testing-timeline";
+import { assistantReplySegments } from "../lib/assistant-reply";
+export { parseAssistantReply } from "../lib/assistant-reply";
 
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Marker, MarkerContent } from "@/components/ui/marker";
-import { Message, MessageContent, MessageGroup, MessageHeader } from "@/components/ui/message";
+import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
+import { MessageScrollerItem } from "@/components/ui/message-scroller";
 import { type ChatMessage } from "./types";
 import { ToolCall } from "./tool-call";
+import { TestingPanel } from "./testing-panel";
 
-const assistantReplyParser = createParser(openuiLibrary.toJSONSchema(), openuiLibrary.root);
-const openuiStart = /^\s*\$?[A-Za-z_]\w*\s*=(?!=)/;
+const EMPTY_TESTING_VIEWS: readonly TestView[] = [];
 const markdownOptions = { remarkPlugins: [remarkGfm] };
 
-export function parseAssistantReply(text: string): ParseResult {
-  return assistantReplyParser.parse(text);
+const MESSAGE_ALIGN = {
+  system: "start",
+  user: "end",
+  assistant: "start",
+} as const;
+
+export function formatActionMessage(event: ActionEvent): string | null {
+  if (event.type !== "continue_conversation") {
+    return null;
+  }
+
+  const details: {
+    formState?: Record<string, unknown>;
+    formName?: string;
+    context?: unknown;
+  } = {};
+
+  if (event.formState !== undefined) {
+    details.formState = event.formState;
+  }
+
+  if (event.formName !== undefined) {
+    details.formName = event.formName;
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(event.params, "context") &&
+    event.params.context !== undefined
+  ) {
+    details.context = event.params.context;
+  }
+
+  if (Object.keys(details).length === 0) {
+    return event.humanFriendlyMessage;
+  }
+
+  return `${event.humanFriendlyMessage}\n\n${JSON.stringify(details, null, 2)}`;
 }
 
-function AssistantMessage({ text, isStreaming }: { text: string; isStreaming: boolean }) {
-  const result = useMemo(
-    () => (isStreaming ? null : parseAssistantReply(text)),
-    [text, isStreaming],
-  );
-  const errors = result?.meta.errors ?? [];
+type ActionStatus = { kind: "idle" } | { kind: "pending" } | { kind: "error"; message: string };
 
-  if (!openuiStart.test(text) || result?.root === null) {
-    return (
-      <Bubble variant="muted" align="start">
-        <BubbleContent>
-          <MarkDownRenderer textMarkdown={text} options={markdownOptions} />
-        </BubbleContent>
-      </Bubble>
-    );
+function messageText(message: ChatMessage): string {
+  return message.parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.content)
+    .join("");
+}
+
+function messageHeader(message: ChatMessage, agent: string): string | null {
+  if (message.metadata?.fromSummary) {
+    return "壓縮摘要";
   }
+
+  if (message.role === "assistant") {
+    return agent;
+  }
+
+  return null;
+}
+
+function AssistantMessage({
+  text,
+  isStreaming,
+  controlsDisabled,
+  onAction,
+}: {
+  text: string;
+  isStreaming: boolean;
+  controlsDisabled: boolean;
+  onAction: (event: ActionEvent) => void;
+}) {
+  const segments = useMemo(() => assistantReplySegments(text, isStreaming), [text, isStreaming]);
 
   return (
     <div className="flex min-w-0 flex-col gap-1">
-      {errors.length > 0 ? (
-        <p className="text-xs text-destructive">
-          部分元件無法解析：
-          {[...new Set(errors.map((error) => error.component))].join("、")}
-        </p>
+      {segments.map((segment) =>
+        segment.kind === "text" ? (
+          <Bubble key={segment.start} variant="muted" align="start">
+            <BubbleContent>
+              {segment.warning ? (
+                <p className="text-xs text-destructive">{segment.warning}</p>
+              ) : null}
+              <MarkDownRenderer textMarkdown={segment.source} options={markdownOptions} />
+            </BubbleContent>
+          </Bubble>
+        ) : (
+          <div key={segment.start} className="flex min-w-0 flex-col gap-1">
+            {segment.errorNames.length > 0 ? (
+              <p className="text-xs text-destructive">
+                部分元件無法解析：
+                {segment.errorNames.join("、")}
+              </p>
+            ) : null}
+            <fieldset
+              disabled={controlsDisabled}
+              inert={controlsDisabled}
+              className="m-0 min-w-0 border-0 p-0"
+            >
+              <Renderer
+                response={segment.response}
+                library={openuiLibrary}
+                isStreaming={segment.isStreaming}
+                onAction={onAction}
+              />
+            </fieldset>
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
+
+function AssistantBody({
+  message,
+  text,
+  isStreaming,
+  controlsDisabled,
+  onAction,
+}: {
+  message: ChatMessage;
+  text: string;
+  isStreaming: boolean;
+  controlsDisabled: boolean;
+  onAction: (event: ActionEvent) => void;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      {message.parts.map((part) =>
+        part.type === "tool-call" ? <ToolCall key={part.id} part={part} /> : null,
+      )}
+      {text.trim() !== "" ? (
+        <AssistantMessage
+          text={text}
+          isStreaming={isStreaming}
+          controlsDisabled={controlsDisabled}
+          onAction={onAction}
+        />
       ) : null}
-      <Renderer response={text} library={openuiLibrary} isStreaming={isStreaming} />
     </div>
   );
 }
@@ -52,15 +167,16 @@ function ChatMessageRow({
   message,
   agent,
   isStreaming,
+  controlsDisabled,
+  onAction,
 }: {
   message: ChatMessage;
   agent: string;
   isStreaming: boolean;
+  controlsDisabled: boolean;
+  onAction: (event: ActionEvent) => void;
 }) {
-  const text = message.parts
-    .filter((part) => part.type === "text")
-    .map((part) => part.content)
-    .join("");
+  const text = messageText(message);
 
   if (message.role === "system") {
     return (
@@ -70,23 +186,27 @@ function ChatMessageRow({
     );
   }
 
-  const summary = message.metadata?.fromSummary === true;
-  const align = message.role === "user" && !summary ? "end" : "start";
-  const header = summary ? "壓縮摘要" : message.role === "assistant" ? agent : null;
+  const align = message.metadata?.fromSummary ? "start" : MESSAGE_ALIGN[message.role];
+  const header = messageHeader(message, agent);
 
   return (
     <Message align={align}>
       <MessageContent>
         {header ? <MessageHeader>{header}</MessageHeader> : null}
-        {message.role === "assistant" ? (
-          <div className="flex min-w-0 flex-col gap-2">
-            {message.parts.map((part) =>
-              part.type === "tool-call" ? <ToolCall key={part.id} part={part} /> : null,
-            )}
-            {text.trim() !== "" ? <AssistantMessage text={text} isStreaming={isStreaming} /> : null}
-          </div>
+        {message.metadata?.fromSummary ? (
+          <Bubble variant="muted" align="start">
+            <BubbleContent className="whitespace-pre-wrap">{text}</BubbleContent>
+          </Bubble>
+        ) : message.role === "assistant" ? (
+          <AssistantBody
+            message={message}
+            text={text}
+            isStreaming={isStreaming}
+            controlsDisabled={controlsDisabled}
+            onAction={onAction}
+          />
         ) : (
-          <Bubble variant={summary ? "muted" : "default"} align={align}>
+          <Bubble variant="default" align={align}>
             <BubbleContent className="whitespace-pre-wrap">{text}</BubbleContent>
           </Bubble>
         )}
@@ -95,27 +215,112 @@ function ChatMessageRow({
   );
 }
 
+function CompactMarker() {
+  return (
+    <MessageScrollerItem messageId="transient-compact-status">
+      <Marker role="status" variant="separator">
+        <MarkerContent>compact...</MarkerContent>
+      </Marker>
+    </MessageScrollerItem>
+  );
+}
+
+const ACTION_RESULT_ERRORS: Partial<Record<SendResult, string>> = {
+  failed: "執行失敗，原文已保留。",
+  uncertain: "結果尚未確認，請重新載入對話，原文已保留。",
+};
+
+function actionStatusFor(result: SendResult): ActionStatus {
+  const message = ACTION_RESULT_ERRORS[result];
+
+  return message ? { kind: "error", message } : { kind: "idle" };
+}
+
+function actionFailure(cause: unknown): ActionStatus {
+  const message =
+    cause instanceof Error && cause.message.trim() !== ""
+      ? `送出互動訊息失敗：${cause.message}`
+      : "送出互動訊息失敗，請確認對話狀態後再操作。";
+
+  return { kind: "error", message };
+}
+
 export function MessageList({
   messages,
   agent,
+  onSend,
+  disabled = false,
   isStreaming = false,
+  compacting = false,
+  testingViews = EMPTY_TESTING_VIEWS,
+  onCancelTesting,
+  activeRunId = null,
 }: {
   messages: ChatMessage[];
   agent: string;
+  onSend?: (text: string) => Promise<SendResult>;
+  disabled?: boolean;
   isStreaming?: boolean;
+  compacting?: boolean;
+  testingViews?: readonly TestView[];
+  onCancelTesting?: (runId: TestRunId) => Promise<void>;
+  activeRunId?: string | null;
 }) {
+  const actionLock = useRef(false);
+  const [actionStatus, setActionStatus] = useState<ActionStatus>({ kind: "idle" });
+  const sendBlocked = disabled || isStreaming || compacting || !onSend;
+  const controlsDisabled = sendBlocked || actionStatus.kind === "pending";
   const streamingId = isStreaming ? messages.at(-1)?.id : undefined;
 
+  async function handleAction(event: ActionEvent) {
+    if (event.type !== "continue_conversation" || sendBlocked || actionLock.current) {
+      return;
+    }
+
+    actionLock.current = true;
+    setActionStatus({ kind: "pending" });
+
+    try {
+      const text = formatActionMessage(event);
+      setActionStatus(text === null ? { kind: "idle" } : actionStatusFor(await onSend(text)));
+    } catch (cause) {
+      setActionStatus(actionFailure(cause));
+    } finally {
+      actionLock.current = false;
+    }
+  }
+
   return (
-    <MessageGroup className="gap-4">
-      {messages.map((message) => (
-        <ChatMessageRow
-          key={message.id}
-          message={message}
-          agent={agent}
-          isStreaming={message.id === streamingId && message.role === "assistant"}
-        />
+    <>
+      {testingTimeline(messages, testingViews, isStreaming, activeRunId).map((row) => (
+        <MessageScrollerItem
+          key={row.key}
+          messageId={row.kind === "message" ? row.message.id : `testing-${row.view.runId}`}
+        >
+          {row.kind === "testing" ? (
+            <TestingPanel view={row.view} onCancel={onCancelTesting} />
+          ) : (
+            <ChatMessageRow
+              message={row.message}
+              agent={agent}
+              isStreaming={row.message.id === streamingId && row.message.role === "assistant"}
+              controlsDisabled={controlsDisabled}
+              onAction={handleAction}
+            />
+          )}
+        </MessageScrollerItem>
       ))}
-    </MessageGroup>
+      {compacting ? <CompactMarker /> : null}
+      {actionStatus.kind === "pending" ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          正在送出互動訊息…
+        </p>
+      ) : null}
+      {actionStatus.kind === "error" ? (
+        <p role="alert" className="text-sm text-destructive">
+          {actionStatus.message}
+        </p>
+      ) : null}
+    </>
   );
 }
