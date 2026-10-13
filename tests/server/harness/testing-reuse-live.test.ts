@@ -38,7 +38,6 @@ function intentFor(raw: unknown): TestingRequestInput {
   return {
     goal: requirements.goal,
     sources: requirements.captures.map((capture) => capture.reference),
-    criteria: requirements.selection,
     ...resultTaskContext(plan, input),
     existingArtifacts: rows.map((row) => artifactRefSchema.parse(row.ref)),
     task: { version: 2, input },

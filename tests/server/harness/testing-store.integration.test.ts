@@ -82,7 +82,6 @@ const sourceInput = {
   summary: "Read checkout requirements",
   goal,
   sources: [source],
-  criteria: { kind: "all" },
 } as const;
 
 async function parentRun(threadId: string) {
@@ -1681,7 +1680,7 @@ test(
         .where(eq(testingPublicationsTable.operation_id, admission.operationId));
       await db
         .update(testingOperationsTable)
-        .set({ intent: { goal, sources: [source], criteria: { kind: "all" }, targetUrl } })
+        .set({ intent: { goal, sources: [source], targetUrl } })
         .where(eq(testingOperationsTable.id, admission.operationId));
       ids.push(admission.operationId);
     }

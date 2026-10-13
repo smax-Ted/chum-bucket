@@ -131,7 +131,6 @@ test("explicit bad refs and cross-run results reject without dropping any ref", 
   const intent = {
     goal: "Verify checkout",
     sources: [{ kind: "jira" as const, issueKey: "CHUM-42" }],
-    criteria: { kind: "all" as const },
     targetUrl: "https://preview.example.test/checkout",
   };
   const missing = artifactRefSchema.parse("missing-artifact");
@@ -175,7 +174,6 @@ test("planner accepts grounded unresolved requirements with false completeness w
   const intent: TestingRequestInput = {
     goal: "Verify checkout",
     sources: [source],
-    criteria: { kind: "all" },
     targetUrl: null,
     task: {
       version: 2,
@@ -193,7 +191,6 @@ test("planner accepts grounded unresolved requirements with false completeness w
     },
     {
       goal: intent.goal,
-      selection: intent.criteria,
       captures: [
         {
           reference: source,
@@ -231,11 +228,7 @@ test("planner accepts grounded unresolved requirements with false completeness w
     payload: requirements.value,
     payloadDigest: digestOf(requirements.value),
     metadata,
-    scopeDigest: requirementsScopeDigest({
-      goal: intent.goal,
-      sources: intent.sources,
-      selection: intent.criteria,
-    }),
+    scopeDigest: requirementsScopeDigest({ goal: intent.goal, sources: intent.sources }),
   });
   const decide = (value: StoredArtifactRow) =>
     closureDecisions({
@@ -338,7 +331,6 @@ test("host runtime rejects an empty owner snapshot", () => {
 test("a plan bound to no target stays reusable for an explicit execution URL", () => {
   const source = { kind: "jira" as const, issueKey: "CHUM-42" };
   const goal = "Verify checkout";
-  const selection = { kind: "all" as const };
   const requirements = validateRequirements(
     {
       criteria: [{ key: "AC-1", statement: "Receipt appears", source, anchor: "AC-1" }],
@@ -346,7 +338,6 @@ test("a plan bound to no target stays reusable for an explicit execution URL", (
     },
     {
       goal,
-      selection,
       captures: [
         {
           reference: source,
@@ -414,7 +405,7 @@ test("a plan bound to no target stays reusable for an explicit execution URL", (
     payload: requirements.value,
     payloadDigest: requirementsDigest,
     metadata: metadata(requirementsDigest, []),
-    scopeDigest: requirementsScopeDigest({ goal, sources: [source], selection }),
+    scopeDigest: requirementsScopeDigest({ goal, sources: [source] }),
   });
   const planRow = (targetUrl: string | null) => {
     const payload = { ...plan.value, targetUrl };
@@ -440,7 +431,6 @@ test("a plan bound to no target stays reusable for an explicit execution URL", (
       intent: {
         goal,
         sources: [source],
-        criteria: selection,
         targetUrl,
         task: {
           version: 2,

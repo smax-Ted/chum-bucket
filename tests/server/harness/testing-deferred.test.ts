@@ -56,7 +56,7 @@ function fetmRequirements(captures: readonly SourceCapture[] = [capture]): Requi
         })),
         unresolved: [],
       },
-      { goal: "Plan FETM-78", selection: { kind: "all" }, captures },
+      { goal: "Plan FETM-78", captures },
     ),
   );
 }
@@ -216,7 +216,7 @@ test("a style check without the requested design is still rejected and never cov
   ]);
 });
 
-test("every selected criterion must be covered and rejections name the criterion", () => {
+test("every criterion must be covered and rejections name the criterion", () => {
   const result = canonicalizePlan(
     { cases: functionalKeys.map(functionalCase), deferredCases: [deferredCase("UI-AC-1")] },
     context,
@@ -230,35 +230,12 @@ test("every selected criterion must be covered and rejections name the criterion
   });
 });
 
-test("deferred cases reject unknown, unselected and duplicate identities", () => {
-  const selected = accept(
-    validateRequirements(
-      {
-        criteria: [...functionalKeys, ...uiKeys].map((key) => ({
-          key,
-          statement: `Statement for ${key}`,
-          source,
-          anchor: key,
-        })),
-        unresolved: [],
-      },
-      {
-        goal: "Plan FETM-78",
-        selection: { kind: "selected", keys: ["AC-1"] },
-        captures: [capture],
-      },
-    ),
-  );
-  const selectedContext = {
-    ...context,
-    requirements: selected,
-    requirementsDigest: digestOf(selected),
-  };
+test("deferred cases reject unknown and duplicate identities", () => {
   const result = canonicalizePlan(
     {
-      cases: [functionalCase("AC-1")],
+      cases: functionalKeys.map(functionalCase),
       deferredCases: [
-        deferredCase("UI-AC-1"),
+        ...uiKeys.map((key) => deferredCase(key)),
         deferredCase("AC-1", {
           expectations: [
             { criterionId: "crit:missing", expectedObservation: "Missing criterion outcome" },
@@ -270,12 +247,11 @@ test("deferred cases reject unknown, unselected and duplicate identities", () =>
         deferredCase("AC-1", { id: "deferred-AC-1" }),
       ],
     },
-    selectedContext,
+    context,
   );
   assert.deepEqual(result, {
     kind: "rejected",
     issues: [
-      "deferred case deferred-UI-AC-1 references an unselected criterion",
       "deferred case deferred-missing references an unknown criterion",
       "duplicate case id case-AC-1",
       "duplicate case id deferred-AC-1",

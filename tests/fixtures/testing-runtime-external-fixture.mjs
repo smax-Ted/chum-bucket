@@ -162,7 +162,6 @@ export const planningMixedPrompt =
 export const planningMixedIntent = {
   goal: "Verify checkout",
   sources: [{ kind: "jira", issueKey: "CHUM-42" }],
-  criteria: { kind: "all" },
   executionRoles: [],
 };
 
@@ -190,7 +189,6 @@ export function scriptedEvents(options, control = {}) {
               summary: intent.summary ?? "Read checkout requirements",
               goal: intent.goal,
               sources: intent.sources,
-              criteria: intent.criteria,
             },
       );
     }
@@ -351,14 +349,10 @@ export function scriptedEvents(options, control = {}) {
   }
 
   if (role === "planner") {
-    const universe = task.requirements?.criteria ?? [];
-    const selected =
-      task.requirements?.selection?.kind === "selected"
-        ? universe.filter((criterion) => task.requirements.selection.keys.includes(criterion.key))
-        : universe;
+    const criteria = task.requirements?.criteria ?? [];
     const checks =
-      selected.length > 1 || task.requirements?.selection?.kind === "selected"
-        ? selected.map((criterion, index) => ({
+      criteria.length > 1
+        ? criteria.map((criterion, index) => ({
             id: `check-${index + 1}`,
             criterionId: criterion.id,
             kind: "functional",
@@ -368,7 +362,7 @@ export function scriptedEvents(options, control = {}) {
         : [
             {
               id: "check-1",
-              criterionId: selected[0]?.id ?? "crit:missing",
+              criterionId: criteria[0]?.id ?? "crit:missing",
               kind: "functional",
               expectedObservation: "UNIQUE-EXPECTED",
               observation: { kind: "text", target: "Order confirmation", comparison: "equals" },

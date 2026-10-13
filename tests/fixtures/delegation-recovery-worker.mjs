@@ -18,7 +18,6 @@ if (!threadId) {
   const intent = {
     goal: "Verify checkout",
     sources: [{ kind: "jira", issueKey: "CHUM-42" }],
-    criteria: { kind: "all" },
   };
   const parent = await persistRun({
     threadId,

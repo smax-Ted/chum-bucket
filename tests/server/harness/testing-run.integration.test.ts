@@ -241,7 +241,6 @@ async function createThread() {
 const intent = {
   goal: "Verify checkout",
   sources: [{ kind: "jira", issueKey: "CHUM-42" }],
-  criteria: { kind: "all" },
   targetUrl: "https://preview.example.test/checkout",
 };
 
@@ -473,7 +472,6 @@ test(
         await chat(thread, {
           goal: intent.goal,
           sources: intent.sources,
-          criteria: intent.criteria,
         });
         const done = await waitChat(thread.id);
         assert.deepEqual(
@@ -522,7 +520,7 @@ test(
 );
 
 test(
-  "anchor extraction preserves all and selected scope, repairs field errors once and persists explicit failure privately",
+  "anchor extraction preserves full scope, repairs field errors once and persists explicit failure privately",
   { skip: !enabled, timeout: 120_000 },
   async () => {
     const fixture = mcpFixture({
@@ -541,7 +539,6 @@ test(
       async () => {
         for (const scenario of [
           "anchor-all",
-          "anchor-selected",
           "anchor-repair",
           "anchor-not-extractable",
           "anchor-incomplete-captures",
@@ -561,10 +558,6 @@ test(
                     { kind: "confluence", pageId: "missing-page" },
                   ]
                 : [{ kind: "jira", issueKey: "FETM-78" }],
-            criteria:
-              scenario === "anchor-selected"
-                ? { kind: "selected", keys: ["AC-2", "AC-5"] }
-                : { kind: "all" },
           });
           const done = await waitChat(thread.id);
           const view = done.publishedTasks[0]!;
@@ -596,12 +589,6 @@ test(
                 ["AC-1", "AC-2", "AC-3", "AC-4", "AC-5", "AC-6", "AC-7"],
               );
               assert.equal(result.payload.criteria[6]?.anchor, anchorScenarioSource);
-              assert.deepEqual(
-                result.payload.selection,
-                scenario === "anchor-selected"
-                  ? { kind: "selected", keys: ["AC-2", "AC-5"] }
-                  : { kind: "all" },
-              );
             }
           }
           if (scenario === "anchor-repair") {
@@ -709,7 +696,6 @@ test(
             summary: "Capture Jira requirements",
             goal: "Plan checkout",
             sources: [{ kind: "jira", issueKey: "FETM-78" }],
-            criteria: { kind: "all" },
           });
           const done = await waitChat(thread.id);
           const result = done.publishedTasks[0]?.task?.result;
@@ -917,7 +903,6 @@ test(
       summary: "Read checkout",
       goal: intent.goal,
       sources: intent.sources,
-      criteria: intent.criteria,
     };
     const admission = await admitAttachedTesting(parent.run, "reserved", input);
     await reserveRoleTask(parent.run.runId, admission.operationId, "atlassian", input);

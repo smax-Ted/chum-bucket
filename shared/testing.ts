@@ -40,29 +40,11 @@ export const sourceSchema = z.discriminatedUnion("kind", [
       .trim()
       .min(1)
       .max(128)
-      .describe("Jira source issue identity, for example PROJ-123. Not a criterion selection key."),
+      .describe("Jira source issue identity, for example PROJ-123."),
   }),
   z.strictObject({ kind: z.literal("confluence"), pageId: z.string().trim().min(1).max(128) }),
 ]);
 export type Source = Readonly<z.infer<typeof sourceSchema>>;
-
-export const criteriaSelectionSchema = z
-  .discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("all") }),
-    z.strictObject({
-      kind: z.literal("selected"),
-      keys: z
-        .array(z.string().trim().min(1).max(128))
-        .min(1)
-        .describe(
-          "Explicit criterion keys such as AC-2 and AC-5. Preserve exactly; do not substitute source issue keys or widen the subset.",
-        ),
-    }),
-  ])
-  .describe(
-    "Use all for a whole issue or page. Use selected only for explicitly requested criterion keys, not source identities.",
-  );
-export type CriteriaSelection = Readonly<z.infer<typeof criteriaSelectionSchema>>;
 
 export const designReferenceSchema = z.strictObject({
   fileKey: z.string().trim().min(1).max(256),
@@ -81,7 +63,6 @@ export type DesignCapture = Readonly<z.infer<typeof designCaptureSchema>>;
 export const testingRequestInputSchema = z.strictObject({
   goal: z.string().trim().min(1).max(2_000),
   sources: z.array(sourceSchema).min(1).max(20),
-  criteria: criteriaSelectionSchema,
   targetUrl: z.url().max(2_048),
   design: designReferenceSchema.optional(),
   existingArtifacts: z.array(artifactRefSchema).max(20).optional(),
@@ -96,7 +77,6 @@ export const delegationInputSchema = z.discriminatedUnion("role", [
     summary: delegationSummary,
     goal: delegationSummary,
     sources: z.array(sourceSchema).min(1).max(20),
-    criteria: criteriaSelectionSchema,
   }),
   z.strictObject({
     role: z.literal("planner"),
@@ -400,7 +380,6 @@ export class TestingRequestError extends Error {
 export type PublicRequirements = Readonly<{
   goal: string;
   criteria: readonly RequirementCriterion[];
-  selection: CriteriaSelection;
   unresolved: readonly string[];
   links?: readonly RequirementLink[];
 }>;

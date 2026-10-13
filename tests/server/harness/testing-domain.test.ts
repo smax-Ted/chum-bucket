@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { artifactRefSchema, testRunIdSchema } from "../../../shared/testing";
-import type {
-  CriteriaSelection,
-  Judgment,
-  PlanCheck,
-  PublicEvidence,
-} from "../../../shared/testing";
+import type { Judgment, PlanCheck, PublicEvidence } from "../../../shared/testing";
 import {
   canonicalizePlan,
   deriveReport,
@@ -57,7 +52,6 @@ test("anchor IDs resolve seven criteria without copying a 456-character source",
   });
   const context = {
     goal: "Verify checkout",
-    selection: { kind: "all" as const },
     captures: [longCapture],
   };
   const criteria = Array.from({ length: 7 }, (_, index) => ({
@@ -83,14 +77,6 @@ test("anchor IDs resolve seven criteria without copying a 456-character source",
   );
   assert.deepEqual(result, legacy);
   assert.equal(digestOf(result), digestOf(legacy));
-  const selected = accept(
-    validateRequirements(
-      { criteria, unresolved: [] },
-      { ...context, selection: { kind: "selected", keys: ["AC-2"] } },
-    ),
-  );
-  assert.deepEqual(selected.selection, { kind: "selected", keys: ["AC-2"] });
-  assert.equal(selected.criteria.length, 7);
 });
 
 test("source capture views bind IDs to source and digest without changing receipts", () => {
@@ -128,7 +114,6 @@ test("source capture views bind IDs to source and digest without changing receip
   };
   const context = {
     goal: "Verify checkout",
-    selection: { kind: "all" as const },
     captures: [capture],
   };
   for (const captures of [
@@ -154,12 +139,8 @@ test("source capture views bind IDs to source and digest without changing receip
     "rejected",
   );
   const issueKeyCriterion = accept(
-    validateRequirements(
-      { criteria: [{ ...criterion, key: "CHUM-42" }], unresolved: [] },
-      { ...context, selection: { kind: "selected", keys: ["CHUM-42"] } },
-    ),
+    validateRequirements({ criteria: [{ ...criterion, key: "CHUM-42" }], unresolved: [] }, context),
   );
-  assert.deepEqual(issueKeyCriterion.selection, { kind: "selected", keys: ["CHUM-42"] });
   assert.equal(issueKeyCriterion.criteria[0]?.key, "CHUM-42");
   for (const invalid of [
     { ...criterion, anchorId: "fake" },
@@ -173,7 +154,7 @@ test("source capture views bind IDs to source and digest without changing receip
   }
 });
 
-test("requirements feedback reports ID, duplicate, selected and schema field paths privately", () => {
+test("requirements feedback reports ID, duplicate and schema field paths privately", () => {
   const criterion = {
     key: "AC-1",
     statement: "Checkout succeeds",
@@ -182,17 +163,16 @@ test("requirements feedback reports ID, duplicate, selected and schema field pat
   };
   const result = validateRequirements(
     { criteria: [criterion, criterion], unresolved: [] },
-    { goal: "Verify", selection: { kind: "selected", keys: ["AC-9"] }, captures: [capture] },
+    { goal: "Verify", captures: [capture] },
   );
   assert.equal(result.kind, "rejected");
   if (result.kind === "rejected") {
     assert.match(result.issues.join(";"), /criteria\[0\]\.anchorId/);
     assert.match(result.issues.join(";"), /criteria\[1\]\.key/);
-    assert.match(result.issues.join(";"), /task\.criteria\.keys\[0\]/);
   }
   const malformed = validateRequirements(
     { criteria: [], unresolved: ["x".repeat(513)] },
-    { goal: "Verify", selection: { kind: "all" }, captures: [capture] },
+    { goal: "Verify", captures: [capture] },
   );
   assert.equal(malformed.kind, "rejected");
   if (malformed.kind === "rejected") {
@@ -217,11 +197,7 @@ test("requirements preserve ordered diagnostics across duplicate and invalid cri
       ],
       unresolved: [],
     },
-    {
-      goal: "Verify",
-      selection: { kind: "selected", keys: ["AC-1", "AC-9"] },
-      captures: [capture],
-    },
+    { goal: "Verify", captures: [capture] },
   );
 
   assert.deepEqual(result, {
@@ -231,13 +207,12 @@ test("requirements preserve ordered diagnostics across duplicate and invalid cri
       "criteria[1].source: criterion AC-1 references an uncaptured source",
       "criteria[2].key: duplicate criterion key AC-1",
       "criteria[2].anchor: criterion AC-1 references an unknown anchor for this source capture",
-      "task.criteria.keys[1]: selected criterion AC-9 is missing from the extraction",
     ],
   });
 });
 
 test("not extractable is a named decision only with bounded nonempty reasons and captures", () => {
-  const context = { goal: "Verify", selection: { kind: "all" as const }, captures: [capture] };
+  const context = { goal: "Verify", captures: [capture] };
   assert.deepEqual(
     validateRequirements(
       { kind: "not_extractable", unresolved: ["No testable behavior"] },
@@ -265,7 +240,7 @@ test("not extractable is a named decision only with bounded nonempty reasons and
 const runOne = testRunIdSchema.parse("run-1");
 const requirementsRef = artifactRefSchema.parse("artifact-req");
 
-function buildRequirements(selection: CriteriaSelection = { kind: "all" }): Requirements {
+function buildRequirements(): Requirements {
   return accept(
     validateRequirements(
       {
@@ -285,13 +260,12 @@ function buildRequirements(selection: CriteriaSelection = { kind: "all" }): Requ
         ],
         unresolved: [],
       },
-      { goal: "Verify checkout", selection, captures: [capture] },
+      { goal: "Verify checkout", captures: [capture] },
     ),
   );
 }
 
 const requirements = buildRequirements();
-const selectedRequirements = buildRequirements({ kind: "selected", keys: ["AC-1"] });
 const requirementsDigest = digestOf(requirements);
 
 const functionalCheck: PlanCheck = {
@@ -568,7 +542,7 @@ test("requirements freeze captured inputs and reject fabricated sources and anch
       ],
       unresolved: [],
     },
-    { goal: "Verify checkout", selection: { kind: "all" }, captures: [capture] },
+    { goal: "Verify checkout", captures: [capture] },
   );
   assert.equal(fabricatedSource.kind, "rejected");
   assert.match(fabricatedSource.issues[0], /uncaptured source/);
@@ -584,32 +558,10 @@ test("requirements freeze captured inputs and reject fabricated sources and anch
       ],
       unresolved: [],
     },
-    { goal: "Verify checkout", selection: { kind: "all" }, captures: [capture] },
+    { goal: "Verify checkout", captures: [capture] },
   );
   assert.equal(fabricatedAnchor.kind, "rejected");
   assert.match(fabricatedAnchor.issues[0], /unknown anchor/);
-  const missingSelection = validateRequirements(
-    {
-      criteria: [
-        {
-          key: "AC-1",
-          statement: "Checkout succeeds",
-          source: { kind: "jira", issueKey: "CHUM-42" },
-          anchor: "AC-1",
-        },
-      ],
-      unresolved: [],
-    },
-    {
-      goal: "Verify checkout",
-      selection: { kind: "selected", keys: ["AC-2"] },
-      captures: [capture],
-    },
-  );
-  assert.equal(missingSelection.kind, "rejected");
-  assert.deepEqual(missingSelection.issues, [
-    "task.criteria.keys[0]: selected criterion AC-2 is missing from the extraction",
-  ]);
 });
 
 test("plan canonicalization assigns functional checks to AC and style checks to UI", () => {
@@ -680,56 +632,6 @@ test("plan canonicalization assigns functional checks to AC and style checks to 
   );
   assert.equal(unknownCriterion.kind, "rejected");
   assert.ok(unknownCriterion.issues.includes("check check-1 references an unknown criterion"));
-});
-
-test("selected plans retain the frozen universe but cover only selected criteria", () => {
-  const context: PlanContext = {
-    ...planContext,
-    requirements: selectedRequirements,
-    requirementsDigest: digestOf(selectedRequirements),
-  };
-  assert.deepEqual(
-    selectedRequirements.criteria.map((criterion) => criterion.key),
-    ["AC-1", "AC-2"],
-  );
-  const selected = canonicalizePlan(
-    {
-      cases: [
-        {
-          id: "case-1",
-          title: "Checkout",
-          preconditions: [],
-          actions: [{ kind: "navigate", path: "/" }],
-          checks: [functionalCheck],
-        },
-      ],
-    },
-    context,
-  );
-  assert.equal(selected.kind, "accepted");
-
-  if (selected.kind === "accepted") {
-    assert.deepEqual(selected.value.assignments, { ac: ["check-1"], ui: [] });
-  }
-
-  const nonselected = canonicalizePlan(
-    {
-      cases: [
-        {
-          id: "case-1",
-          title: "Checkout",
-          preconditions: [],
-          actions: [{ kind: "navigate", path: "/" }],
-          checks: [functionalCheck, secondFunctionalCheck],
-        },
-      ],
-    },
-    context,
-  );
-  assert.deepEqual(nonselected, {
-    kind: "rejected",
-    issues: ["check check-3 references an unselected criterion"],
-  });
 });
 
 test("results coverage derives judgments from trusted receipt outputs", () => {
@@ -833,7 +735,6 @@ test("results validation rejects fabricated evidence, wrong judgments and missin
 const requirementsScope = requirementsScopeDigest({
   goal: requirements.goal,
   sources: requirements.captures.map((item) => item.reference),
-  selection: requirements.selection,
 });
 const requirementsArtifact = {
   kind: "requirements",
@@ -925,32 +826,6 @@ test("reuse rejects cross-run results, wrong threads, scope drift and tampered d
   );
   assert.equal(tampered.kind, "rejected");
   assert.equal(tampered.issues[0], "invalid_evidence");
-  const missingSelectionPayload = {
-    ...requirementsArtifact.payload,
-    selection: { kind: "selected" as const, keys: ["AC-9"] },
-  };
-  const missingSelectionScope = requirementsScopeDigest({
-    goal: missingSelectionPayload.goal,
-    sources: missingSelectionPayload.captures.map((item) => item.reference),
-    selection: missingSelectionPayload.selection,
-  });
-  const missingSelection = validateReuse(
-    {
-      ...requirementsArtifact,
-      payload: missingSelectionPayload,
-      digest: digestOf(missingSelectionPayload),
-      scopeDigest: missingSelectionScope,
-    },
-    {
-      requested: "requirements",
-      threadId: "thread-1",
-      expectedScopeDigest: missingSelectionScope,
-    },
-  );
-  assert.deepEqual(missingSelection, {
-    kind: "rejected",
-    issues: ["selected criterion AC-9 is missing from the extraction"],
-  });
 });
 
 test("plan reuse requires the current typed plan context and preserves provenance", () => {
@@ -974,16 +849,16 @@ test("plan reuse requires the current typed plan context and preserves provenanc
   });
   assert.equal(wrongDependency.kind, "rejected");
   assert.equal(wrongDependency.issues[0], "dependency_rejected");
-  const missingCriterion = validateReuse(planArtifact, {
+  const changedRequirements = { ...requirements, unresolved: ["Payment provider is unknown"] };
+  const changedDependency = validateReuse(planArtifact, {
     ...context,
     planContext: {
       ...planContext,
-      requirements: selectedRequirements,
-      requirementsDigest: digestOf(selectedRequirements),
+      requirements: changedRequirements,
+      requirementsDigest: digestOf(changedRequirements),
     },
   });
-  assert.equal(missingCriterion.kind, "rejected");
-  assert.equal(missingCriterion.issues[0], "dependency_rejected");
+  assert.deepEqual(changedDependency, { kind: "rejected", issues: ["dependency_rejected"] });
 });
 
 test("plan reuse rejects plans outside current bounds and noncanonical assignments", () => {
@@ -1054,7 +929,7 @@ test("plan reuse canonicalization rejects duplicate checks and missing selected 
   );
 });
 
-test("a missing plan lists every selected criterion as uncovered", () => {
+test("a missing plan lists every criterion as uncovered", () => {
   const all = deriveReport({
     runId: runOne,
     rootOutcome: "failed",
@@ -1074,26 +949,6 @@ test("a missing plan lists every selected criterion as uncovered", () => {
   assert.deepEqual(all.acceptance, {
     verdict: "blocked",
     reasons: ["plan_missing", "coverage_incomplete", "root_failed", "role_planner_failed"],
-  });
-
-  const selected = deriveReport({
-    runId: runOne,
-    rootOutcome: "cancelled",
-    requirements: selectedRequirements,
-    plan: null,
-    acResults: null,
-    uiResults: null,
-    unresolvedSources: [],
-    artifacts: [],
-    progressVersion: 2,
-    outcomes: {},
-  });
-  assert.deepEqual(selected.coverage, [
-    { criterionId: "crit:AC-1", caseId: null, checkId: null, state: "uncovered" },
-  ]);
-  assert.deepEqual(selected.acceptance, {
-    verdict: "blocked",
-    reasons: ["plan_missing", "coverage_incomplete", "root_cancelled"],
   });
 });
 

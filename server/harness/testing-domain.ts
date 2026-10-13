@@ -5,7 +5,6 @@ import {
   actionSchema,
   artifactRefSchema,
   browserOutputSchema,
-  criteriaSelectionSchema,
   deferredCaseSchema,
   designReferenceSchema,
   figmaLinkSchema,
@@ -19,7 +18,6 @@ import {
   type ArtifactRef,
   type CheckProgress,
   type Coverage,
-  type CriteriaSelection,
   type DeferredCase,
   type DesignReference,
   type FixtureIdentity,
@@ -102,14 +100,13 @@ export function digestOf(value: unknown): string {
 }
 
 export function requirementsScopeDigest(
-  input: Readonly<{ goal: string; sources: readonly Source[]; selection: CriteriaSelection }>,
+  input: Readonly<{ goal: string; sources: readonly Source[] }>,
 ): string {
   return digestOf({
     goal: input.goal,
     sources: input.sources.map((source) =>
       source.kind === "jira" ? `jira:${source.issueKey}` : `confluence:${source.pageId}`,
     ),
-    selection: input.selection,
   });
 }
 
@@ -155,41 +152,10 @@ export function sourceCaptureView(capture: SourceCapture) {
 
 export type Requirements = Readonly<{
   goal: string;
-  selection: CriteriaSelection;
   criteria: readonly RequirementCriterion[];
   unresolved: readonly string[];
   captures: readonly SourceCapture[];
 }>;
-
-type SelectedCriteria = Readonly<{
-  criteria: readonly RequirementCriterion[];
-  missingKeys: readonly string[];
-}>;
-
-function selectedCriteria(
-  criteria: readonly RequirementCriterion[],
-  selection: CriteriaSelection,
-): SelectedCriteria {
-  if (selection.kind === "all") {
-    return { criteria, missingKeys: [] };
-  }
-
-  const criteriaByKey = new Map(criteria.map((criterion) => [criterion.key, criterion]));
-  const selected: RequirementCriterion[] = [];
-  const missingKeys: string[] = [];
-
-  for (const key of selection.keys) {
-    const criterion = criteriaByKey.get(key);
-
-    if (criterion) {
-      selected.push(criterion);
-    } else {
-      missingKeys.push(key);
-    }
-  }
-
-  return { criteria: selected, missingKeys };
-}
 
 const requirementsProposalSchema = z.strictObject({
   criteria: z
@@ -248,7 +214,6 @@ function schemaIssues(error: z.ZodError, fallback: string): Validation<never> {
 
 export type RequirementsContext = Readonly<{
   goal: string;
-  selection: CriteriaSelection;
   captures: readonly SourceCapture[];
 }>;
 
@@ -358,15 +323,6 @@ export function validateRequirements(
 
   const { criteria, issues } = extractRequirementCriteria(parsed.data.criteria, context.captures);
 
-  const selected = selectedCriteria(criteria, context.selection);
-
-  for (const key of selected.missingKeys) {
-    const index = context.selection.kind === "selected" ? context.selection.keys.indexOf(key) : 0;
-    issues.push(
-      `task.criteria.keys[${index}]: selected criterion ${key} is missing from the extraction`,
-    );
-  }
-
   if (issues.length > 0) {
     const [first, ...rest] = issues;
 
@@ -375,7 +331,6 @@ export function validateRequirements(
 
   return accepted({
     goal: context.goal,
-    selection: context.selection,
     criteria,
     unresolved: parsed.data.unresolved,
     captures: context.captures,
@@ -423,8 +378,7 @@ const planProposalSchema = z
 type PlanProposal = z.infer<typeof planProposalSchema>;
 
 type PlanScope = Readonly<{
-  universeIds: ReadonlySet<string>;
-  selectedIds: ReadonlySet<string>;
+  criterionIds: ReadonlySet<string>;
   design: DesignReference | null;
 }>;
 
@@ -441,20 +395,14 @@ export function sameDesign(left: DesignReference, right: DesignReference | null)
 }
 
 function criterionIssue(subject: string, criterionId: string, scope: PlanScope): string | null {
-  if (scope.selectedIds.has(criterionId)) {
-    return null;
-  }
-
-  return scope.universeIds.has(criterionId)
-    ? `${subject} references an unselected criterion`
-    : `${subject} references an unknown criterion`;
+  return scope.criterionIds.has(criterionId) ? null : `${subject} references an unknown criterion`;
 }
 
 function planCheckIssue(check: PlanCheck, scope: PlanScope): string | null {
-  const unselected = criterionIssue(`check ${check.id}`, check.criterionId, scope);
+  const unknown = criterionIssue(`check ${check.id}`, check.criterionId, scope);
 
-  if (unselected) {
-    return unselected;
+  if (unknown) {
+    return unknown;
   }
 
   if (check.kind === "style" && !sameDesign(check.design, scope.design)) {
@@ -573,16 +521,12 @@ export function canonicalizePlan(raw: unknown, context: PlanContext): Validation
   const proposedDeferred = parsed.data.deferredCases ?? [];
 
   const { maxCases, maxChecks, maxChecksPerCase } = context.bounds;
-  const selection = selectedCriteria(context.requirements.criteria, context.requirements.selection);
   const scope: PlanScope = {
-    universeIds: new Set(context.requirements.criteria.map((criterion) => criterion.id)),
-    selectedIds: new Set(selection.criteria.map((criterion) => criterion.id)),
+    criterionIds: new Set(context.requirements.criteria.map((criterion) => criterion.id)),
     design: context.design,
   };
   const scan: PlanScan = {
-    issues: selection.missingKeys.map(
-      (key) => `selected criterion ${key} is missing from the extraction`,
-    ),
+    issues: [],
     caseIds: new Set(),
     checkIds: new Set(),
     covered: new Set(),
@@ -600,7 +544,7 @@ export function canonicalizePlan(raw: unknown, context: PlanContext): Validation
     scan.issues.push("plan exceeds the check bound");
   }
 
-  for (const criterion of selection.criteria) {
+  for (const criterion of context.requirements.criteria) {
     if (!scan.covered.has(criterion.id)) {
       scan.issues.push(`criterion ${criterion.id} has no executable check or deferred case`);
     }
@@ -1032,7 +976,6 @@ export type ReuseContext =
 
 export const requirementsPayloadSchema = z.strictObject({
   goal: z.string().min(1).max(2_000),
-  selection: criteriaSelectionSchema,
   criteria: z.array(requirementCriterionSchema).min(1),
   unresolved: z.array(z.string().min(1)),
   captures: z.array(sourceCaptureSchema).min(1),
@@ -1155,16 +1098,9 @@ function reuseRequirements(artifact: StoredArtifact): Validation<BoundArtifact> 
     return rejected("invalid_evidence");
   }
 
-  const [missingKey] = selectedCriteria(payload.data.criteria, payload.data.selection).missingKeys;
-
-  if (missingKey !== undefined) {
-    return rejected(`selected criterion ${missingKey} is missing from the extraction`);
-  }
-
   const scope = requirementsScopeDigest({
     goal: payload.data.goal,
     sources: payload.data.captures.map((capture) => capture.reference),
-    selection: payload.data.selection,
   });
 
   if (scope !== artifact.scopeDigest) {
@@ -1405,8 +1341,8 @@ function uncoveredCriteria(
     return [];
   }
 
-  return selectedCriteria(requirements.criteria, requirements.selection)
-    .criteria.filter((criterion) => !covered.has(criterion.id))
+  return requirements.criteria
+    .filter((criterion) => !covered.has(criterion.id))
     .map((criterion): Coverage => ({
       criterionId: criterion.id,
       caseId: null,
@@ -1513,7 +1449,6 @@ function publicRequirements(requirements: Requirements | null): PublicTestReport
   return {
     goal: requirements.goal,
     criteria: requirements.criteria,
-    selection: requirements.selection,
     unresolved: requirements.unresolved,
     ...(links.length > 0 ? { links } : {}),
   };

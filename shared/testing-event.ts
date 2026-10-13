@@ -5,7 +5,6 @@ import {
   ARTIFACT_KINDS,
   ROLE_IDS,
   artifactRefSchema,
-  criteriaSelectionSchema,
   deferredCaseSchema,
   evidenceSchema,
   planCaseSchema,
@@ -140,7 +139,6 @@ const reuseDecisionSchema = z.discriminatedUnion("kind", [
 const publicRequirementsSchema = z.object({
   goal: boundedText(2_000),
   criteria: z.array(requirementCriterionSchema).max(500),
-  selection: criteriaSelectionSchema,
   unresolved: z.array(boundedText(512)).max(500),
   links: z.array(requirementLinkSchema).optional(),
 });

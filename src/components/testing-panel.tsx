@@ -470,37 +470,22 @@ function RequirementsSummary({ requirements }: { requirements: PublicRequirement
     );
   }
 
-  const selectedKeys = new Set(
-    requirements.selection.kind === "selected" ? requirements.selection.keys : [],
-  );
-  const allSelected = requirements.selection.kind === "all";
-
   return (
     <div className="flex flex-col gap-1">
       <h4 className="text-sm font-medium">需求</h4>
       <p className="text-xs">目標：{requirements.goal}</p>
-      <p className="text-xs text-muted-foreground">
-        選取範圍：
-        {allSelected ? "全部需求" : `已選 ${selectedKeys.size} 項`}
-      </p>
       <ul className="flex flex-col gap-1">
-        {requirements.criteria.map((criterion) => {
-          const chosen = allSelected || selectedKeys.has(criterion.key);
-
-          return (
-            <li
-              key={criterion.id}
-              data-criterion-id={criterion.id}
-              data-selected={chosen}
-              className="text-xs text-muted-foreground"
-            >
-              <span className="font-mono">{criterion.key}</span>
-              {" · "}
-              {criterion.statement}
-              {chosen ? "（已選）" : "（未選）"}
-            </li>
-          );
-        })}
+        {requirements.criteria.map((criterion) => (
+          <li
+            key={criterion.id}
+            data-criterion-id={criterion.id}
+            className="text-xs text-muted-foreground"
+          >
+            <span className="font-mono">{criterion.key}</span>
+            {" · "}
+            {criterion.statement}
+          </li>
+        ))}
       </ul>
       {requirements.unresolved.length > 0 ? (
         <ul className="flex flex-col gap-1">

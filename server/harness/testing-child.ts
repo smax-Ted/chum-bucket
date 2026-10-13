@@ -444,7 +444,6 @@ function requirementsReview(
 
   const decision = validateRequirements(proposal, {
     goal: execution.intent.goal,
-    selection: execution.intent.criteria,
     captures,
   });
 

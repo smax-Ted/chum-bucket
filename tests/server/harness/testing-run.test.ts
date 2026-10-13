@@ -44,7 +44,7 @@ test("private ID feedback identifies the selected capture without dumping source
       ],
       unresolved: [],
     },
-    { goal: "Checkout", selection: { kind: "all" }, captures: [capture] },
+    { goal: "Checkout", captures: [capture] },
   );
   assert.equal(decision.kind, "rejected");
   if (decision.kind !== "rejected") throw new Error("Expected private rejection");
@@ -290,7 +290,6 @@ test("delegate_task is direct-only on the main scope and rejected by execution",
       const publicInput = {
         goal: "Verify checkout",
         sources: [{ kind: "jira", issueKey: "CHUM-42" }],
-        criteria: { kind: "all" },
         role: "atlassian",
         summary: "Read checkout requirements",
       };

@@ -42,11 +42,14 @@ test("atlassian takes source intent, not a browser URL or untrusted requirements
     summary: "Read checkout requirements",
     goal: "Checkout",
     sources: [{ kind: "jira", issueKey: "TEST-1" }],
-    criteria: { kind: "all" },
   };
   assert.deepEqual(delegationInputSchema.parse(input), input);
-  assert.equal(
-    delegationInputSchema.safeParse({ ...input, targetUrl: "https://example.test" }).success,
-    false,
-  );
+  for (const invalid of [
+    { ...input, targetUrl: "https://example.test" },
+    { ...input, criteria: { kind: "all" } },
+    { ...input, criteria: { kind: "selected", keys: ["AC-2"] } },
+    { ...input, scope: "AC-2" },
+  ]) {
+    assert.equal(delegationInputSchema.safeParse(invalid).success, false);
+  }
 });

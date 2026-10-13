@@ -46,7 +46,6 @@ const requirements: PublicRequirements = {
       anchor: "anchor-2",
     },
   ],
-  selection: { kind: "selected", keys: ["AC-1"] },
   unresolved: ["來源中有 1 條敘述無法解析"],
 };
 
@@ -463,11 +462,10 @@ test("a finished view renders the public report with mock-only acceptance", () =
   assert.match(text, /檢查結果只描述已驗證範圍，不構成整體網站或發布驗收。/);
 
   assert.match(text, /目標：驗證結帳流程與樣式/);
-  assert.match(text, /選取範圍：已選 1 項/);
-  assert.match(text, /AC-1/);
-  assert.match(text, /AC-2/);
-  assert.match(text, /（已選）/);
-  assert.match(text, /（未選）/);
+  assert.match(text, /AC-1<\/span> · 送出後顯示訂單成立<\/li>/);
+  assert.match(text, /AC-2<\/span> · 按鈕使用品牌色<\/li>/);
+  assert.doesNotMatch(html, /data-selected/);
+  assert.doesNotMatch(text, /選取範圍|已選|未選/);
   assert.match(text, /待解決：來源中有 1 條敘述無法解析/);
 
   assert.match(text, /結帳成功（案例 case-1）/);

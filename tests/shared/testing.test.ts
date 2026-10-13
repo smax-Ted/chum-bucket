@@ -9,7 +9,6 @@ import {
 const base = {
   goal: "Verify checkout behavior and styles",
   sources: [{ kind: "jira", issueKey: "CHUM-42" }],
-  criteria: { kind: "all" },
   targetUrl: "https://preview.example.test/checkout",
 };
 
@@ -17,7 +16,6 @@ test("a public request parses to exactly the intent fields", () => {
   assert.deepEqual(testingRequestInputSchema.parse(base), {
     goal: "Verify checkout behavior and styles",
     sources: [{ kind: "jira", issueKey: "CHUM-42" }],
-    criteria: { kind: "all" },
     targetUrl: "https://preview.example.test/checkout",
   });
 });
@@ -26,7 +24,6 @@ test("host binds thread, revision and request identity outside the intent", () =
   assert.deepEqual(
     testingRequestSchema.parse({
       ...base,
-      criteria: { kind: "selected", keys: ["AC-1"] },
       design: { fileKey: "CheckoutDemo", nodeId: "12:34" },
       existingArtifacts: ["artifact-1"],
       threadId: "thread-1",
@@ -35,7 +32,6 @@ test("host binds thread, revision and request identity outside the intent", () =
     }),
     {
       ...base,
-      criteria: { kind: "selected", keys: ["AC-1"] },
       design: { fileKey: "CheckoutDemo", nodeId: "12:34" },
       existingArtifacts: ["artifact-1"],
       threadId: "thread-1",
@@ -100,7 +96,9 @@ test("unknown, empty and malformed request fields are rejected", () => {
   const cases = [
     { ...base, model: "deepseek-ai/DeepSeek-V4.1-Flash" },
     { ...base, sources: [] },
-    { ...base, criteria: { kind: "selected", keys: [] } },
+    { ...base, criteria: { kind: "all" } },
+    { ...base, criteria: { kind: "selected", keys: ["AC-1"] } },
+    { ...base, scope: "AC-1" },
     { ...base, targetUrl: "not-a-url" },
     { ...base, goal: "   " },
   ];

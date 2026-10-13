@@ -8,8 +8,8 @@
       "ref": "artifact-live-requirements",
       "threadId": "thread-live-sanitized",
       "kind": "requirements",
-      "scopeDigest": "82ae221c31fc06550a1b7dd32cf49b40a6cd14951a48171c3b3c6c1a7e37b4eb",
-      "payloadDigest": "1706d4a61668baf401b500574c242f8bf7259ba4b66468b94f8e01d1788e9d5d",
+      "scopeDigest": "ecda5cee694ddb22ff86dce8246273808722ae2d4a2346055b632b7ac62c74d4",
+      "payloadDigest": "f31e22343b3e43199180ce65d5049d222d30b3831c3b92c78fb730befa77ef78",
       "payload": {
         "goal": "Read Jira issue FETM-78 and capture its full requirements, acceptance criteria, and any linked design references (including Figma links) needed for QA test planning. Return the requirements artifact reference. Do not post any comment.",
         "captures": [
@@ -151,9 +151,6 @@
             "sourceDigest": "ddc92aceb072a94311ede5c0e67d367c165fb9adcce8541ad615d852c143893e"
           }
         ],
-        "selection": {
-          "kind": "all"
-        },
         "unresolved": [
           "The full UI 驗收條件 do not separately enumerate every numeric UI rule (e.g., 1160px max content width, 36px desktop / 20px mobile horizontal padding, 8px button radius, ≥50px button height, ≥44x44px quantity control hit area, add-to-cart button disabled state at quantity 5, nav cart count sync, add-success text feedback) as individually labelled acceptance criteria; each is folded into broader UI-1/UI-2/UI-3 statements rather than given its own stable key.",
           "The issue references FETM-79 for shipping cost and order submission scope, but FETM-79 was not read and its requirements cannot be grounded here.",
@@ -196,7 +193,7 @@
         "inputDigest": "sanitized-input",
         "parentRunId": "run-parent",
         "dependencies": [],
-        "outputDigest": "1706d4a61668baf401b500574c242f8bf7259ba4b66468b94f8e01d1788e9d5d",
+        "outputDigest": "f31e22343b3e43199180ce65d5049d222d30b3831c3b92c78fb730befa77ef78",
         "registration": {
           "ac": "ac-result:functional-v2:enabled:browser_ac",
           "ui": "ui-result:style-v2:enabled:browser_ui+figma_read",
@@ -217,8 +214,8 @@
       "ref": "artifact-live-plan",
       "threadId": "thread-live-sanitized",
       "kind": "plan",
-      "scopeDigest": "39d1cb922bdc651d1066459d33ebd2b32704515ce4f831daac958098045801e4",
-      "payloadDigest": "27a450fa391c0adda18f5b0c2e6c3bb91b443b910165e8f6b36da7437612f909",
+      "scopeDigest": "0ec24bdffd2d15dcc4e4e210942f99713fe2d2b275611fc1be5af6067a01f59d",
+      "payloadDigest": "9fc9aa2d3b2a32cec4a60a3ab15e4ad221695a5054963a773b04d320388c3ae0",
       "payload": {
         "goal": "Read Jira issue FETM-78 and capture its full requirements, acceptance criteria, and any linked design references (including Figma links) needed for QA test planning. Return the requirements artifact reference. Do not post any comment.",
         "cases": [
@@ -1002,7 +999,7 @@
             ]
           }
         ],
-        "requirementsDigest": "1706d4a61668baf401b500574c242f8bf7259ba4b66468b94f8e01d1788e9d5d"
+        "requirementsDigest": "f31e22343b3e43199180ce65d5049d222d30b3831c3b92c78fb730befa77ef78"
       },
       "metadata": {
         "bounds": {
@@ -1038,7 +1035,7 @@
         "inputDigest": "sanitized-input",
         "parentRunId": "run-parent",
         "dependencies": ["artifact-live-requirements"],
-        "outputDigest": "27a450fa391c0adda18f5b0c2e6c3bb91b443b910165e8f6b36da7437612f909",
+        "outputDigest": "9fc9aa2d3b2a32cec4a60a3ab15e4ad221695a5054963a773b04d320388c3ae0",
         "registration": {
           "ac": "ac-result:functional-v2:enabled:browser_ac",
           "ui": "ui-result:style-v2:enabled:browser_ui+figma_read",
@@ -1330,9 +1327,6 @@
         "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
       }
     ],
-    "selection": {
-      "kind": "all"
-    },
     "unresolved": [
       "「成功加入商品後」的文字回饋內容、顯示位置精確規格與持續時間未定義，無法判定實際驗證條件。",
       "導覽列的購物車數量格式（例如純數字或含單位文字）未定義。",

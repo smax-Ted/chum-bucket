@@ -212,7 +212,6 @@ function testingReport(): PublicTestReport {
           anchor: "anchor-1",
         },
       ],
-      selection: { kind: "all" },
       unresolved: [],
     },
     plan: {

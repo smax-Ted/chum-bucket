@@ -43,7 +43,6 @@ const intent: TestingRequestInput = {
     { kind: "jira", issueKey: "PROJ-1" },
     { kind: "confluence", pageId: "123" },
   ],
-  criteria: { kind: "all" },
   targetUrl: "http://127.0.0.1:4173/app",
   design,
 };

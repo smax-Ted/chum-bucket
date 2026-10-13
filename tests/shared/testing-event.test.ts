@@ -113,7 +113,6 @@ const report: PublicTestReport = {
         anchor: "anchor-1",
       },
     ],
-    selection: { kind: "selected", keys: ["AC-1"] },
     unresolved: ["AC-2"],
   },
   plan: {
@@ -210,7 +209,7 @@ test("legal repeated captures retain more than 100 source-bound links through pr
       criteria: [{ key: "AC-1", statement: "Product is visible", source, anchor: "AC-1" }],
       unresolved: [],
     },
-    { goal: "Plan linked sources", selection: { kind: "all" }, captures },
+    { goal: "Plan linked sources", captures },
   );
   assert.equal(validated.kind, "accepted");
   if (validated.kind !== "accepted") return;

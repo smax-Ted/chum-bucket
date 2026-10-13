@@ -622,11 +622,7 @@ function reuseRequirements(
   const validation = validateReuse(storedPayload(row), {
     requested: "requirements",
     threadId,
-    expectedScopeDigest: requirementsScopeDigest({
-      goal: intent.goal,
-      sources: intent.sources,
-      selection: intent.criteria,
-    }),
+    expectedScopeDigest: requirementsScopeDigest({ goal: intent.goal, sources: intent.sources }),
   });
 
   return decisionFromValidation(ref, validation);
@@ -650,11 +646,7 @@ function reusePlan(
   const requirementsValidation = validateReuse(storedPayload(requirements), {
     requested: "requirements",
     threadId,
-    expectedScopeDigest: requirementsScopeDigest({
-      goal: intent.goal,
-      sources: intent.sources,
-      selection: intent.criteria,
-    }),
+    expectedScopeDigest: requirementsScopeDigest({ goal: intent.goal, sources: intent.sources }),
   });
 
   if (requirementsValidation.kind === "rejected") {
@@ -737,7 +729,7 @@ function mapIssue(issue: string): ReuseRejection {
     return issue;
   }
 
-  if (issue.startsWith("selected criterion") || issue === "incomplete") {
+  if (issue === "incomplete") {
     return "incomplete";
   }
 
@@ -885,7 +877,6 @@ async function delegationIntent(
     return {
       goal: input.goal,
       sources: input.sources,
-      criteria: input.criteria,
       targetUrl: null,
       task,
     };
@@ -927,7 +918,6 @@ async function delegationIntent(
   return testingIntentSchema.parse({
     goal: source.data.goal,
     sources: source.data.captures.map((capture) => capture.reference),
-    criteria: source.data.selection,
     ...context,
     existingArtifacts: [...rows.keys()],
     task,
@@ -2309,7 +2299,6 @@ async function requirementsCandidate(
   });
   const decision = validateRequirements(proposal, {
     goal: intent.goal,
-    selection: intent.criteria,
     captures: orderedCaptures,
   });
 
@@ -2326,11 +2315,7 @@ async function requirementsCandidate(
     kind: "requirements",
     payload,
     digest: digestOf(payload),
-    scopeDigest: requirementsScopeDigest({
-      goal: intent.goal,
-      sources: intent.sources,
-      selection: intent.criteria,
-    }),
+    scopeDigest: requirementsScopeDigest({ goal: intent.goal, sources: intent.sources }),
     dependencies: [],
   };
 }

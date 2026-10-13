@@ -33,14 +33,12 @@ import { ROLE_IDS, type TestingRequestInput } from "../../../shared/testing";
 const intent: TestingRequestInput = {
   goal: "Verify checkout",
   sources: [{ kind: "jira", issueKey: "CHUM-42" }],
-  criteria: { kind: "all" },
   targetUrl: "https://preview.example.test/checkout",
 };
 const bounds = { maxCases: 20, maxChecks: 80, maxChecksPerCase: 12 };
 
 const requirements: Requirements = {
   goal: intent.goal,
-  selection: intent.criteria,
   criteria: [
     {
       id: "crit:AC-1",
@@ -103,7 +101,7 @@ test("role definitions keep distinct responsibilities within their capabilities"
   assert.match(roleRegistry.atlassian.systemPrompt, /unresolved instead of silently resolving/);
   assert.match(
     roleRegistry.planner.systemPrompt,
-    /Every selected criterion must be covered by at least one executable check or a deferred case/,
+    /Every criterion must be covered by at least one executable check or a deferred case/,
   );
   assert.match(roleRegistry.planner.systemPrompt, /negative, boundary-value/);
   assert.match(roleRegistry.planner.systemPrompt, /no external reading or browser capabilities/);
@@ -190,7 +188,6 @@ test("task messages contain data and bounds without copying system instructions"
     summary: goal,
     goal,
     sources: intent.sources,
-    criteria: intent.criteria,
     requirements,
     targetUrl: intent.targetUrl,
     design: null,
@@ -321,11 +318,10 @@ test("main and delegation text describe evidence origin instead of always claimi
     delegateTaskTool.description,
     /planner accepts only role, summary, requirementsRef and optional design/,
   );
-  assert.match(
-    delegateTaskTool.description,
-    /do not send goal, sources, criteria or targetUrl to planner/,
-  );
-  assert.match(main, /goal, sources and criteria belong to atlassian, not planner/);
+  assert.match(delegateTaskTool.description, /do not send goal, sources or targetUrl to planner/);
+  assert.match(main, /goal and sources belong to atlassian, not planner/);
+  assert.doesNotMatch(main, /criteria:\{/);
+  assert.doesNotMatch(delegateTaskTool.description, /criteria/);
   assert.match(main, /Before delegating the planner, attempt get_figma reads/);
   assert.match(main, /relevant explicitly linked page\/viewport nodes/);
   assert.match(main, /Successful Figma reading is not a prerequisite for planning/);

@@ -50,7 +50,6 @@ async function approvalRun(title: string) {
     summary: "Review comment",
     goal: "Review comment",
     sources: [{ kind: "jira", issueKey: "CHUM-42" }],
-    criteria: { kind: "all" },
   });
   const frame = await reserveRoleTask(run.runId, admitted.operationId, "atlassian", {});
   assert.ok(frame);
