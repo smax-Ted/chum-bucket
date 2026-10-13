@@ -13,10 +13,8 @@ async function until(predicate: () => boolean) {
     if (predicate()) {
       return;
     }
-
     await delay(5);
   }
-
   assert.fail("Expected client state was not observed");
 }
 
@@ -29,17 +27,13 @@ function fixture(initialMessages: UIMessage[] = [], failSend = false, id = threa
     fetchClient: async (url, init) => {
       const method = init?.method ?? "GET";
       requests.push({ method, url: String(url) });
-
       if (method === "GET") {
         requested.resolve();
-
         return (await response.promise).clone();
       }
-
       if (failSend) {
         return Response.json({ error: "Conflict" }, { status: 409 });
       }
-
       const body = JSON.parse(String(init?.body));
       const events = [
         { type: "RUN_STARTED", threadId: id, runId: body.runId },
@@ -48,7 +42,6 @@ function fixture(initialMessages: UIMessage[] = [], failSend = false, id = threa
         { type: "TEXT_MESSAGE_END", messageId: "answer" },
         { type: "RUN_FINISHED", threadId: id, runId: body.runId },
       ];
-
       return new Response(
         events.map((event, i) => `id: ${i}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
         { headers: { "Content-Type": "text/event-stream" } },
@@ -64,12 +57,10 @@ function fixture(initialMessages: UIMessage[] = [], failSend = false, id = threa
       ...connection,
       hydrate(...args) {
         hydration = hydrate(...args);
-
         return hydration as ReturnType<typeof hydrate>;
       },
     },
   });
-
   return {
     client,
     response,
@@ -84,7 +75,6 @@ function fixture(initialMessages: UIMessage[] = [], failSend = false, id = threa
 for (const existing of [false, true]) {
   test(`${existing ? "existing thread" : "empty thread"}: hydrate before sending preserves history and new tokens`, async () => {
     const state = fixture(existing ? oldMessages : []);
-
     try {
       state.client.attach();
       await state.requested.promise;
@@ -107,7 +97,6 @@ for (const existing of [false, true]) {
 
 test("failed submission can be followed by a fresh attachment", async () => {
   const state = fixture([], true);
-
   try {
     state.client.attach();
     await state.requested.promise;
@@ -129,7 +118,6 @@ test("failed submission can be followed by a fresh attachment", async () => {
 
 test("SDK hydration failure is silent in public chat status and requires application feedback", async () => {
   const state = fixture();
-
   try {
     state.client.attach();
     await state.requested.promise;

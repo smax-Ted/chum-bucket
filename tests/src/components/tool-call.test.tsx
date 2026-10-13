@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ToolCall } from "./tool-call";
+import { ToolCall } from "../../../src/components/tool-call";
 
 test("tool calls expose their name, partial arguments and lifecycle state", () => {
   const part = {

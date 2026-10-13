@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, mock } from "node:test";
-import { createThread, terminalResult } from "./use-threads";
+import { createThread, terminalResult } from "../../../src/hooks/use-threads";
 
 const threadId = "d08035f1-07df-49f3-b2d0-5cf5cb2b1e74";
 const runId = "run-recovery-test";
@@ -12,11 +12,9 @@ test("creation is empty and never sends chat", async () => {
     "fetch",
     async (_url: string | URL | Request, init?: RequestInit) => {
       requests.push(JSON.parse(String(init?.body)));
-
       return Response.json({ id: threadId, title: "新對話" });
     },
   );
-
   try {
     assert.deepEqual(await createThread(), { id: threadId, title: "新對話" });
     assert.deepEqual(requests, [{}]);
@@ -31,7 +29,6 @@ test("only a matching durable terminal unlocks the current run", () => {
     terminalResult({ type: "RUN_ERROR", metadata: { tanstack: { runId } } }, runId),
     "failed",
   );
-
   for (const event of [
     { type: "RUN_FINISHED", runId: "other" },
     { type: "RUN_ERROR" },

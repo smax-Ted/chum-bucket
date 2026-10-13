@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test, mock } from "node:test";
-import { db } from "./db";
+import { db } from "../../server/db";
 
 process.env.MODEL_API_KEY = "offline-unused";
-const { default: app } = await import("./chat");
+const { default: app } = await import("../../server/chat");
 
 test("chat hydration validates the URL and returns saved history without starting a run", async () => {
   const network = mock.method(globalThis, "fetch", async () => {
@@ -19,7 +19,6 @@ test("chat hydration validates the URL and returns saved history without startin
         from: () => ({ where: async () => rows }),
       }) as unknown as ReturnType<typeof db.select>,
   );
-
   try {
     assert.equal((await app.request("/?threadId=invalid")).status, 400);
     const url = "/?threadId=d08035f1-07df-49f3-b2d0-5cf5cb2b1e74";

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, mock } from "node:test";
-import { db } from "./db";
-import app from "./thread";
+import { db } from "../../server/db";
+import app from "../../server/thread";
 
 test("thread API rejects invalid creation and lookup requests", async () => {
   const create = await app.request("/", {
@@ -34,14 +34,12 @@ test("thread creation accepts only an empty object and stores an empty transcrip
       ({
         values(value: { title: string; messages: unknown[] }) {
           stored = value;
-
           return {
             returning: async () => [{ id, ...value, updated_at: new Date(0) }],
           };
         },
       }) as unknown as ReturnType<typeof db.insert>,
   );
-
   try {
     const response = await app.request("/", {
       method: "POST",

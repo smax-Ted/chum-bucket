@@ -1,6 +1,7 @@
 import {
   chat,
   chatParamsFromRequestBody,
+  maxIterations,
   modelMessagesToUIMessages,
   toServerSentEventsResponse,
   type ChatMiddleware,
@@ -12,6 +13,9 @@ import { db } from "./db";
 import { threadsTable } from "./db/schema";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { localTools } from "./harness/tools";
+import { openAtlassianTools, type AtlassianTools } from "./harness/tools/atlassian";
+import { readAtlassianConfiguration } from "./harness/tools/atlassian-policy";
 
 const app = new Hono();
 
@@ -48,19 +52,38 @@ app.get("/", async (c) => {
   return thread ? c.json({ messages: thread.messages, activeRun: null }) : c.notFound();
 });
 
+type ChatPayload = Awaited<ReturnType<typeof chatParamsFromRequestBody>>;
+
+async function* runChat(payload: ChatPayload, abortController: AbortController) {
+  let remote: AtlassianTools | undefined;
+
+  try {
+    remote = await openAtlassianTools(
+      readAtlassianConfiguration(process.env),
+      abortController.signal,
+    );
+    yield* chat({
+      adapter: deepinfra("deepseek-ai/DeepSeek-V4.1-Flash"),
+      systemPrompts: [openuiInstructions()],
+      messages: payload.messages,
+      threadId: payload.threadId,
+      runId: payload.runId,
+      middleware: [updateChatMessage],
+      tools: [...localTools, ...remote.tools],
+      agentLoopStrategy: maxIterations(8),
+      abortController,
+    });
+  } finally {
+    await remote?.close();
+  }
+}
+
 app.post("/", async (c) => {
   const payload = await chatParamsFromRequestBody(await c.req.json());
+  const abortController = new AbortController();
+  c.req.raw.signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
-  const stream = chat({
-    adapter: deepinfra("deepseek-ai/DeepSeek-V4.1-Flash"),
-    systemPrompts: [openuiInstructions()],
-    messages: payload.messages,
-    threadId: payload.threadId,
-    runId: payload.runId,
-    middleware: [updateChatMessage],
-  });
-
-  return toServerSentEventsResponse(stream);
+  return toServerSentEventsResponse(runChat(payload, abortController), { abortController });
 });
 
 export default app;
