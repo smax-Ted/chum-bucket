@@ -158,11 +158,19 @@ test("assigned-check reuse still rejects altered snapshots, source scope, digest
     },
     { ...requirementsRow, threadId: "foreign-thread" },
   ];
-  for (const candidate of variants) {
-    assert.ok(
-      decide(intent, [candidate, planRow]).every((decision) => decision.kind === "rejected"),
+  const reasons = (candidate: StoredArtifactRow) =>
+    decide(intent, [candidate, planRow]).map((decision) =>
+      decision.kind === "rejected" ? decision.reason : decision.kind,
     );
-  }
+  assert.deepEqual(variants.map(reasons), [
+    ["incompatible_snapshot", "accepted"],
+    ["scope_mismatch", "scope_mismatch"],
+    ["invalid_evidence", "invalid_evidence"],
+    ["untrusted_producer", "untrusted_producer"],
+    ["incomplete", "incomplete"],
+    ["invalid_evidence", "invalid_evidence"],
+    ["not_accessible", "not_accessible"],
+  ]);
   assert.deepEqual(
     decide({ ...intent, task: undefined }).map((decision) => [
       decision.ref,

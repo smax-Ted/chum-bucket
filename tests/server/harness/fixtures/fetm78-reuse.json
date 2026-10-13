@@ -66,7 +66,6 @@
           "id": "playwright-chromium",
           "version": "v1"
         },
-        "complete": true,
         "profiles": {
           "atlassian": "requirements-v4",
           "planner": "planning-v3",
@@ -957,7 +956,6 @@
           "id": "playwright-chromium",
           "version": "v1"
         },
-        "complete": true,
         "profiles": {
           "atlassian": "requirements-v4",
           "planner": "planning-v3",

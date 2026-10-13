@@ -1533,12 +1533,6 @@ test(
       assignments: { ac: ["check-1"], ui: [] },
       bounds: { maxCases: 20, maxChecks: 80, maxChecksPerCase: 12 },
     });
-    const db = await database();
-    const [planRow] = await db
-      .select({ metadata: testingArtifactsTable.metadata })
-      .from(testingArtifactsTable)
-      .where(eq(testingArtifactsTable.ref, plan.ref));
-    assert.equal((planRow?.metadata as { complete: boolean }).complete, true);
     const execute = await admitAttachedTesting(parent, "execute", {
       role: "ac",
       summary: "Execute",

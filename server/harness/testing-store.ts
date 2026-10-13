@@ -296,7 +296,6 @@ const metadataSchema = z.strictObject({
   attempt: z.number().int().positive(),
   inputDigest: z.string().min(1),
   outputDigest: z.string().min(1),
-  complete: z.boolean().optional(),
 });
 type ArtifactMetadata = z.infer<typeof metadataSchema>;
 
@@ -490,17 +489,7 @@ function dependenciesRejected(
   row: StoredArtifactRow,
   rows: ReadonlyMap<string, StoredArtifactRow>,
 ): boolean {
-  if (row.dependencies.some((dependency) => !rows.has(dependency))) {
-    return true;
-  }
-
-  if (row.kind !== "plan") {
-    return false;
-  }
-
-  const requirements = rows.get(row.dependencies[0] ?? "");
-
-  return !requirements || !reusableSnapshot(requirements);
+  return row.dependencies.some((dependency) => !rows.has(dependency));
 }
 
 function snapshotRejection(
@@ -522,7 +511,7 @@ function snapshotRejection(
     return "dependency_rejected";
   }
 
-  return reusableSnapshot(row) ? null : "incomplete";
+  return null;
 }
 
 function storedRowRejection(
@@ -556,12 +545,6 @@ function classifyRef(ref: string, input: ClassifyInput): ReuseDecision {
   }
 
   return reusePlan(parsedRef.data, row, input.threadId, input.intent, input.rows, input.host);
-}
-
-function reusableSnapshot(row: StoredArtifactRow): boolean {
-  const metadata = metadataSchema.safeParse(row.metadata);
-
-  return metadata.success && metadata.data.complete === true;
 }
 
 function reuseRequirements(
@@ -2125,7 +2108,6 @@ async function storeCandidate(
     attempt: task.attempt_nonce,
     inputDigest: task.input_digest,
     outputDigest: accepted.digest,
-    complete: accepted.kind === "requirements" || accepted.kind === "plan",
   };
   await tx.insert(testingArtifactsTable).values({
     ref,

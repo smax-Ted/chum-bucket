@@ -181,7 +181,7 @@ test("explicit bad refs and cross-run results reject without dropping any ref", 
   );
 });
 
-test("planner reuses complete raw requirements while retaining snapshot guards", () => {
+test("planner reuses raw requirements while retaining snapshot guards", () => {
   const intent: TestingRequestInput = {
     goal: "Verify checkout",
     sources: [source],
@@ -208,7 +208,6 @@ test("planner reuses complete raw requirements while retaining snapshot guards",
     attempt: 1,
     inputDigest: "input",
     outputDigest: digestOf(requirements),
-    complete: true,
   };
   const artifact = row({
     ref,
@@ -233,7 +232,6 @@ test("planner reuses complete raw requirements while retaining snapshot guards",
     [{ ...artifact, origin: { ...artifact.origin, role: "planner" } }, "untrusted_producer"],
     [{ ...artifact, payloadDigest: "tampered" }, "invalid_evidence"],
     [{ ...artifact, scopeDigest: "tampered" }, "scope_mismatch"],
-    [{ ...artifact, metadata: { ...metadata, complete: false } }, "incomplete"],
     [
       {
         ...artifact,
@@ -328,7 +326,6 @@ test("a plan bound to no target with unresolved notes stays reusable for an expl
     attempt: 1,
     inputDigest: "input",
     outputDigest: payloadDigest,
-    complete: true,
   });
   const requirementsRow = row({
     ref: requirementsRef,
