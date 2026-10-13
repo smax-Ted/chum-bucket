@@ -161,11 +161,13 @@ export type CompactionPolicy = Readonly<{
 
 ## 8. 在每輪模型請求前檢查門檻
 
-在 `agent-loop.ts` 加入一個 `compaction` 參數。主對話傳入 `{ kind: "chat", compact }`，每輪呼叫模型前先執行：
+在 `agent-loop.ts` 的輸入加上 `compact` 函式與 `signal`。每輪呼叫模型前先執行：
 
 ```typescript
-conversation = await compaction.compact({ conversation, reason: "threshold", turn });
+conversation = await input.compact({ conversation, reason: "threshold", turn });
 ```
+
+`signal` 讓附屬對話關閉時能中止進行中的模型請求與工具呼叫，見[建立附屬對話](side-chat.md)。
 
 `run.ts` 的 `compactConversation` 用兩個 DBOS steps 實作 `compact`：
 
