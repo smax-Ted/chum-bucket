@@ -1,28 +1,22 @@
 import {
   convertSchemaToJsonSchema,
-  toolDefinition,
+  parseWithStandardSchema,
   type Tool,
   type ToolExecutionContext,
   type UIMessage,
 } from "@tanstack/ai";
-import { delegationInputSchema } from "../../../shared/testing";
-import { allowsTool } from "../agents";
+import { agentRegistry, allowsTool } from "../agents";
 import type { ModelCall } from "../model-turn";
-import { codeModeToolName, composeCodeModeTurn } from "./code-mode";
 import {
   withAtlassianScope,
   ToolBoundaryError,
   type LocalToolHandler,
   type ModelTool,
 } from "./atlassian";
-import { getFigma } from "./get-figma";
-import { read, write, edit } from "./fs";
+import { codeModeToolName, composeCodeModeTurn } from "./code-mode";
+import { DELEGATE_TASK_TOOL } from "./delegate-task";
 
-type Registration = Readonly<{
-  definition: ModelTool;
-  handler: LocalToolHandler;
-}>;
-type Catalog = ReadonlyMap<string, Registration>;
+export { DELEGATE_TASK_TOOL };
 
 export type ModelToolTurn = Readonly<{
   definitions: ModelTool[];
@@ -38,56 +32,19 @@ export type RunTools = Readonly<{
   ) => Promise<unknown>;
 }>;
 
-export const DELEGATE_TASK_TOOL = "delegate_task";
-
-const delegateTaskTool = toolDefinition({
-  name: DELEGATE_TASK_TOOL,
-  description:
-    "Delegate exactly one durable task. Choose atlassian to capture requirements, planner with an explicit requirementsRef to plan without a URL, or ac/ui with an explicit planRef and targetUrl for mock-only checks. Returns validated results and immutable artifact references. Never launches prerequisites. Jira issue keys identify sources, not criterion selection. For the whole PROJ-123 issue use sources:[{kind:'jira',issueKey:'PROJ-123'}], criteria:{kind:'all'}. Use selected only for explicit criterion keys such as AC-2 and AC-5, preserving that exact subset.",
-  inputSchema: delegationInputSchema,
-});
-
-function registration(
-  tool: Pick<Tool, "name" | "description" | "inputSchema">,
-  handler: Registration["handler"],
-): Registration {
+function modelDefinition(tool: Pick<Tool, "name" | "description" | "inputSchema">): ModelTool {
   const inputSchema = convertSchemaToJsonSchema(tool.inputSchema);
 
   if (!inputSchema) {
     throw new ToolBoundaryError("Tool schema is unavailable");
   }
 
-  return {
-    definition: { name: tool.name, description: tool.description, inputSchema },
-    handler,
-  };
+  return { name: tool.name, description: tool.description, inputSchema };
 }
 
-const localCatalog: Catalog = new Map(
-  [
-    registration(getFigma, async (input, context) =>
-      getFigma.execute!(getFigma.inputSchema.parse(input), context),
-    ),
-    registration(read, async (input, context) => read.execute!(input, context)),
-    registration(write, async (input, context) => write.execute!(input, context)),
-    registration(edit, async (input, context) => edit.execute!(input, context)),
-  ].map((entry) => [entry.definition.name, entry]),
-);
-
-const delegateTaskDirect = registration(delegateTaskTool, async () => {
-  throw new ToolBoundaryError("delegate_task cannot execute inside a tool step");
-}).definition;
-
-function composeLocalDefinitions(): ModelTool[] {
-  const modelDefinitions: ModelTool[] = [];
-
-  for (const [name, entry] of localCatalog) {
-    if (allowsTool("main", name, "direct")) {
-      modelDefinitions.push(entry.definition);
-    }
-  }
-
-  return modelDefinitions;
+function localHandler(tool: Tool): LocalToolHandler {
+  return async (input, context) =>
+    tool.execute!(parseWithStandardSchema(tool.inputSchema, input), context);
 }
 
 export async function withRunTools<T>(
@@ -115,11 +72,12 @@ export async function withRunTools<T>(
           throw new ToolBoundaryError("Unknown tool");
         }
 
+        const tool = agentRegistry.main.tools.find((reference) => reference.name === call.name);
         const work = scope.executeTool(
           messages,
           call,
           context,
-          localCatalog.get(call.name)?.handler,
+          tool?.execute ? localHandler(tool) : undefined,
         );
         pending.add(work);
         void work.then(
@@ -131,12 +89,14 @@ export async function withRunTools<T>(
       };
 
     const buildTurn = async (messages: readonly UIMessage[]) => {
-      const definitions = composeLocalDefinitions();
-      const bindable = definitions.filter(
+      const definitions = agentRegistry.main.tools.map(modelDefinition);
+      const bindable = definitions.filter((definition) =>
+        allowsTool("main", definition.name, "codemode"),
+      );
+      const advertised = definitions.filter(
         (definition) =>
-          definition.name !== DELEGATE_TASK_TOOL &&
-          (allowsTool("main", definition.name, "direct") ||
-            allowsTool("main", definition.name, "codemode")),
+          allowsTool("main", definition.name, "codemode") ||
+          (runScope === "main" && allowsTool("main", definition.name, "direct")),
       );
       const guard = await scope.guard();
       const turn = composeCodeModeTurn({
@@ -144,12 +104,8 @@ export async function withRunTools<T>(
         dispatch: dispatchFor(messages),
         guard,
       });
-      const direct =
-        runScope === "main" && allowsTool("main", DELEGATE_TASK_TOOL, "direct")
-          ? [delegateTaskDirect]
-          : [];
 
-      return { definitions: [...bindable, ...direct], turn };
+      return { definitions: advertised, turn };
     };
 
     try {

@@ -20,7 +20,7 @@ import {
   type TestingRequestInput,
 } from "../../shared/testing";
 import type { ModelCall } from "./model-turn";
-import { allowsTool, capabilityToolNames, roleRegistry } from "./agents";
+import { allowsTool, roleRegistry, toolNamesFor } from "./agents";
 import {
   checksForRole,
   digestOf,
@@ -36,7 +36,6 @@ import {
   type ModelTool,
 } from "./tools/atlassian";
 import { codeModeToolName, composeCodeModeTurn, type CodeModeTurn } from "./tools/code-mode";
-import { getFigma } from "./tools/get-figma";
 import { createUseBrowserTool, type BrowserAdapter } from "./tools/use-browser";
 import type { RunTools } from "./tools";
 
@@ -110,9 +109,7 @@ type NativeDispatch = (
 type BrowserTool = ReturnType<typeof createUseBrowserTool>;
 
 export function testingRoleToolNames(role: RoleId): readonly string[] {
-  return roleRegistry[role].capabilities.flatMap(
-    (capability: keyof typeof capabilityToolNames) => capabilityToolNames[capability],
-  );
+  return toolNamesFor(role);
 }
 
 function roleNativeNames(role: RoleId): ReadonlySet<string> {
@@ -194,7 +191,9 @@ function roleRunTools(options: {
     definitions: readonly ModelTool[],
   ): Promise<CodeModeTurn> =>
     composeCodeModeTurn({
-      definitions,
+      definitions: definitions.filter((definition) =>
+        allowsTool(options.role, definition.name, "codemode"),
+      ),
       dispatch: (call, context) => dispatchFor(messages)(call, context, "codemode"),
       guard: options.guard,
     });
@@ -307,15 +306,16 @@ async function atlassianRoleTools(
   signal?: AbortSignal,
 ): Promise<RoleRun> {
   const allowed = roleNativeNames("atlassian");
+  const composeAtlassianTools = roleRegistry.atlassian.tools[0];
 
   return roleRunTools({
     role: "atlassian",
     signal,
     guard: await scope.guard(),
     definitions: async (messages) => {
-      const definitions = await scope.getModelTools(messages, (catalog) =>
-        [...catalog].filter(([name]) => allowed.has(name)).map(([, definition]) => definition),
-      );
+      const definitions = await scope.getModelTools(messages, (catalog) => [
+        ...composeAtlassianTools.create(catalog),
+      ]);
 
       return definitions
         .filter(
@@ -441,14 +441,17 @@ function acRoleTools(input: TestingRoleToolsInput, signal?: AbortSignal): RoleRu
   const plan = input.plan;
   const checks = browserChecks(plan, "functional");
   const fixture = hostFixture(input.host);
-  const browser = createUseBrowserTool({
-    role: "ac",
-    cases: plan.cases,
-    checks,
-    fixture,
-    figmaProperties: null,
-    designCapture: null,
-  });
+  const browser = createUseBrowserTool(
+    {
+      role: "ac",
+      cases: plan.cases,
+      checks,
+      fixture,
+      figmaProperties: null,
+      designCapture: null,
+    },
+    roleRegistry.ac.tools[0],
+  );
   const definition = definitionOf(browser);
 
   return roleRunTools({
@@ -457,7 +460,7 @@ function acRoleTools(input: TestingRoleToolsInput, signal?: AbortSignal): RoleRu
     guard: () => undefined,
     definitions: async () => [definition],
     dispatch: () => async (call, context, route) => {
-      if (call.name !== "verify_ac") {
+      if (call.name !== browser.name) {
         throw new Error("Unknown tool");
       }
 
@@ -466,20 +469,13 @@ function acRoleTools(input: TestingRoleToolsInput, signal?: AbortSignal): RoleRu
   });
 }
 
-const stubUseBrowserDefinition: ModelTool = {
-  name: "verify_ui",
-  description:
-    "Verify one assigned canonical check using the live browser adapter after capturing the requested Figma design. Supply only checkId; the host owns actions, targets and observations.",
-  inputSchema: (() => {
-    const inputSchema = convertSchemaToJsonSchema(useBrowserInputSchema);
-
-    if (!inputSchema) {
-      throw new Error("Tool schema is unavailable");
-    }
-
-    return inputSchema;
-  })(),
-};
+function pendingBrowserDefinition(tool: Tool): ModelTool {
+  return {
+    ...definitionOf(tool),
+    description:
+      "Verify one assigned canonical check using the live browser adapter after capturing the requested Figma design. Supply only checkId; the host owns actions, targets and observations.",
+  };
+}
 
 const figmaOutputSchema = z.looseObject({
   fileKey: z.string(),
@@ -602,7 +598,8 @@ function uiRoleTools(input: TestingRoleToolsInput, signal?: AbortSignal): RoleRu
     throw new Error("Canonical plan design does not match the requested design");
   }
 
-  const figmaDefinition = definitionOf(getFigma);
+  const [browserReference, figmaReference] = roleRegistry.ui.tools;
+  const figmaDefinition = definitionOf(figmaReference);
   let capture: DesignCaptureResult | null = input.host.restoredDesign
     ? acceptDesignCapture(input.host.restoredDesign, checks, design)
     : null;
@@ -612,14 +609,17 @@ function uiRoleTools(input: TestingRoleToolsInput, signal?: AbortSignal): RoleRu
       throw new Error("verify_ui requires an accepted Figma capture");
     }
 
-    return createUseBrowserTool({
-      role: "ui",
-      cases: plan.cases,
-      checks,
-      fixture,
-      figmaProperties: capture.properties,
-      designCapture: capture.capture,
-    });
+    return createUseBrowserTool(
+      {
+        role: "ui",
+        cases: plan.cases,
+        checks,
+        fixture,
+        figmaProperties: capture.properties,
+        designCapture: capture.capture,
+      },
+      browserReference,
+    );
   };
 
   return roleRunTools({
@@ -628,11 +628,11 @@ function uiRoleTools(input: TestingRoleToolsInput, signal?: AbortSignal): RoleRu
     guard: () => undefined,
     definitions: async () => [
       figmaDefinition,
-      capture ? definitionOf(currentBrowser()) : stubUseBrowserDefinition,
+      capture ? definitionOf(currentBrowser()) : pendingBrowserDefinition(browserReference),
     ],
     dispatch: () => async (call, context, route) => {
-      if (call.name === "get_figma") {
-        const parsed = getFigma.inputSchema.parse(call.input);
+      if (call.name === figmaReference.name) {
+        const parsed = figmaReference.inputSchema.parse(call.input);
         const reference = requestedFigmaTarget(parsed.target, parsed.nodeId);
 
         if (reference.fileKey !== design.fileKey || reference.nodeId !== design.nodeId) {
@@ -642,7 +642,7 @@ function uiRoleTools(input: TestingRoleToolsInput, signal?: AbortSignal): RoleRu
         const envelope = envelopeOf(
           await input.host.invoke(
             { call, input: parsed, nativeName: "get_figma", route, context },
-            async () => getFigma.execute!(parsed, context),
+            async () => figmaReference.execute!(parsed, context),
           ),
         );
         requireCapturedFigmaRoot(envelope.output, reference);
@@ -656,7 +656,7 @@ function uiRoleTools(input: TestingRoleToolsInput, signal?: AbortSignal): RoleRu
         return envelope.output;
       }
 
-      if (call.name === "verify_ui") {
+      if (call.name === browserReference.name) {
         const browser = currentBrowser();
 
         return browserEnvelope(input.host, browser, call, context, route);

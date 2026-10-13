@@ -120,10 +120,8 @@ function registrationVersions(): ProfileVersions {
 
 function registrationVersion(role: RoleId): string {
   const definition = roleRegistry[role];
-  const capabilities =
-    definition.capabilities.length > 0 ? definition.capabilities.join("+") : "none";
 
-  return `${definition.artifact}:${definition.profile}:${definition.codeMode}:${capabilities}`;
+  return `${definition.artifact}:${definition.profile}:${definition.codeMode}:${definition.registration}`;
 }
 
 export type HostTestingRuntime = Readonly<{

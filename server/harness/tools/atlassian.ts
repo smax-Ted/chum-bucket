@@ -1,21 +1,18 @@
-import {
-  convertSchemaToJsonSchema,
-  type JSONSchema,
-  type ToolExecutionContext,
-  type UIMessage,
-} from "@tanstack/ai";
+import { convertSchemaToJsonSchema, type ToolExecutionContext, type UIMessage } from "@tanstack/ai";
 import { createMCPClient, type MCPClient } from "@tanstack/ai-mcp";
 import { z } from "zod";
 import type { ModelCall } from "../model-turn";
-import { atlassianTools } from "../agents";
-import { readAtlassianConfiguration, type AtlassianConfiguration } from "./atlassian-policy";
+import {
+  atlassianTools,
+  discoveryToolName,
+  readAtlassianConfiguration,
+  type AtlassianConfiguration,
+  type AtlassianCatalog,
+  type ModelToolShape as ModelTool,
+} from "./atlassian-policy";
 
-export type ModelTool = Readonly<{
-  name: string;
-  description: string;
-  inputSchema: JSONSchema;
-}>;
-export type AtlassianCatalog = ReadonlyMap<string, ModelTool>;
+export { discoveryToolName };
+export type { AtlassianCatalog, ModelToolShape as ModelTool } from "./atlassian-policy";
 export type LocalToolHandler = (input: unknown, context: ToolExecutionContext) => Promise<unknown>;
 export type AtlassianScope = Readonly<{
   getModelTools: (
@@ -46,8 +43,6 @@ type RemoteSession = Readonly<{
 }>;
 
 const MCP_TIMEOUT_MS = 60_000;
-
-export const discoveryToolName = "discover_atlassian_tools";
 
 const discoveryRequestSchema = z.object({ toolNames: z.array(z.string()).min(1) }).strict();
 

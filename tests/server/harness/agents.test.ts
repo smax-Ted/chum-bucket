@@ -4,12 +4,23 @@ import {
   MODEL,
   agentRegistry,
   allowsTool,
-  capabilityToolNames,
   providerModels,
   roleRegistry,
   roleSystemPrompt,
   toolNamesFor,
 } from "../../../server/harness/agents";
+import {
+  exposedAtlassianToolNames,
+  atlassianToolFactory,
+} from "../../../server/harness/tools/atlassian-policy";
+import { delegateTaskTool } from "../../../server/harness/tools/delegate-task";
+import { edit, read, write } from "../../../server/harness/tools/fs";
+import { getFigma } from "../../../server/harness/tools/get-figma";
+import {
+  createUseBrowserTool,
+  verifyAcTool,
+  verifyUiTool,
+} from "../../../server/harness/tools/use-browser";
 import { roleFeedbackPrompt, roleTaskPrompt } from "../../../server/harness/prompts";
 import type { CanonicalPlan, Requirements } from "../../../server/harness/testing-domain";
 import { ROLE_IDS, type TestingRequestInput } from "../../../shared/testing";
@@ -74,16 +85,14 @@ const plan: CanonicalPlan = {
 test("role definitions keep distinct responsibilities within their capabilities", () => {
   assert.deepEqual(Object.keys(roleRegistry), ROLE_IDS);
   assert.deepEqual(
-    ROLE_IDS.map((role) => roleRegistry[role].capabilities),
-    [["atlassian_read"], [], ["browser_ac"], ["browser_ui", "figma_read"]],
+    ROLE_IDS.map((role) => [...toolNamesFor(role)].sort()),
+    [
+      ["confluence_get_page", "jira_get_issue"],
+      [],
+      ["verify_ac"],
+      ["get_figma", "verify_ui"],
+    ],
   );
-  assert.deepEqual(capabilityToolNames, {
-    workspace: ["read", "write", "edit"],
-    figma_read: ["get_figma"],
-    browser_ac: ["verify_ac"],
-    browser_ui: ["verify_ui"],
-    atlassian_read: ["jira_get_issue", "confluence_get_page"],
-  });
   assert.equal(new Set(ROLE_IDS.map((role) => roleRegistry[role].systemPrompt)).size, 4);
   assert.match(roleRegistry.atlassian.systemPrompt, /sourceCapture\.anchorRefs/);
   assert.match(roleRegistry.atlassian.systemPrompt, /unresolved instead of silently resolving/);
@@ -197,8 +206,8 @@ test("one registry owns every model and the provider derives its model list", ()
   assert.deepEqual(Object.keys(agentRegistry), ["main", "atlassian", "planner", "ac", "ui"]);
   assert.equal(new Set(Object.values(agentRegistry).map((agent) => agent.model)).size, 1);
   assert.deepEqual(
-    ROLE_IDS.map((role) => agentRegistry[role].capabilities),
-    [["atlassian_read"], [], ["browser_ac"], ["browser_ui", "figma_read"]],
+    ROLE_IDS.map((role) => agentRegistry[role].registration),
+    ["atlassian_read", "none", "browser_ac", "browser_ui+figma_read"],
   );
   assert.deepEqual(
     ROLE_IDS.map((role) => agentRegistry[role].profile),
@@ -213,7 +222,13 @@ test("main cannot reach Atlassian through any route and owns conversation tools"
     assert.equal(allowsTool("main", "discover_atlassian_tools", route), false);
   }
 
-  assert.deepEqual([...toolNamesFor("main")].sort(), ["edit", "get_figma", "read", "write"]);
+  assert.deepEqual([...toolNamesFor("main")].sort(), [
+    "delegate_task",
+    "edit",
+    "get_figma",
+    "read",
+    "write",
+  ]);
   assert.equal(toolNamesFor("main").includes("jira_get_issue"), false);
   assert.equal(allowsTool("main", "read", "direct"), true);
   assert.equal(allowsTool("main", "get_figma", "codemode"), true);
@@ -223,6 +238,34 @@ test("main cannot reach Atlassian through any route and owns conversation tools"
   assert.equal(allowsTool("main", "delegate_task", "codemode"), false);
 });
 
+test("registry tools are the advertised definitions and factories, not a name list", () => {
+  assert.deepEqual(agentRegistry.main.tools, [getFigma, read, write, edit, delegateTaskTool]);
+  assert.deepEqual(
+    toolNamesFor("main"),
+    agentRegistry.main.tools.map((tool) => tool.name),
+  );
+  assert.deepEqual(agentRegistry.atlassian.tools, [atlassianToolFactory]);
+  assert.deepEqual([...toolNamesFor("atlassian")].sort(), [...exposedAtlassianToolNames].sort());
+  assert.deepEqual(agentRegistry.ac.tools, [verifyAcTool]);
+  assert.deepEqual(agentRegistry.ui.tools, [verifyUiTool, getFigma]);
+
+  const [planCase] = plan.cases;
+  const browser = createUseBrowserTool({
+    role: "ac",
+    cases: [planCase!],
+    checks: [planCase!.checks[0]!],
+    fixture: {
+      identity: { id: "fixture", version: "v1" },
+      adapterVersion: "v1",
+      run: async () => ({ state: "observed", observed: "Receipt appears" }),
+    },
+    figmaProperties: null,
+    designCapture: null,
+  });
+
+  assert.equal(browser.name, toolNamesFor("ac")[0]);
+  assert.equal(typeof browser.execute, "function");
+});
 test("QA roles keep their capability policy inside the shared registry", () => {
   assert.deepEqual([...toolNamesFor("atlassian")].sort(), [
     "confluence_get_page",

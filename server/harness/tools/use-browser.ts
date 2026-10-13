@@ -275,7 +275,25 @@ async function browserOutput(
   };
 }
 
-export function createUseBrowserTool(scope: BrowserCheckScope) {
+const browserToolDescription =
+  "Verify one assigned canonical check. The host owns actions, targets, observations and expectations. Supply only checkId; never supply selectors or expected values.";
+
+export const verifyAcTool = toolDefinition({
+  name: "verify_ac",
+  description: browserToolDescription,
+  inputSchema: useBrowserInputSchema,
+});
+
+export const verifyUiTool = toolDefinition({
+  name: "verify_ui",
+  description: browserToolDescription,
+  inputSchema: useBrowserInputSchema,
+});
+
+export function createUseBrowserTool(
+  scope: BrowserCheckScope,
+  definition = scope.role === "ac" ? verifyAcTool : verifyUiTool,
+) {
   if (scope.checks.length === 0) {
     throw new Error("Browser verification requires at least one scoped check");
   }
@@ -288,10 +306,7 @@ export function createUseBrowserTool(scope: BrowserCheckScope) {
   assertScopedChecks(scope, casesByCheck);
   const design = trustedDesign(scope);
 
-  return toolDefinition({
-    name: scope.role === "ac" ? "verify_ac" : "verify_ui",
-    description:
-      "Verify one assigned canonical check. The host owns actions, targets, observations and expectations. Supply only checkId; never supply selectors or expected values.",
-    inputSchema: useBrowserInputSchema,
-  }).server(async (raw): Promise<BrowserOutput> => browserOutput(scope, casesByCheck, design, raw));
+  return definition.server(async (raw): Promise<BrowserOutput> =>
+    browserOutput(scope, casesByCheck, design, raw),
+  );
 }

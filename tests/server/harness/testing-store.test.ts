@@ -46,6 +46,12 @@ test("owner snapshot versions are passed in and are not a second model constant"
   assert.equal(host.profiles.atlassian, roleRegistry.atlassian.profile);
   assert.equal(host.registration.atlassian.includes(roleRegistry.atlassian.profile), true);
   assert.notEqual(host.registration.atlassian, host.profiles.atlassian);
+  assert.deepEqual(host.registration, {
+    atlassian: "requirements:requirements-v2:enabled:atlassian_read",
+    planner: "plan:planning-v2:enabled:none",
+    ac: "ac-result:functional-v2:enabled:browser_ac",
+    ui: "ui-result:style-v2:enabled:browser_ui+figma_read",
+  });
 });
 
 test("explicit bad refs and cross-run results reject without dropping any ref", () => {

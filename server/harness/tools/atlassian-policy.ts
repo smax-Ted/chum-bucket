@@ -1,10 +1,48 @@
-import { atlassianToolNames } from "../agents";
+import type { JSONSchema } from "@tanstack/ai";
 
-export { atlassianToolNames };
+export type ModelToolShape = Readonly<{
+  name: string;
+  description: string;
+  inputSchema: JSONSchema;
+}>;
 
 export type Environment = Readonly<Record<string, string | undefined>>;
 
 export const defaultAtlassianEndpoint = "http://127.0.0.1:8000/mcp";
+export const discoveryToolName = "discover_atlassian_tools";
+
+export type ToolRoute = "direct" | "codemode";
+export type AtlassianToolPolicy = Readonly<{ required: boolean; routes?: readonly ToolRoute[] }>;
+export type AtlassianCatalog = ReadonlyMap<string, ModelToolShape>;
+
+export const atlassianTools: ReadonlyMap<string, AtlassianToolPolicy> = new Map([
+  ["jira_get_issue", { required: true }],
+  ["jira_search", { required: false }],
+  ["confluence_get_page", { required: true }],
+  ["confluence_search", { required: false }],
+  ["confluence_get_comments", { required: false }],
+]);
+
+export const atlassianToolNames: readonly string[] = [...atlassianTools.keys()];
+
+const exposedToolNames = new Set(
+  [...atlassianTools]
+    .filter(([, policy]) => policy.required || policy.routes?.includes("direct"))
+    .map(([name]) => name),
+);
+
+export const exposedAtlassianToolNames: readonly string[] = [...exposedToolNames];
+
+export type AtlassianToolFactory = Readonly<{
+  names: readonly string[];
+  create: (catalog: AtlassianCatalog) => readonly ModelToolShape[];
+}>;
+
+export const atlassianToolFactory: AtlassianToolFactory = {
+  names: exposedAtlassianToolNames,
+  create: (catalog) =>
+    [...catalog].filter(([name]) => exposedToolNames.has(name)).map(([, definition]) => definition),
+};
 
 export type AtlassianConfiguration =
   | Readonly<{ mode: "local" }>
