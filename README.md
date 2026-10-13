@@ -1,13 +1,34 @@
 ## Before Start
 
 > [!NOTE]
-> 此專案為教學用專案，透過 Coding Agent 建立 Harness 的系統，客製化自己的 Workflow。  
+> 此專案為公司內部教學用專案，透過 Coding Agent 建立 Harness 的系統，客製化自己的 Workflow。  
 > 部分 Code 會使用手動編輯的方式，避免整個方向歪掉。  
 > 不限定使用的 Agent 工具，以理解 Harness 觀念為主。  
 > 我會使用 [PI](https://pi.dev/) 進行開發，搭配 [pstack](https://github.com/backnotprop/pstack)。
 
+我的個人配置：
+
 - [skills](https://github.com/tp6gw94/skills)
 - [pi](https://github.com/tp6gw94/my-pi)
+
+> 和 Agent 協作，就像是監督比你聰明的人一起工作。
+
+需要給他你要的方向，但又不能太過限定他們的發展。
+
+透過間接 Prompt 的方式，讓 Agent 說出他要怎麼做，同時也讓自己確認 Agent 沒有偏離方向。
+
+
+> AI 時代的工程師應該都要有自己的 Agent Flow。自己打造自己的 Agent，理解背後的魔法。
+
+[if your team is too busy doing their 'normal job' to experiment with AI, you're preparing them to be replaced](https://ghuntley.com/replaced/)
+
+每個公司、團隊、個人都會有自己的開發方式，所以不會特定要求要使用什麼 SDD、Plan、grill-me 等，不會特別的說明各使用方式，每個方法都很好，找到你自己合適的，我會用我自己的方式進行開發，互相參考學習。
+
+而是要建立屬於自己且滿足團隊的自動化 Flow。
+
+> [!IMPORTANT]
+> 你的電腦應該要安裝 Docker & node >= 22  
+> 預期你了解部分 TypeScript 以及前後端
 
 ## 0. Intro
 
@@ -16,6 +37,23 @@ Agent = Model + Harness
 好的 Harness 搭配不怎麼樣的模型能力可能大於強大的模型搭配不好的 Harness。
 
 目標：建立會閱讀 Jira 和 Confluence 的 Agent，替我們撰寫 test case，並操作瀏覽器進行真實的測試，記錄下來結果。
+
+> [!NOTE]
+> Generate Share Token: 期限 4h
+ 
+```bash
+curl -X POST "https://api.deepinfra.com/v1/scoped-jwt" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $DEEPINFRA_API_KEY" \
+  -d '{
+      "api_key_name": "auto",
+      "models": ["deepseek-ai/DeepSeek-V4-Flash-0731"],
+      "expires_delta": 14400,
+      "spending_limit": 1.0
+  }'
+
+```
+
 
 ## 1. Tool
 
@@ -82,12 +120,6 @@ sequenceDiagram
     H->>M: 帶上工具結果，繼續生成
     M-->>H: 回答使用者
 ```
-
-### Tool Search (Manual)
-
-透過定義 Search Tool，讓 LLM Search 相關使用的 Tool。
-
-類似 Lazy，不過連 Tool Name 都不給 LLM，讓他可能依據使用者的輸入進行搜尋。
 
 ### Target
 
@@ -195,6 +227,8 @@ Code Mode 就是給 LLM 一個 Sandbox，讓他可以在裡面執行程式，我
 
 ## 4. Compact
 
+[Tokenizer](https://platform.openai.com/tokenizer)
+
 Compaction 用摘要取代較早的對話，讓 Agent 在有限的 context window 內繼續工作。它保留接續任務需要的資訊，但不保證保留每個細節。
 
 ### 對話為什麼需要壓縮
@@ -301,3 +335,6 @@ flowchart TD
 
 ## 7. Eval
 
+**沒有評估，就不知道所做的修改是進步還是退步。**
+
+[promptfoo](https://github.com/promptfoo/promptfoo)

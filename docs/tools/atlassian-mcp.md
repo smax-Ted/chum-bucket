@@ -8,10 +8,12 @@
 
 - 讀取後端 `JIRA_BASE_URL`、`JIRA_EMAIL`、`JIRA_API_TOKEN`。三欄全空時只啟用 `localTools`，部分填寫時回報設定錯誤。
 - 限定同一個 Atlassian Cloud 站點。要求 `JIRA_BASE_URL` 使用 `https://your-site.atlassian.net`，不含 `/wiki`、query 或帳密。
-- 固定 endpoint 為 `http://127.0.0.1:8000/mcp`。禁止模型改動 endpoint、憑證或白名單。
+- 從 `ATLASSIAN_MCP_URL` 讀取 endpoint，未設定時使用 `http://127.0.0.1:8000/mcp`。只接受 loopback 的 HTTP URL（`127.0.0.1` 或 `[::1]`），且不含帳密、query 或 fragment。
+- 只設定 `ATLASSIAN_MCP_URL`、沒有 Jira 三欄時，回報設定錯誤。
+- endpoint 只由後端設定決定。禁止模型改動 endpoint、憑證或白名單。
 - 只允許 `jira_get_issue`、`jira_search`、`confluence_get_page`、`confluence_search`、`confluence_get_comments`。要求 `jira_get_issue` 與 `confluence_get_page` 必須存在，其餘工具缺少時略過。
 
-在 `.env.example` 放示意值，實際金鑰留在後端 `.env`。新增 `atlassian-policy.test.ts`，驗證全空、完整、部分配置與無效站點。
+在 `.env.example` 放示意值，實際金鑰留在後端 `.env`。新增 `atlassian-policy.test.ts`，驗證全空、完整、部分配置、無效站點與無效 endpoint。
 
 ## 2. 管理 MCP 服務程序
 
@@ -29,17 +31,19 @@ uvx --from mcp-atlassian==0.23.1 mcp-atlassian \
 
 只傳入必要的執行環境與上述設定，不把 token 放進命令列。處理啟動失敗、停止訊號與子程序清理，記錄錯誤時排除憑證。
 
+launcher 固定在 `http://127.0.0.1:8000/mcp` 啟動服務，與 `ATLASSIAN_MCP_URL` 的預設值相同。若在其他 port 啟動 `mcp-atlassian`，把 `ATLASSIAN_MCP_URL` 改成該位址。
+
 新增 `mcp:atlassian` script，執行 `tsx scripts/mcp-atlassian.ts`。用 `atlassian-launcher.test.ts` 驗證啟動設定，不啟動真實服務。另驗證停止 launcher 後子程序結束，port 8000 已釋放。
 
 ## 3. 取得與篩選原生工具
 
-在 `atlassian.ts` 實作 `openAtlassianTools(config, signal)`，回傳 `{ tools, close }`。使用 `createMCPClient({ transport: { type: "http", url, fetch } })` 建立 client，再呼叫 `client.tools({ lazy: true })`。
+在 `atlassian.ts` 實作 `openAtlassianTools(config, signal)`，回傳 `{ tools, close }`。使用 `createMCPClient({ transport: { type: "http", url, fetch } })` 建立 client，`url` 來自 policy 的 endpoint，再呼叫 `client.tools({ lazy: true })`。
 
 依照以下要求處理工具與連線：
 
 - 依 `tool.metadata.mcp.serverToolName` 套用 policy 的白名單。保留原生名稱、description、input schema 與結果，不逐項改寫成 Zod schema。交由 MCP server 驗證原生 JSON schema 的參數。
 - 必要工具缺失、名稱重複或沒有 execute handler 時，停止初始化。執行 `jira_get_issue` 前，強制 `update_history: false`，避免讀取時更新瀏覽紀錄。
-- 對初始化、取得目錄與工具呼叫設定有限逾時及取消訊號。初始化失敗時也要關閉 client，不無限重試或切換 endpoint。
+- 對初始化、取得目錄與工具呼叫設定有限逾時及取消訊號。初始化失敗時也要關閉 client，不無限重試，也不自動改連其他 endpoint。
 - 用安全訊息取代原始錯誤 body。以假 token 及其 Basic 編碼值測試定義、結果與錯誤，避免已知憑證外洩。
 
 新增 `mcp-fixture.ts` 與 `atlassian.test.ts`。以假 fetch 模擬初始化、`tools/list`、`tools/call` 與關閉，驗證白名單、原生 schema、`update_history: false`、錯誤、逾時與取消。

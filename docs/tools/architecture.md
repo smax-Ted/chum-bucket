@@ -8,12 +8,13 @@
 
 - `server/harness/tools/get-figma.ts`：定義 `get_figma` 的 schema、server handler 與結果格式。
 - `server/harness/tools/fs.ts`：把 Pi 的 `read`、`write`、`edit` 轉成 TanStack tools。
-- `server/harness/tools/read-worker.mjs`：執行 Pi read，讓主執行緒能取消讀取。
 - `server/harness/tools/index.ts`：匯出自訂工具清單 `localTools`，不執行工具。
 - `server/harness/tools/atlassian-policy.ts`：驗證設定，定義 endpoint、白名單與必要工具。
 - `scripts/mcp-atlassian.ts`：依 policy 啟動及停止本機 MCP 子程序。
 - `server/harness/tools/atlassian.ts`：連接 MCP、篩選原生工具，回傳 `{ tools, close }`。
 - `server/chat.ts`：組合工具、呼叫 `chat()`、傳送 SSE、儲存對話，並管理每次聊天的 MCP client。
+
+自訂工具直接用 `toolDefinition(...).server(handler)` 建立，再傳給原生 `chat({ tools })`。`9945adf` 是這種接法的參考 commit，它在 `server/chat.ts` 傳入 `tools: [getFigma, getTicket]`。後續 commit 改用 Atlassian MCP，取代了 `getTicket`。
 
 工具的 description 說明用途與限制，schema 描述參數，handler 驗證輸入並執行操作。聊天層負責 OpenUI prompt、SSE 與對話儲存，工具模組不處理這些工作。
 
@@ -42,7 +43,7 @@ flowchart TD
 
 ## Lazy discovery 與操作權限
 
-獨立的 `mcp-atlassian` 程序透過 Streamable HTTP 提供 Jira 與 Confluence 原生工具。`lazy: true` 延後完整 schema 進入模型 context，client 仍會先連線並取得工具目錄。
+獨立的 `mcp-atlassian` 程序透過 Streamable HTTP 提供 Jira 與 Confluence 原生工具。Client 從 `ATLASSIAN_MCP_URL` 讀取 endpoint，預設為 `http://127.0.0.1:8000/mcp`。`lazy: true` 延後完整 schema 進入模型 context，client 仍會先連線並取得工具目錄。
 
 Lazy 控制模型看到哪些 schema。唯讀設定、launcher 與 client 的白名單，以及 Atlassian 帳號權限，才限制可執行的操作。
 
