@@ -37,7 +37,7 @@ import {
   type AtlassianScope,
   type ModelTool,
 } from "./tools/atlassian";
-import { figmaUrlTarget, readSource, withRemoteLinks } from "./source-links";
+import { figmaUrlTarget, readSource, withPageMetadata, withRemoteLinks } from "./source-links";
 import { codeModeToolName, composeCodeModeTurn, type CodeModeTurn } from "./tools/code-mode";
 import { createUseBrowserTool, type BrowserAdapter } from "./tools/use-browser";
 import type { RunTools } from "./tools";
@@ -257,6 +257,11 @@ function requireRequestedDiscovery(input: unknown, allowed: ReadonlySet<string>)
   }
 }
 
+const HOST_READ_INPUTS: Readonly<Record<string, (input: unknown) => unknown>> = {
+  jira_get_issue: withRemoteLinks,
+  confluence_get_page: withPageMetadata,
+};
+
 function requestedSource(name: string, raw: unknown, intent: TestingRequestInput): Source | null {
   const reference = readSource(name, raw);
 
@@ -304,8 +309,8 @@ async function atlassianRoleTools(
         throw new Error("Unknown tool");
       }
 
-      const hostCall =
-        call.name === "jira_get_issue" ? { ...call, input: withRemoteLinks(call.input) } : call;
+      const hostInput = HOST_READ_INPUTS[call.name];
+      const hostCall = hostInput ? { ...call, input: hostInput(call.input) } : call;
       const invocation = {
         call: hostCall,
         input: hostCall.input,

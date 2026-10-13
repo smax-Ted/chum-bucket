@@ -484,6 +484,10 @@ test("atlassian role restricts discovery and reads, then captures the raw read o
             context,
           )) as { output: unknown; sourceCapture: SourceCapture };
           assert.equal(harness.invocations.length, 2);
+          assert.deepEqual(harness.invocations[1]!.input, {
+            issue_key: "PROJ-1",
+            include: "remote_links",
+          });
           assert.equal(harness.sourceInputs.length, 1);
           assert.deepEqual(harness.sourceInputs[0]!.reference, {
             kind: "jira",
@@ -509,10 +513,14 @@ test("atlassian role restricts discovery and reads, then captures the raw read o
           );
           const page = (await tools.executeTool(
             history,
-            modelCall("confluence_get_page", { page_id: "123" }),
+            modelCall("confluence_get_page", { page_id: "123", include_metadata: false }),
             context,
           )) as { output: unknown; sourceCapture: SourceCapture };
           assert.equal(harness.invocations.length, 3);
+          assert.deepEqual(harness.invocations[2]!.input, {
+            page_id: "123",
+            include_metadata: true,
+          });
           assert.equal(harness.sourceInputs.length, 2);
           assert.deepEqual(harness.sourceInputs[1]!.reference, {
             kind: "confluence",

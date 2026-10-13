@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { figmaLinks, withRemoteLinks } from "../../../server/harness/source-links";
+import {
+  figmaLinks,
+  withPageMetadata,
+  withRemoteLinks,
+} from "../../../server/harness/source-links";
 
 const link = (url: string, title?: string) => ({
   id: 1,
@@ -121,4 +125,16 @@ test("jira_get_issue is always asked for remote links without losing other enric
     include: "watchers, remote_links",
   });
   assert.equal(withRemoteLinks("not a record"), "not a record");
+});
+
+test("confluence_get_page is always asked for page metadata so the title is returned", () => {
+  assert.deepEqual(withPageMetadata({ page_id: "123" }), {
+    page_id: "123",
+    include_metadata: true,
+  });
+  assert.deepEqual(withPageMetadata({ page_id: "123", include_metadata: false }), {
+    page_id: "123",
+    include_metadata: true,
+  });
+  assert.equal(withPageMetadata("not a record"), "not a record");
 });

@@ -132,3 +132,7 @@ export function withRemoteLinks(input: unknown): unknown {
 
   return { ...input, include: include ? `${include},remote_links` : "remote_links" };
 }
+
+export function withPageMetadata(input: unknown): unknown {
+  return isRecord(input) ? { ...input, include_metadata: true } : input;
+}
