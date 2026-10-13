@@ -299,12 +299,14 @@ export const verifyAcTool = toolDefinition({
   name: "verify_ac",
   description: browserToolDescription,
   inputSchema: useBrowserInputSchema,
+  metadata: { direct: true },
 });
 
 export const verifyUiTool = toolDefinition({
   name: "verify_ui",
   description: browserToolDescription,
   inputSchema: useBrowserInputSchema,
+  metadata: { direct: true },
 });
 
 export function createUseBrowserTool(

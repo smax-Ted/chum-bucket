@@ -82,9 +82,17 @@ type Transport = {
 
 const transports = new Map<string, Transport>();
 
-function abortTransport(transport: Transport): void {
+export class GuardDenial extends Error {}
+
+function abortTransport(transport: Transport, reason?: GuardDenial): void {
   transport.aborted = true;
-  transport.controller.abort();
+  transport.controller.abort(reason);
+}
+
+function deny(transport: Transport, reason: string): never {
+  const denial = new GuardDenial(reason);
+  abortTransport(transport, denial);
+  throw denial;
 }
 
 function refuse(transport: Transport): void {
@@ -862,8 +870,7 @@ async function guardNativeCall(
   });
 
   if (guard.state !== "allowed") {
-    abortTransport(run.transport);
-    throw new Error(guard.reason);
+    deny(run.transport, guard.reason);
   }
 
   if (run.transport.aborted || run.signal.aborted) {
@@ -1225,7 +1232,11 @@ async function runClaimedChild(
   }
 }
 
-function failureReason(error: unknown, signal: AbortSignal): string {
+export function failureReason(error: unknown, signal: AbortSignal): string {
+  if (signal.reason instanceof GuardDenial) {
+    return signal.reason.message;
+  }
+
   if (signal.aborted) {
     return "cancelled";
   }
@@ -1293,8 +1304,7 @@ function childSession(
       const claimed = await claimActualTask(input);
 
       if ("state" in claimed && claimed.state === "denied") {
-        transport.controller.abort();
-        throw new Error(claimed.reason);
+        deny(transport, claimed.reason);
       }
     },
     emit: async () => undefined,
@@ -1309,8 +1319,7 @@ function childSession(
       });
 
       if (guard.state === "denied") {
-        transport.controller.abort();
-        throw new Error(guard.reason);
+        deny(transport, guard.reason);
       }
 
       await appendTrustedObservation({
