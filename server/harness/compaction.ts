@@ -16,16 +16,11 @@ import type { ConversationState } from "./conversation";
 import type { RunTools } from "./tools";
 import type { ModelTool } from "./tools/atlassian";
 
-export const COMPACT_TOKEN_THRESHOLD = 48_000;
 export type CompactionPolicy = Readonly<{
   triggerTokens: number;
   keepRecentTokens: number;
 }>;
 
-const DEFAULT_COMPACTION_POLICY: CompactionPolicy = {
-  triggerTokens: COMPACT_TOKEN_THRESHOLD,
-  keepRecentTokens: 20_000,
-};
 const ESTIMATED_BYTES_PER_TOKEN = 3;
 const ESTIMATED_FRAMING_TOKENS = 2_048;
 const SUMMARY_TIMEOUT_MS = 30_000;
@@ -127,9 +122,21 @@ function validatePolicy(policy: CompactionPolicy): void {
   }
 }
 
+function readCompactionPolicy(env: NodeJS.ProcessEnv): CompactionPolicy {
+  const policy = {
+    triggerTokens: Number(env.COMPACT_TRIGGER_TOKENS || 48_000),
+    keepRecentTokens: Number(env.COMPACT_KEEP_RECENT_TOKENS || 20_000),
+  };
+  validatePolicy(policy);
+
+  return policy;
+}
+
+export const compactionPolicy = readCompactionPolicy(process.env);
+
 export function planCompaction(
   messages: readonly UIMessage[],
-  policy: CompactionPolicy = DEFAULT_COMPACTION_POLICY,
+  policy: CompactionPolicy = compactionPolicy,
 ): CompactionPlan | null {
   validatePolicy(policy);
   const first = messages[0];
@@ -217,7 +224,7 @@ export async function prepareCompaction(input: {
 }): Promise<CompactionOutcome> {
   input.signal?.throwIfAborted();
   const { messages, prompt, tools } = input;
-  const policy = input.policy ?? DEFAULT_COMPACTION_POLICY;
+  const policy = input.policy ?? compactionPolicy;
   validatePolicy(policy);
   let toolTurn: Awaited<ReturnType<RunTools["getModelTools"]>>;
 

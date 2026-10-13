@@ -9,7 +9,7 @@ import {
 } from "@tanstack/ai";
 import { parseCompactionEvent } from "../../../shared/compaction-event";
 import {
-  COMPACT_TOKEN_THRESHOLD,
+  compactionPolicy,
   estimateInputTokens,
   planCompaction,
   prepareCompaction,
@@ -76,7 +76,7 @@ async function mockSummaryStream(events: AdapterYieldChunk[]) {
 }
 
 function longMessages(): UIMessage[] {
-  const filler = "字".repeat(COMPACT_TOKEN_THRESHOLD + 1_000);
+  const filler = "字".repeat(compactionPolicy.triggerTokens + 1_000);
 
   return [
     text("u1", "user", filler),
@@ -747,7 +747,7 @@ test("oversized fixed prompts trigger compaction but non-shrinking summaries are
         text("u2", "user", "two"),
         text("u3", "user", "current request"),
       ],
-      prompt: "字".repeat(COMPACT_TOKEN_THRESHOLD),
+      prompt: "字".repeat(compactionPolicy.triggerTokens),
       tools: fakeTools(),
       emit: captured.emit,
     });

@@ -36,7 +36,7 @@ import {
 import { acceptRun, reconcileRuns, executeRun, ensureStarted } from "../../../server/harness/run";
 import { agentRegistry } from "../../../server/harness/agents";
 import { snapshot, streamModelTurn, type Turn } from "../../../server/harness/model-turn";
-import { COMPACT_TOKEN_THRESHOLD } from "../../../server/harness/compaction";
+import { compactionPolicy } from "../../../server/harness/compaction";
 import {
   readProjection,
   type RunProjection,
@@ -2664,7 +2664,7 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
               id: "compact-old-answer",
               role: "assistant",
               parts: [
-                { type: "text", content: "字".repeat(COMPACT_TOKEN_THRESHOLD + 5_000) },
+                { type: "text", content: "字".repeat(compactionPolicy.triggerTokens + 5_000) },
                 {
                   type: "tool-call",
                   id: "compact-read-1",
@@ -3563,7 +3563,7 @@ test("SQL-boundary contracts: immutable claim, checkpoint recovery, terminal rel
           {
             id: "auto-old-answer",
             role: "assistant",
-            parts: [{ type: "text", content: "字".repeat(COMPACT_TOKEN_THRESHOLD + 5000) }],
+            parts: [{ type: "text", content: "字".repeat(compactionPolicy.triggerTokens + 5000) }],
           },
         ];
         threads.set(threadId, {
