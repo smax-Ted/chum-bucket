@@ -177,7 +177,6 @@ test("assembly selects the first readable read of each requested source in recei
       ...jiraRead({ key: "CHUM-42", summary: "Error" }),
       output: { result: "Error: rate limited" },
     },
-    jiraRead({ key: "WRONG-1", summary: "Mismatched key" }),
     { ...jiraRead({ key: "CHUM-42", summary: "Without host time" }), bindings: {} },
     selected,
     jiraRead({ key: "CHUM-42", summary: "Later" }),
@@ -193,6 +192,29 @@ test("assembly selects the first readable read of each requested source in recei
         capturedAt,
       },
     ],
+  });
+});
+
+test("assembly accepts a read that returns a moved Jira issue key", () => {
+  const read = jiraRead({
+    key: "CHUM-7",
+    summary: "Moved to another project",
+    description: "## 驗收條件\n1. AC-1 Moved",
+  });
+  assert.deepEqual(assembleRequirements({ goal: "Plan", sources: [source] }, [read]), {
+    kind: "accepted",
+    value: {
+      goal: "Plan",
+      sources: [
+        {
+          reference: source,
+          text: "CHUM-7 Moved to another project\n\n## 驗收條件\n1. AC-1 Moved",
+          links: [],
+          digest: read.outputDigest,
+          capturedAt,
+        },
+      ],
+    },
   });
 });
 

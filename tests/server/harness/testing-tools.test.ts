@@ -4,7 +4,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { ToolExecutionContext, UIMessage } from "@tanstack/ai";
 import type { DesignReference, PlanCase, TestingRequestInput } from "../../../shared/testing";
 import type { ModelCall } from "../../../server/harness/model-turn";
-import { digestOf, type CanonicalPlan } from "../../../server/harness/testing-domain";
+import {
+  assembleRequirements,
+  digestOf,
+  type CanonicalPlan,
+} from "../../../server/harness/testing-domain";
 import {
   testingRoleToolNames,
   withTestingRoleTools,
@@ -12,7 +16,12 @@ import {
   type TestingNativeHost,
   type TestingNativeInvocation,
 } from "../../../server/harness/testing-tools";
-import { mcpFixture, withMcpEnvironment } from "../../fixtures/mcp-fixture";
+import {
+  mcpFixture,
+  sourceReadPages,
+  sourceReadRule,
+  withMcpEnvironment,
+} from "../../fixtures/mcp-fixture";
 import type { RunTools } from "../../../server/harness/tools";
 import type { BrowserAdapter } from "../../../server/harness/tools/use-browser";
 
@@ -431,6 +440,7 @@ test("atlassian role restricts discovery and reads and returns the raw read outp
           assert.equal(harness.invocations.length, 2);
           assert.deepEqual(harness.invocations[1]!.input, {
             issue_key: "PROJ-1",
+            fields: "summary,description",
             include: "remote_links",
           });
           assert.deepEqual(read, { issue: "PROJ-1" });
@@ -483,6 +493,82 @@ test("atlassian role restricts discovery and reads and returns the raw read outp
           }
 
           assert.equal(harness.invocations.length, 4);
+        },
+      );
+    },
+    true,
+    fixture,
+  );
+});
+
+test("Jira reads request the issue body and the assembled requirements carry the description", async () => {
+  const description = "## 驗收條件\n1. AC-1 結帳成功";
+  const fixture = mcpFixture({
+    pages: sourceReadPages,
+    rules: [
+      sourceReadRule(
+        "jira_get_issue",
+        { issue_key: "PROJ-1", fields: "summary,status,description" },
+        { key: "PROJ-1", summary: "結帳失敗", description },
+      ),
+    ],
+  });
+  await withMcpEnvironment(
+    async () => {
+      const harness = fixtureHost({ fixture: hostFixture });
+      await withTestingRoleTools(
+        { role: "atlassian", intent, requirements: null, plan: null, host: harness.host },
+        async (tools) => {
+          const history = await discoveryHistory(tools, ["jira_get_issue"]);
+          const output = await tools.executeTool(
+            history,
+            modelCall("jira_get_issue", { issue_key: "PROJ-1", fields: "summary,status" }),
+            context,
+          );
+          assert.deepEqual(harness.invocations[1]!.input, {
+            issue_key: "PROJ-1",
+            fields: "summary,status,description",
+            include: "remote_links",
+          });
+          assert.deepEqual(
+            fixture.calls().map((record) => record.message.params?.arguments),
+            [
+              {
+                issue_key: "PROJ-1",
+                fields: "summary,status,description",
+                include: "remote_links",
+                update_history: false,
+              },
+            ],
+          );
+          const reference = { kind: "jira" as const, issueKey: "PROJ-1" };
+          const capturedAt = "2026-01-02T00:00:00.000Z";
+          assert.deepEqual(
+            assembleRequirements({ goal: "checkout flow", sources: [reference] }, [
+              {
+                nativeName: "jira_get_issue",
+                input: harness.invocations[1]!.input,
+                output,
+                outputDigest: digestOf(output),
+                bindings: { capturedAt },
+              },
+            ]),
+            {
+              kind: "accepted",
+              value: {
+                goal: "checkout flow",
+                sources: [
+                  {
+                    reference,
+                    text: `PROJ-1 結帳失敗\n\n${description}`,
+                    links: [],
+                    digest: digestOf(output),
+                    capturedAt,
+                  },
+                ],
+              },
+            },
+          );
         },
       );
     },

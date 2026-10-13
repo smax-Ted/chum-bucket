@@ -34,7 +34,13 @@ import {
   type AtlassianScope,
   type ModelTool,
 } from "./tools/atlassian";
-import { figmaUrlTarget, readSource, withPageMetadata, withRemoteLinks } from "./source-links";
+import {
+  figmaUrlTarget,
+  readSource,
+  withIssueFields,
+  withPageMetadata,
+  withRemoteLinks,
+} from "./source-links";
 import { codeModeToolName, composeCodeModeTurn, type CodeModeTurn } from "./tools/code-mode";
 import { createUseBrowserTool, type BrowserAdapter } from "./tools/use-browser";
 import type { RunTools } from "./tools";
@@ -248,7 +254,7 @@ function requireRequestedDiscovery(input: unknown, allowed: ReadonlySet<string>)
 }
 
 const HOST_READ_INPUTS: Readonly<Record<string, (input: unknown) => unknown>> = {
-  jira_get_issue: withRemoteLinks,
+  jira_get_issue: (input) => withRemoteLinks(withIssueFields(input)),
   confluence_get_page: withPageMetadata,
 };
 

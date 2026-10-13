@@ -70,10 +70,10 @@ function withBody(heading: string, body: unknown): string {
   return typeof body === "string" && body.length > 0 ? `${heading}\n\n${body}` : heading;
 }
 
-function jiraText(raw: unknown, issueKey: string): string | null {
+function jiraText(raw: unknown): string | null {
   const issue = jiraIssue(raw);
 
-  return issue?.key === issueKey && typeof issue.summary === "string"
+  return issue && typeof issue.summary === "string"
     ? withBody(`${issue.key} ${issue.summary}`, issue.description)
     : null;
 }
@@ -89,7 +89,7 @@ function confluenceText(raw: unknown): string | null {
 }
 
 export function sourceText(reference: Source, raw: unknown): string | null {
-  return reference.kind === "jira" ? jiraText(raw, reference.issueKey) : confluenceText(raw);
+  return reference.kind === "jira" ? jiraText(raw) : confluenceText(raw);
 }
 
 function remoteLinkObject(item: unknown): Record<string, unknown> | null {
@@ -148,6 +148,28 @@ export function figmaLinks(raw: unknown): readonly FigmaLink[] {
   }
 
   return [...links.values()].slice(0, MAX_LINKS);
+}
+
+const JIRA_TEXT_FIELDS = ["summary", "description"] as const;
+
+export function withIssueFields(input: unknown): unknown {
+  if (!isRecord(input)) {
+    return input;
+  }
+
+  const fields = typeof input.fields === "string" ? input.fields : "";
+  const parts = fields
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  if (parts.includes("*all")) {
+    return input;
+  }
+
+  const missing = JIRA_TEXT_FIELDS.filter((field) => !parts.includes(field));
+
+  return missing.length === 0 ? input : { ...input, fields: [...parts, ...missing].join(",") };
 }
 
 export function withRemoteLinks(input: unknown): unknown {

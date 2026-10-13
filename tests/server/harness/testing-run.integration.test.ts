@@ -702,7 +702,11 @@ test(
             ["discover_atlassian_tools", "jira_get_issue"],
           );
           const native = receipts.rows[1]!;
-          assert.deepEqual(native.input, { issue_key: "FETM-78", include: "remote_links" });
+          assert.deepEqual(native.input, {
+            issue_key: "FETM-78",
+            fields: "summary,description",
+            include: "remote_links",
+          });
           assert.deepEqual(native.output, output);
           assert.equal(native.output_digest, digestOf(output));
           assert.ok(native.bindings.capturedAt >= before);

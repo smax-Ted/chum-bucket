@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   figmaLinks,
+  withIssueFields,
   withPageMetadata,
   withRemoteLinks,
 } from "../../../server/harness/source-links";
@@ -101,6 +102,34 @@ test("link extraction is bounded", () => {
   assert.equal(links.length, 20);
   assert.ok(links.every((item) => (item.label?.length ?? 0) <= 256));
   assert.ok(links.every((item) => item.url.length <= 2_048));
+});
+
+test("jira_get_issue is always asked for the summary and description fields", () => {
+  assert.deepEqual(withIssueFields({ issue_key: "FETM-78" }), {
+    issue_key: "FETM-78",
+    fields: "summary,description",
+  });
+  assert.deepEqual(withIssueFields({ issue_key: "A-1", fields: "summary,status" }), {
+    issue_key: "A-1",
+    fields: "summary,status,description",
+  });
+  assert.deepEqual(withIssueFields({ issue_key: "A-1", fields: "status,customfield_10009" }), {
+    issue_key: "A-1",
+    fields: "status,customfield_10009,summary,description",
+  });
+  assert.deepEqual(withIssueFields({ issue_key: "A-1", fields: "description,summary" }), {
+    issue_key: "A-1",
+    fields: "description,summary",
+  });
+  assert.deepEqual(withIssueFields({ issue_key: "A-1", fields: "*all" }), {
+    issue_key: "A-1",
+    fields: "*all",
+  });
+  assert.deepEqual(withIssueFields({ issue_key: "A-1", fields: "summary, *all" }), {
+    issue_key: "A-1",
+    fields: "summary, *all",
+  });
+  assert.equal(withIssueFields("not a record"), "not a record");
 });
 
 test("jira_get_issue is always asked for remote links without losing other enrichments", () => {
