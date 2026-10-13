@@ -15,6 +15,8 @@
 
 模型不能傳網址、selector、預期值或要點哪個元素。這些都來自 host 保存的計畫。模型能影響瀏覽器的方式只剩下回應 handoff。
 
+兩個工具都標記 `metadata: { direct: true }`，Code Mode 裡呼叫不到。每個 check 都是一次直接的工具呼叫，計入 60 次的工具預算，不會用掉 Code Mode 內 8 次的上限。
+
 工具依角色限定範圍：`verify_ac` 只接受分派給 `ac` 的功能檢查，`verify_ui` 只接受分派給 `ui` 的樣式檢查。傳入不屬於這個角色的 check 時，工具丟出 `Unknown scoped check` 錯誤。
 
 回傳值有兩種：
