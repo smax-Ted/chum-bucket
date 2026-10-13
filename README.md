@@ -294,9 +294,21 @@ Prompt caching 透過重用相同的輸入前綴，減少重複處理的成本�
 
 ### Target
 
-1. [ ] 設定 Buffer，避免 touch 到限制，提早進行 Compact
-2. [ ] 手動 Compact
-3. [ ] BTW
+讓對話在 context 超過預算前改用摘要，並保留完整原文給介面顯示。
+
+- [ ] 把訊息拆成介面顯示的 `display` 與模型收到的 `context`。壓縮後 `context` 換成摘要，`display` 保留原文。
+- [ ] 設定低於 context window 的門檻（Buffer），每輪模型請求前檢查，超過就摘要較早的訊息。
+- [ ] 模型回報超限時，壓縮後重試一次。
+- [ ] 支援在輸入框送出 `/compact` 手動壓縮。
+- [ ] 建立附屬對話（BTW），討論完把編輯過的摘要送回主對話。
+
+依序閱讀以下文件：
+
+1. [Compact 的上下文架構](docs/compact/architecture.md)：display 與 context、模組責任、資料流與 DBOS steps。
+2. [建立自動壓縮](docs/compact/implement-compaction.md)：token 估算、門檻、切分位置、摘要請求與超限重試。
+3. [建立手動壓縮](docs/compact/manual-compact.md)：`/compact` 命令、compact run 與介面提示。
+4. [建立附屬對話](docs/compact/side-chat.md)：開啟、執行、摘要、送回主對話與清除。
+5. [驗證 Compact](docs/compact/verify-compaction.md)：離線測試、中斷恢復與瀏覽器驗收。
 
 ## 5. Agent Routing / Subagent
 
@@ -341,3 +353,51 @@ flowchart TD
 **沒有評估，就不知道所做的修改是進步還是退步。**
 
 [promptfoo](https://github.com/promptfoo/promptfoo)
+
+[Automating eval design and hillclimbing with Claude](https://claude.dev/blog/automating-eval-design-and-hillclimbing/)
+
+設計題目：
+
+1. 設計真實想要驗證提升的項目
+2. 更強的模型和 effort 應該表現更好
+    1. 如果不是，可能任務描述模糊或是評分標準有誤
+3. 就算使用最強的模型，它也不應該 100% Pass
+    1. 如果是，可能發生了 2.1 的問題
+    2. 如果 100% 100分，則會難以調整
+    3. 如果某道測試題目一直 fail，要確認是否是 2.1 的問題
+4. 同模型同 effort，結果 run 的時候應該要大同小異
+    1. 波動很大可能是 model 環境或是讀到了檔案的問題 or 2.1 的問題
+    
+模型可能會有特有發生錯誤的行為，比如某道題就是容易錯。
+
+可能可以解很難的題目，但是簡單的反而發生錯誤。設計題目時，不要因為這樣而特別針對某個問題建立很多題目。
+
+**建立題目要思考為什麼這樣建立，而不是因為模型答錯。**
+
+評分方式：
+
+1. 程式的驗證
+    1. 例如 schema 或是有 output 出某些值之類的
+2. 透過第二個 LLM Model 進行評分
+    1. 在信任此 Model 評分前先閱讀它評分的記錄，或是給予人工參照評分
+
+Hillclimbing(不停的優化迭代改善)：
+
+1. 低成本
+    1. 會不停的進行修改迭代或是復原，所以控制成本很重要
+2. Attributable(可歸因)
+    1. 可以明確的知道是修改了什麼提升了成績(prompt, skill etc)
+3. 確定目標
+    1. 評估目標可提升的空間
+    2. 若很高分則換題或是已降低成本進行目標
+    
+
+Overfitting：
+
+評估的表現成績難以在真實環境中呈現，可能在評估時增加了某些功能，或是其他處理方式，導致在正式環境沒有提升。
+
+如何避免 or 發現：
+
+1. Split Case： 使用一個可讀取的測試集和從未見過的測試集，如果前者提升而後者沒有，則可能 overfitting 了
+2. 不將失敗的訊息輸入 Prompt 中
+3. 將答案放置模型一定取得不到的地方
