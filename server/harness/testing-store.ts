@@ -489,7 +489,11 @@ function dependenciesRejected(
   row: StoredArtifactRow,
   rows: ReadonlyMap<string, StoredArtifactRow>,
 ): boolean {
-  return row.dependencies.some((dependency) => !rows.has(dependency));
+  return row.dependencies.some((dependency) => {
+    const stored = rows.get(dependency);
+
+    return !stored || !metadataSchema.safeParse(stored.metadata).success;
+  });
 }
 
 function snapshotRejection(

@@ -163,7 +163,7 @@ test("assigned-check reuse still rejects altered snapshots, source scope, digest
       decision.kind === "rejected" ? decision.reason : decision.kind,
     );
   assert.deepEqual(variants.map(reasons), [
-    ["incompatible_snapshot", "accepted"],
+    ["incompatible_snapshot", "dependency_rejected"],
     ["scope_mismatch", "scope_mismatch"],
     ["invalid_evidence", "invalid_evidence"],
     ["untrusted_producer", "untrusted_producer"],
