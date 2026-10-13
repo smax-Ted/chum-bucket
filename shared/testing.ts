@@ -121,7 +121,7 @@ export const actionSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("fill"),
     target: z.string().trim().min(1).max(512),
-    value: z.string().max(2_048),
+    value: z.string().max(2_048).optional(),
   }),
 ]);
 export type Action = Readonly<z.infer<typeof actionSchema>>;
@@ -142,22 +142,35 @@ const fixtureIdentitySchema = z.strictObject({
 });
 export type FixtureIdentity = Readonly<z.infer<typeof fixtureIdentitySchema>>;
 
-const functionalCheckSchema = z.strictObject({
-  id: z.string().trim().min(1).max(64),
-  criterionId: z.string().trim().min(1).max(128),
-  kind: z.literal("functional"),
-  expectedObservation: z.string().trim().min(1).max(2_000),
-  observation: z
-    .discriminatedUnion("kind", [
-      z.strictObject({ kind: z.literal("url"), comparison: z.enum(["equals", "contains"]) }),
-      z.strictObject({
-        kind: z.enum(["text", "value", "visible"]),
-        target: z.string().trim().min(1).max(512),
-        comparison: z.enum(["equals", "contains"]),
-      }),
-    ])
-    .optional(),
-});
+const functionalCheckSchema = z
+  .strictObject({
+    id: z.string().trim().min(1).max(64),
+    criterionId: z.string().trim().min(1).max(128),
+    kind: z.literal("functional"),
+    expectedObservation: z.string().trim().min(1).max(2_000),
+    observation: z
+      .discriminatedUnion("kind", [
+        z.strictObject({ kind: z.literal("url"), comparison: z.enum(["equals", "contains"]) }),
+        z.strictObject({
+          kind: z.enum(["text", "value", "visible"]),
+          target: z.string().trim().min(1).max(512),
+          comparison: z.enum(["equals", "contains"]),
+        }),
+        z.strictObject({
+          kind: z.literal("operable"),
+          target: z.string().trim().min(1).max(512),
+          comparison: z.literal("equals"),
+        }),
+      ])
+      .optional(),
+  })
+  .refine(
+    (check) =>
+      check.observation?.kind !== "operable" ||
+      check.expectedObservation === "true" ||
+      check.expectedObservation === "false",
+    { path: ["expectedObservation"], message: 'operable expects "true" or "false"' },
+  );
 export type FunctionalCheck = Readonly<z.infer<typeof functionalCheckSchema>>;
 
 const styleCheckSchema = z.strictObject({
@@ -231,16 +244,34 @@ export type PlanCriterion = Readonly<z.infer<typeof planCriterionSchema>>;
 export const planCriteriaSchema = z.array(planCriterionSchema).min(1).max(500);
 
 export const MAX_CASE_HANDOFFS = 3;
+export const MAX_JEV_CANDIDATES = 254;
+
+const actionLocationSchema = z.strictObject({
+  kind: z.literal("action"),
+  index: z.number().int().nonnegative(),
+});
 
 const handoffTargetSchema = z.strictObject({
   intent: z.string().min(1).max(512),
-  operation: z.enum(["click", "fill", "observe", "visible"]),
+  operation: z.enum(["click", "fill", "observe", "visible", "operable"]),
   at: z.discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("action"), index: z.number().int().nonnegative() }),
+    actionLocationSchema,
     z.strictObject({ kind: z.literal("check"), checkId: z.string().trim().min(1).max(64) }),
   ]),
 });
 export type HandoffTarget = Readonly<z.infer<typeof handoffTargetSchema>>;
+
+const fillTargetSchema = handoffTargetSchema.extend({
+  operation: z.literal("fill"),
+  at: actionLocationSchema,
+});
+export type FillTarget = Readonly<z.infer<typeof fillTargetSchema>>;
+
+const artifactPngSchema = z.strictObject({
+  path: z.string().regex(/^[0-9a-f-]{36}\.png$/),
+  digest: z.string().regex(/^[0-9a-f]{64}$/),
+});
+export type ArtifactPng = Readonly<z.infer<typeof artifactPngSchema>>;
 
 const browserSelectionSchema = z.union([
   z.strictObject({
@@ -263,8 +294,26 @@ const browserSelectionSchema = z.union([
     from: z.string(),
     to: z.string(),
   }),
+  z.strictObject({
+    source: z.literal("agent_fill"),
+    handoffId: z.string(),
+    candidateId: z.string(),
+    fingerprintDigest: z.string(),
+    target: fillTargetSchema,
+    value: z.string().max(2_048),
+  }),
 ]);
 export type BrowserSelection = Readonly<z.infer<typeof browserSelectionSchema>>;
+
+const skippedActionSchema = z.strictObject({
+  actionIndex: z.number().int().nonnegative(),
+  reasons: z.union([
+    z.tuple([z.literal("hidden")]),
+    z.tuple([z.literal("disabled")]),
+    z.tuple([z.literal("hidden"), z.literal("disabled")]),
+  ]),
+});
+export type SkippedAction = Readonly<z.infer<typeof skippedActionSchema>>;
 
 const mockEvidenceBase = {
   caseId: z.string().trim().min(1).max(64),
@@ -273,12 +322,8 @@ const mockEvidenceBase = {
   browser: z
     .strictObject({
       selections: z.array(browserSelectionSchema).max(100),
-      screenshot: z
-        .strictObject({
-          path: z.string().regex(/^[0-9a-f-]{36}\.png$/),
-          digest: z.string().regex(/^[0-9a-f]{64}$/),
-        })
-        .optional(),
+      skippedActions: z.array(skippedActionSchema).max(50).optional(),
+      screenshot: artifactPngSchema.optional(),
     })
     .optional(),
   fixture: fixtureIdentitySchema,
@@ -374,6 +419,7 @@ const handoffResolutionSchema = z.strictObject({
     z.strictObject({ kind: z.literal("navigate"), linkId: z.string().trim().min(1).max(16) }),
     z.strictObject({ kind: z.literal("choose"), candidateId: z.string().trim().min(1).max(16) }),
     z.strictObject({ kind: z.literal("abandon"), reason: z.string().trim().min(1).max(500) }),
+    z.strictObject({ kind: z.literal("fill_value"), value: z.string().max(2_048) }),
   ]),
 });
 export type HandoffResolution = Readonly<z.infer<typeof handoffResolutionSchema>>;
@@ -384,7 +430,7 @@ export const useBrowserInputSchema = z.strictObject({
   resolution: handoffResolutionSchema.optional(),
 });
 
-const selectionDiagnosticsSchema = z.strictObject({
+const jevDiagnosticsSchema = z.strictObject({
   code: z.literal("uncertain_or_invalid_selection"),
   choice: z.string(),
   confidence: z.number(),
@@ -394,43 +440,73 @@ const selectionDiagnosticsSchema = z.strictObject({
   candidateCount: z.number().int().nonnegative(),
   probabilityCount: z.number().int().nonnegative(),
 });
+export type JevDiagnostics = Readonly<z.infer<typeof jevDiagnosticsSchema>>;
+
+const selectionDiagnosticsSchema = z.discriminatedUnion("code", [
+  jevDiagnosticsSchema,
+  z.strictObject({
+    code: z.literal("candidate_overflow"),
+    candidateCount: z
+      .number()
+      .int()
+      .min(MAX_JEV_CANDIDATES + 1),
+  }),
+]);
 export type SelectionDiagnostics = Readonly<z.infer<typeof selectionDiagnosticsSchema>>;
 
-const handoffSnapshotSchema = z.strictObject({
+const snapshotEntrySchema = z.strictObject({
+  id: z.string().min(1).max(16),
+  description: z.string(),
+});
+
+const snapshotBase = {
   id: z.string().min(1).max(64),
   caseId: z.string().min(1).max(64),
+  expiresAt: z.string().min(1).max(64),
+  url: z.string().min(1),
+  links: z.array(snapshotEntrySchema.extend({ url: z.string().min(1) })),
+  image: artifactPngSchema,
+};
+
+const selectionSnapshotSchema = z.strictObject({
+  kind: z.literal("selection"),
+  ...snapshotBase,
   ordinal: z.number().int().min(1).max(MAX_CASE_HANDOFFS),
   laterHandoffsAllowed: z
     .number()
     .int()
     .min(0)
     .max(MAX_CASE_HANDOFFS - 1),
-  expiresAt: z.string().min(1).max(64),
-  url: z.string().min(1),
   target: handoffTargetSchema,
-  candidates: z
-    .array(z.strictObject({ id: z.string().min(1).max(16), description: z.string() }))
-    .max(80),
-  links: z
-    .array(
-      z.strictObject({
-        id: z.string().min(1).max(16),
-        description: z.string().max(512),
-        url: z.string().min(1),
-      }),
-    )
-    .max(80),
-  linksTruncated: z.boolean(),
+  candidates: z.array(snapshotEntrySchema),
   diagnostics: selectionDiagnosticsSchema,
 });
+export type SelectionSnapshot = Readonly<z.infer<typeof selectionSnapshotSchema>>;
 
-export const selectionRequiredSchema = z.strictObject({
-  state: z.literal("selection_required"),
-  checkId: z.string().trim().min(1).max(64),
-  handoff: handoffSnapshotSchema,
+const fillValueSnapshotSchema = z.strictObject({
+  kind: z.literal("fill_value"),
+  ...snapshotBase,
+  laterSelectionHandoffs: z.number().int().min(0).max(MAX_CASE_HANDOFFS),
+  target: fillTargetSchema,
+  field: snapshotEntrySchema,
 });
-export type SelectionRequired = Readonly<z.infer<typeof selectionRequiredSchema>>;
-export type HandoffSnapshot = Readonly<z.infer<typeof handoffSnapshotSchema>>;
+export type FillValueSnapshot = Readonly<z.infer<typeof fillValueSnapshotSchema>>;
+
+const handoffCheckIdSchema = z.string().trim().min(1).max(64);
+
+export const browserHandoffSchema = z.discriminatedUnion("state", [
+  z.strictObject({
+    state: z.literal("selection_required"),
+    checkId: handoffCheckIdSchema,
+    handoff: selectionSnapshotSchema,
+  }),
+  z.strictObject({
+    state: z.literal("fill_value_required"),
+    checkId: handoffCheckIdSchema,
+    handoff: fillValueSnapshotSchema,
+  }),
+]);
+export type BrowserHandoff = Readonly<z.infer<typeof browserHandoffSchema>>;
 
 export type ArtifactOrigin = Readonly<{
   originalRunId: TestRunId;

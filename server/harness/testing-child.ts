@@ -46,13 +46,13 @@ import { roleRegistry, roleSystemPrompt } from "./agents";
 import { roleFeedbackPrompt, roleFinalTurnPrompt, roleTaskPrompt } from "./prompts";
 import type { ConversationState } from "./conversation";
 import {
+  browserHandoffSchema,
   browserOutputSchema,
   designCaptureSchema,
-  selectionRequiredSchema,
+  type BrowserHandoff,
   type DesignReference,
   type PlanCheck,
   type RoleId,
-  type SelectionRequired,
 } from "../../shared/testing";
 import type { AdapterYieldChunk } from "@tanstack/ai";
 import type { RunTools } from "./tools";
@@ -680,12 +680,12 @@ function browserHandoff(
   nativeName: string,
   role: RoleId,
   plan: CanonicalPlan | null,
-): SelectionRequired | null {
+): BrowserHandoff | null {
   if (!BROWSER_NATIVE_NAMES.includes(nativeName)) {
     return null;
   }
 
-  const parsed = selectionRequiredSchema.safeParse(output);
+  const parsed = browserHandoffSchema.safeParse(output);
 
   if (!parsed.success) {
     return null;

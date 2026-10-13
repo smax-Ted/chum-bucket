@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { SelectionDiagnostics } from "../../shared/testing";
+import { MAX_JEV_CANDIDATES, type JevDiagnostics } from "../../shared/testing";
 
 export class JevError extends Error {
   constructor(
     readonly code: string,
-    readonly diagnostics?: Omit<SelectionDiagnostics, "code">,
+    readonly diagnostics?: Omit<JevDiagnostics, "code">,
   ) {
     super(`Jev ${code}`);
   }
@@ -145,7 +145,7 @@ export async function selectCandidate(
 
   signal.throwIfAborted();
 
-  if (!candidates.length || candidates.length > 80) {
+  if (candidates.length === 0 || candidates.length > MAX_JEV_CANDIDATES) {
     throw new JevError("candidate_limit");
   }
 

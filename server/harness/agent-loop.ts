@@ -8,6 +8,7 @@ import {
 } from "@tanstack/ai";
 import { resolveDebugOption } from "@tanstack/ai/adapter-internals";
 import { advanceConversation, type ConversationState } from "./conversation";
+import { attachHandoffImage } from "./handoff-image";
 import {
   ContextOverflowError,
   snapshot,
@@ -189,7 +190,8 @@ export async function settleToolStep(
   const owner = messages.find((message) =>
     message.parts.some((part) => part.type === "tool-call" && part.id === call.id),
   );
-  const updated = advanceConversation(conversation, next, owner?.id);
+  const settled = advanceConversation(conversation, next, owner?.id);
+  const updated = await attachHandoffImage(settled, call, output);
   await session.emit(session.runId, event, updated);
 
   return updated;

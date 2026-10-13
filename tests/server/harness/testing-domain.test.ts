@@ -685,6 +685,7 @@ test("a selection_required handoff cannot be cited as evidence for a check", () 
     state: "selection_required",
     checkId: "check-1",
     handoff: {
+      kind: "selection",
       id: "h1",
       caseId: "case-1",
       ordinal: 1,
@@ -694,7 +695,6 @@ test("a selection_required handoff cannot be cited as evidence for a check", () 
       target: { intent: "Place order", operation: "click", at: { kind: "action", index: 0 } },
       candidates: [{ id: "c0", description: "Place order" }],
       links: [],
-      linksTruncated: false,
       diagnostics: {
         code: "uncertain_or_invalid_selection",
         choice: "none",
@@ -704,6 +704,10 @@ test("a selection_required handoff cannot be cited as evidence for a check", () 
         probabilityTotal: 1,
         candidateCount: 2,
         probabilityCount: 2,
+      },
+      image: {
+        path: "00000000-0000-4000-8000-000000000000.png",
+        digest: "d".repeat(64),
       },
     },
   };

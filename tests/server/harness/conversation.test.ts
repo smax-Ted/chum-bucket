@@ -221,3 +221,33 @@ test("new structured output is published without changing archived messages", as
   assert.equal(JSON.stringify(state.display[1]).includes("New answer"), true);
   assert.equal(emitted.length, 2);
 });
+
+test("display keeps a browser handoff image as its text reference while context keeps the image and other images stay intact", () => {
+  const image = {
+    type: "image" as const,
+    source: { type: "data" as const, value: "iVBORw0KGgo=", mimeType: "image/png" },
+  };
+  const pasted: UIMessage = {
+    id: "pasted",
+    role: "user",
+    parts: [{ type: "text", content: "See this" }, image],
+  };
+  const handoff: UIMessage = {
+    id: "handoff-image",
+    role: "user",
+    metadata: { browserHandoffImage: { caseId: "case-a", handoffId: "h1" } },
+    parts: [{ type: "text", content: "Labeled screenshot" }, image],
+  };
+  const state = advanceConversation({ display: [original], context: [original] }, [
+    original,
+    pasted,
+    handoff,
+  ]);
+
+  assert.deepEqual(state.context, [original, pasted, handoff]);
+  assert.deepEqual(state.display, [
+    original,
+    pasted,
+    { ...handoff, parts: [{ type: "text", content: "Labeled screenshot" }] },
+  ]);
+});

@@ -47,3 +47,39 @@ test("missing Jev credentials never falls back to a guessed target", async () =>
     /JEV_API_KEY/,
   );
 });
+test("Jev receives up to 254 candidates plus none, while an empty or larger set never reaches the API", async () => {
+  const optionCounts: number[] = [];
+  const counting: typeof fetch = async (_url, init) => {
+    const criteria = JSON.parse(String(init?.body)).questions.target.criteria;
+    optionCounts.push(Object.keys(criteria).length);
+
+    return Response.json({
+      model: "jev-test",
+      answers: {
+        target: {
+          type: "choice",
+          choice: "c253",
+          confidence: 0.95,
+          probabilities: Object.fromEntries(
+            Object.keys(criteria).map((key) => [key, key === "c253" ? 1 : 0]),
+          ),
+        },
+      },
+    });
+  };
+  const many = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      id: `c${index}`,
+      description: `Item ${index}`,
+    }));
+  const select = (count: number) =>
+    selectCandidate("item", many(count), new AbortController().signal, {
+      apiKey: "test-only",
+      fetch: counting,
+    });
+
+  assert.equal((await select(254)).choice, "c253");
+  await assert.rejects(select(255), { message: "Jev candidate_limit" });
+  await assert.rejects(select(0), { message: "Jev candidate_limit" });
+  assert.deepEqual(optionCounts, [255]);
+});

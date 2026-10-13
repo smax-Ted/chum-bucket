@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { test, type TestContext } from "node:test";
 import { EventType, type AdapterYieldChunk, type StreamChunk, type UIMessage } from "@tanstack/ai";
+import sharp from "sharp";
 import {
   settleToolStep,
   runAgentLoop,
+  type AgentChatStream,
   type AgentCheckpoint,
   type AgentSession,
   type ChatCompaction,
@@ -11,6 +16,7 @@ import {
 import type { ConversationState } from "../../../server/harness/conversation";
 import { ContextOverflowError, type ModelCall } from "../../../server/harness/model-turn";
 import type { RunTools } from "../../../server/harness/tools";
+import type { BrowserHandoff } from "../../../shared/testing";
 
 const passCheckpoint: AgentCheckpoint = ({ work }) => work();
 
@@ -400,5 +406,261 @@ test("one executor model turn runs all seventeen direct check calls before the r
   assert.deepEqual(
     executed.map((call) => [call.name, call.id]),
     checkIds.map((checkId) => ["verify_ac", checkId]),
+  );
+});
+
+const HANDOFF_IMAGES = join(process.cwd(), ".data", "browser-evidence");
+
+type StoredImage = Readonly<{ path: string; digest: string; base64: string }>;
+type ModelMessages = Parameters<AgentChatStream>[0]["messages"];
+
+async function storedImage(t: TestContext, shade: number): Promise<StoredImage> {
+  const bytes = await sharp({
+    create: { width: 1280, height: 900, channels: 3, background: { r: shade, g: shade, b: shade } },
+  })
+    .png()
+    .toBuffer();
+  const path = `${randomUUID()}.png`;
+  await mkdir(HANDOFF_IMAGES, { recursive: true });
+  await writeFile(join(HANDOFF_IMAGES, path), bytes);
+  t.after(() => rm(join(HANDOFF_IMAGES, path), { force: true }));
+
+  return {
+    path,
+    digest: createHash("sha256").update(bytes).digest("hex"),
+    base64: bytes.toString("base64"),
+  };
+}
+
+function imageId(caseId: string, handoffId: string, image: StoredImage): string {
+  return `browser-handoff-image:${createHash("sha256")
+    .update(JSON.stringify([caseId, handoffId, image.digest]))
+    .digest("hex")}`;
+}
+
+function imageNote(caseId: string, handoffId: string) {
+  return {
+    type: "text",
+    content: `Labeled screenshot for handoff ${handoffId} of case ${caseId}. Each mark is labeled with its candidate or link id. It is a handoff aid, not evidence.`,
+  };
+}
+
+function pausedOutput(caseId: string, handoffId: string, image: StoredImage): BrowserHandoff {
+  return {
+    state: "selection_required",
+    checkId: `${caseId}-check`,
+    handoff: {
+      kind: "selection",
+      id: handoffId,
+      caseId,
+      ordinal: 1,
+      laterHandoffsAllowed: 2,
+      expiresAt: "2026-10-13T00:03:00.000Z",
+      url: "http://shop.test/",
+      target: { intent: "submit control", operation: "click", at: { kind: "action", index: 1 } },
+      candidates: [{ id: "c0", description: "Submit" }],
+      links: [],
+      diagnostics: { code: "candidate_overflow", candidateCount: 300 },
+      image: { path: image.path, digest: image.digest },
+    },
+  };
+}
+
+async function* verifyBatch(callIds: readonly string[]): AsyncGenerator<AdapterYieldChunk> {
+  yield { type: EventType.RUN_STARTED, threadId: "thread", runId: "provider-run" };
+
+  for (const id of callIds) {
+    const input = { checkId: id };
+    yield { type: EventType.TOOL_CALL_START, toolCallId: id, toolCallName: "verify_ac" };
+    yield { type: EventType.TOOL_CALL_ARGS, toolCallId: id, delta: JSON.stringify(input) };
+    yield { type: EventType.TOOL_CALL_END, toolCallId: id, input };
+  }
+
+  yield { type: EventType.RUN_FINISHED, threadId: "thread", runId: "provider-run" };
+}
+
+function imageSession(
+  streams: AsyncGenerator<AdapterYieldChunk>[],
+  outputs: Readonly<Record<string, () => Promise<unknown>>>,
+  requests: ModelMessages[],
+): AgentSession {
+  const base = sessionFor(streams, []);
+
+  return {
+    ...base,
+    tools: { ...base.tools, executeTool: async (_messages, call) => outputs[call.id]!() },
+    chatStream: async (options) => {
+      requests.push(structuredClone(options.messages));
+
+      return base.chatStream(options);
+    },
+  };
+}
+
+function imagesIn(messages: ModelMessages): string[] {
+  return messages.flatMap((message) =>
+    message.role === "user" && Array.isArray(message.content)
+      ? message.content.flatMap((part) => (part.type === "image" ? [part.source.value] : []))
+      : [],
+  );
+}
+
+function outline(message: ModelMessages[number]): unknown {
+  if (message.role === "assistant") {
+    return ["assistant", message.toolCalls?.map((call) => call.id)];
+  }
+
+  if (message.role === "tool") {
+    return ["tool", message.toolCallId];
+  }
+
+  return [message.role, imagesIn([message])];
+}
+
+const loopInput = {
+  conversation: baseline,
+  model: "deepseek-ai/DeepSeek-V4.1-Flash",
+  prompt: "role prompt",
+  signal: new AbortController().signal,
+};
+
+test("a verify handoff adds its labeled screenshot as a user image inside the same tool checkpoint and the next model request carries it", async (t) => {
+  const image = await storedImage(t, 120);
+  const requests: ModelMessages[] = [];
+  const recorded: [string, unknown][] = [];
+  const result = await runAgentLoop({
+    ...loopInput,
+    session: imageSession(
+      [verifyBatch(["call-1"]), textTurn("m-final", "{}")],
+      { "call-1": async () => pausedOutput("case-a", "h1", image) },
+      requests,
+    ),
+    compaction: bounded(3),
+    checkpoint: async ({ name, work }) => {
+      const value = await work();
+      recorded.push([name, structuredClone(value)]);
+
+      return value;
+    },
+  });
+
+  const metadata = {
+    browserHandoffImage: {
+      caseId: "case-a",
+      handoffId: "h1",
+      image: { path: image.path, digest: image.digest },
+    },
+  };
+
+  assert.deepEqual(requests[1]!.at(-1), {
+    id: imageId("case-a", "h1", image),
+    role: "user",
+    content: [
+      imageNote("case-a", "h1"),
+      { type: "image", source: { type: "data", value: image.base64, mimeType: "image/png" } },
+    ],
+    metadata,
+  });
+  assert.deepEqual(
+    recorded.map(([name, value]) => [name, JSON.stringify(value).includes(image.base64)]),
+    [
+      ["model:0", false],
+      ["tool:0:0", true],
+      ["model:1", true],
+    ],
+  );
+  assert.deepEqual(
+    result.conversation.display.find((message) => message.id === imageId("case-a", "h1", image)),
+    {
+      id: imageId("case-a", "h1", image),
+      role: "user",
+      metadata,
+      parts: [imageNote("case-a", "h1")],
+    },
+  );
+  assert.equal(JSON.stringify(result.conversation.display).includes(image.base64), false);
+});
+
+test("a batch pausing two cases sends every tool result before both screenshots, and equal handoff ids from different cases stay distinct", async (t) => {
+  const first = await storedImage(t, 110);
+  const second = await storedImage(t, 130);
+  const requests: ModelMessages[] = [];
+  await runAgentLoop({
+    ...loopInput,
+    session: imageSession(
+      [verifyBatch(["call-a", "call-b"]), textTurn("m-final", "{}")],
+      {
+        "call-a": async () => pausedOutput("case-a", "h1", first),
+        "call-b": async () => pausedOutput("case-b", "h1", second),
+      },
+      requests,
+    ),
+    compaction: bounded(3),
+    checkpoint: passCheckpoint,
+  });
+
+  assert.deepEqual(requests[1]!.map(outline), [
+    ["user", []],
+    ["assistant", ["call-a", "call-b"]],
+    ["tool", "call-a"],
+    ["tool", "call-b"],
+    ["user", [first.base64]],
+    ["user", [second.base64]],
+  ]);
+});
+
+test("a re-read keeps the attached screenshot without reading its file, a later screenshot batch retires earlier images from context only, and replay needs no file", async (t) => {
+  const first = await storedImage(t, 110);
+  const second = await storedImage(t, 130);
+  const requests: ModelMessages[] = [];
+  const recorded = new Map<string, unknown>();
+  const result = await runAgentLoop({
+    ...loopInput,
+    session: imageSession(
+      [verifyBatch(["call-1"]), verifyBatch(["call-2", "call-3"]), textTurn("m-final", "{}")],
+      {
+        "call-1": async () => pausedOutput("case-a", "h1", first),
+        "call-2": async () => {
+          await rm(join(HANDOFF_IMAGES, first.path));
+
+          return pausedOutput("case-a", "h1", first);
+        },
+        "call-3": async () => pausedOutput("case-b", "h2", second),
+      },
+      requests,
+    ),
+    compaction: bounded(4),
+    checkpoint: async ({ name, work }) => {
+      const value = await work();
+      recorded.set(name, structuredClone(value));
+
+      return value;
+    },
+  });
+
+  assert.deepEqual(requests.map(imagesIn), [[], [first.base64], [second.base64]]);
+  assert.deepEqual(
+    result.conversation.display.flatMap((message) =>
+      message.metadata?.browserHandoffImage
+        ? [[message.metadata.browserHandoffImage.handoffId, message.parts.map((part) => part.type)]]
+        : [],
+    ),
+    [
+      ["h1", ["text"]],
+      ["h2", ["text"]],
+    ],
+  );
+  assert.equal(JSON.stringify(result.conversation.display).includes(second.base64), false);
+  await rm(join(HANDOFF_IMAGES, second.path));
+  const replay = (async ({ name }) => recorded.get(name)) as AgentCheckpoint;
+
+  assert.deepEqual(
+    await runAgentLoop({
+      ...loopInput,
+      session: imageSession([], {}, []),
+      compaction: bounded(4),
+      checkpoint: replay,
+    }),
+    result,
   );
 });

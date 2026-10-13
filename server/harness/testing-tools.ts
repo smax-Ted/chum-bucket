@@ -10,13 +10,13 @@ import {
   browserOutputSchema,
   designCaptureSchema,
   useBrowserInputSchema,
+  type BrowserHandoff,
   type DesignCapture,
   type DesignReference,
   type FunctionalCheck,
   type PlanCheck,
   type StyleCheck,
   type RoleId,
-  type SelectionRequired,
   type TestingRequestInput,
 } from "../../shared/testing";
 import type { ModelCall } from "./model-turn";
@@ -65,7 +65,7 @@ export type TestingNativeReceipt = Readonly<{
 
 export type TestingNativeEnvelope =
   | TestingNativeReceipt
-  | Readonly<{ kind: "ephemeral"; output: SelectionRequired }>;
+  | Readonly<{ kind: "ephemeral"; output: BrowserHandoff }>;
 
 export type TestingNativeReceiptReference = Readonly<
   Pick<TestingNativeReceipt, "receiptId" | "outputDigest">
@@ -444,7 +444,7 @@ function pendingBrowserDefinition(tool: Tool): ModelTool {
   return {
     ...definitionOf(tool),
     description:
-      "Verify one assigned canonical check using the live browser adapter after capturing the requested Figma design. Supply checkId, and resolution only to answer the pending handoff of a selection_required result; the host owns actions, targets and observations.",
+      "Verify one assigned canonical check using the live browser adapter after capturing the requested Figma design. Supply checkId, and resolution only to answer the pending handoff of a selection_required or fill_value_required result; the host owns actions, targets and observations.",
   };
 }
 

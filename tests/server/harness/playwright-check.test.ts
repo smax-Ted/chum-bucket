@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { after, test, type TestContext } from "node:test";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { Browser } from "playwright";
+import sharp from "sharp";
 import { createPlaywrightFixture } from "../../../server/harness/playwright-check";
 import {
   createUseBrowserTool,
@@ -13,10 +14,10 @@ import {
 } from "../../../server/harness/tools/use-browser";
 import {
   browserOutputSchema,
+  type BrowserHandoff,
   type FunctionalCheck,
   type HandoffResolution,
   type PlanCase,
-  type SelectionRequired,
   type StyleCheck,
 } from "../../../shared/testing";
 
@@ -356,11 +357,16 @@ test("live tools reject foreign scope before any browser or model effect and ret
   assert.equal(output.evidence.origin, "browser");
 });
 
+type Box = Readonly<{ x: number; y: number; width: number; height: number }>;
+
 type FakeSpec = {
   tag: string;
   text?: string;
   attributes?: Record<string, string>;
   hidden?: boolean;
+  children?: number;
+  parent?: FakeSpec;
+  box?: Box | null;
   onClick?: () => void;
 };
 
@@ -379,7 +385,7 @@ class FakeNode {
   }
 
   get childElementCount() {
-    return 0;
+    return this.spec.children ?? 0;
   }
 
   get innerText() {
@@ -390,8 +396,8 @@ class FakeNode {
     return this.spec.text ?? "";
   }
 
-  get parentElement() {
-    return null;
+  get parentElement(): FakeNode | null {
+    return this.spec.parent ? new FakeNode(this.spec.parent, this.pageUrl) : null;
   }
 
   get isConnected() {
@@ -413,6 +419,20 @@ class FakeNode {
   hasAttribute(name: string) {
     return this.getAttribute(name) !== null;
   }
+
+  matches(selector: string): boolean {
+    return selector.split(",").some((part) => matchesPart(this, part));
+  }
+
+  closest(selector: string): FakeNode | null {
+    for (let node: FakeNode | null = this; node; node = node.parentElement) {
+      if (node.matches(selector)) {
+        return node;
+      }
+    }
+
+    return null;
+  }
 }
 
 Object.assign(globalThis, { HTMLElement: FakeNode });
@@ -424,7 +444,7 @@ function matchesPart(node: FakeNode, part: string): boolean {
     return false;
   }
 
-  return [...rest.matchAll(/(:not\()?\[([a-z-]+)(?:=([a-z-]+))?\]\)?/g)].every(
+  return [...rest.matchAll(/(:not\()?\[([a-z-]+)(?:="?([a-z0-9-]+)"?)?\]\)?/g)].every(
     ([, negated, name, value]) => {
       const actual = node.getAttribute(name!);
       const holds = value === undefined ? actual !== null : actual === value;
@@ -432,6 +452,26 @@ function matchesPart(node: FakeNode, part: string): boolean {
       return holds !== (negated !== undefined);
     },
   );
+}
+
+const DEFAULT_BOX: Box = { x: 0, y: 0, width: 120, height: 32 };
+const SHOTS = await Promise.all(
+  Array.from({ length: 12 }, (_, index) =>
+    sharp({
+      create: {
+        width: 1280,
+        height: 900,
+        channels: 3,
+        background: { r: 200 - index * 10, g: 200 - index * 10, b: 200 - index * 10 },
+      },
+    })
+      .png()
+      .toBuffer(),
+  ),
+);
+
+function shot(count: number): Buffer {
+  return SHOTS[count - 1]!;
 }
 
 function fakeBrowser(pages: Readonly<Record<string, readonly FakeSpec[]>>) {
@@ -442,6 +482,7 @@ function fakeBrowser(pages: Readonly<Record<string, readonly FakeSpec[]>>) {
     clicks: [] as string[],
     fills: [] as string[],
     shots: 0,
+    brokenCamera: false,
     launches: 0,
     closed: false,
   };
@@ -455,10 +496,12 @@ function fakeBrowser(pages: Readonly<Record<string, readonly FakeSpec[]>>) {
     },
     fill: async (value: string) => {
       site.fills.push(value);
+      node.spec.attributes = { ...node.spec.attributes, value };
     },
     innerText: async () => node.innerText,
     inputValue: async () => node.getAttribute("value") ?? "",
-    boundingBox: async () => ({ x: 0, y: 0, width: 120, height: 32 }),
+    boundingBox: async () =>
+      node.spec.box !== undefined ? node.spec.box : node.spec.hidden ? null : DEFAULT_BOX,
   });
   const page = {
     url: () => site.url,
@@ -473,14 +516,15 @@ function fakeBrowser(pages: Readonly<Record<string, readonly FakeSpec[]>>) {
     },
     waitForLoadState: async () => undefined,
     addStyleTag: async () => undefined,
-    $$: async (selector: string) =>
-      site.nodes
-        .filter((node) => selector.split(",").some((part) => matchesPart(node, part)))
-        .map(handle),
+    $$: async (selector: string) => site.nodes.filter((node) => node.matches(selector)).map(handle),
     screenshot: async () => {
       site.shots += 1;
 
-      return Buffer.from(`shot-${site.shots}`);
+      if (site.brokenCamera) {
+        throw new Error("Screenshot failed");
+      }
+
+      return shot(site.shots);
     },
     evaluate: async () => true,
     waitForTimeout: async () => undefined,
@@ -567,8 +611,16 @@ function choosing(rules: Readonly<Record<string, string>>): JevPick {
 }
 
 const SHOP = "http://shop.test/";
+const HANDOFF_IMAGES = join(process.cwd(), ".data", "browser-evidence");
+const UNMARKED = " (no visible mark)";
 const evidenceDirectory = await mkdtemp(join(tmpdir(), "chum-handoff-test-"));
-after(() => rm(evidenceDirectory, { recursive: true, force: true }));
+const handoffImages = new Set<string>();
+after(async () => {
+  await rm(evidenceDirectory, { recursive: true, force: true });
+  await Promise.all(
+    [...handoffImages].map((path) => rm(join(HANDOFF_IMAGES, path), { force: true })),
+  );
+});
 
 function freezeClock(t: TestContext) {
   t.mock.timers.enable({
@@ -592,13 +644,33 @@ function liveFixture(
     fake.launch,
   );
   t.after(() => fixture.dispose());
+  const run: typeof fixture.run = async (planCase, check, resolution) => {
+    const outcome = await fixture.run(planCase, check, resolution);
 
-  return { fixture, site: fake.site };
+    if (outcome.state === "selection_required" || outcome.state === "fill_value_required") {
+      handoffImages.add(outcome.handoff.image.path);
+    }
+
+    return outcome;
+  };
+
+  return { fixture: { ...fixture, run }, site: fake.site };
 }
 
-function described(tag: string, text: string, label: string | null = null): string {
+type ElementFlags = Partial<
+  Record<"visible" | "disabled" | "ariaDisabled" | "inert" | "operable", boolean>
+>;
+
+function described(
+  tag: string,
+  text: string,
+  label: string | null = null,
+  flags: ElementFlags = {},
+): string {
+  const { visible = true, disabled = false, ariaDisabled = false, inert = false } = flags;
+
   return JSON.stringify({
-    visible: true,
+    visible,
     tag,
     id: "",
     role: null,
@@ -607,25 +679,34 @@ function described(tag: string, text: string, label: string | null = null): stri
     text,
     label,
     type: null,
+    disabled,
+    ariaDisabled,
+    inert,
+    operable: flags.operable ?? true,
     connected: true,
   });
 }
 
-function sha256(value: string): string {
+function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
 function stable(outcome: BrowserRunOutcome): unknown {
-  if (outcome.state === "selection_required" || !outcome.browser) {
+  if (
+    outcome.state === "selection_required" ||
+    outcome.state === "fill_value_required" ||
+    !outcome.browser
+  ) {
     return outcome;
   }
 
-  const { selections, screenshot } = outcome.browser;
+  const { screenshot, ...browser } = outcome.browser;
 
   return {
     ...outcome,
     browser: {
-      selections: selections.map((row) =>
+      ...browser,
+      selections: browser.selections.map((row) =>
         "candidateDigest" in row && /^[0-9a-f]{64}$/.test(row.candidateDigest)
           ? { ...row, candidateDigest: "sha256" }
           : row,
@@ -642,12 +723,38 @@ function stable(outcome: BrowserRunOutcome): unknown {
   };
 }
 
+const LABELED = { path: "uuid.png", digest: "file sha256" };
+
+async function labeled(outcome: BrowserRunOutcome): Promise<unknown> {
+  if (outcome.state !== "selection_required" && outcome.state !== "fill_value_required") {
+    return outcome;
+  }
+
+  const { path, digest } = outcome.handoff.image;
+  const bytes = await readFile(join(HANDOFF_IMAGES, path));
+
+  return {
+    ...outcome,
+    handoff: {
+      ...outcome.handoff,
+      image: {
+        path: /^[0-9a-f-]{36}\.png$/.test(path) ? "uuid.png" : path,
+        digest: sha256(bytes) === digest ? "file sha256" : digest,
+      },
+    },
+  };
+}
+
 function navigate(handoffId: string, linkId: string): HandoffResolution {
   return { handoffId, decision: { kind: "navigate", linkId } };
 }
 
 function choose(handoffId: string, candidateId: string): HandoffResolution {
   return { handoffId, decision: { kind: "choose", candidateId } };
+}
+
+function fillValue(handoffId: string, value: string): HandoffResolution {
+  return { handoffId, decision: { kind: "fill_value", value } };
 }
 
 function shop(labelled: boolean) {
@@ -708,6 +815,13 @@ const helpCheck: FunctionalCheck = {
   expectedObservation: "Help",
   observation: { kind: "text", target: "help button", comparison: "equals" },
 };
+const urlCheck: FunctionalCheck = {
+  id: "url",
+  criterionId: "page",
+  kind: "functional",
+  expectedObservation: "http://shop.test/",
+  observation: { kind: "url", comparison: "equals" },
+};
 const quantityCase: PlanCase = {
   id: "quantity",
   title: "Increase quantity",
@@ -745,14 +859,15 @@ const noneDiagnostics = (candidateCount: number) => ({
   probabilityCount: candidateCount,
 });
 
-test("a Jev miss on an action pauses the case with the browser open and returns its snapshot", async (t) => {
+test("a Jev miss on an action pauses the case with the browser open and returns its labeled snapshot", async (t) => {
   freezeClock(t);
   mockJev(t, choosing(rules));
   const { fixture, site } = liveFixture(t, shop(true).pages);
 
-  assert.deepEqual(await fixture.run(quantityCase, subtotalCheck), {
+  assert.deepEqual(await labeled(await fixture.run(quantityCase, subtotalCheck)), {
     state: "selection_required",
     handoff: {
+      kind: "selection",
       id: "h1",
       caseId: "quantity",
       ordinal: 1,
@@ -771,13 +886,13 @@ test("a Jev miss on an action pauses the case with the browser open and returns 
         { id: "c3", description: described("BUTTON", "Help") },
       ],
       links: homeLinks,
-      linksTruncated: false,
       diagnostics: noneDiagnostics(5),
+      image: LABELED,
     },
   });
   assert.deepEqual(
-    { launches: site.launches, closed: site.closed, clicks: site.clicks },
-    { launches: 1, closed: false, clicks: [] },
+    { launches: site.launches, closed: site.closed, clicks: site.clicks, shots: site.shots },
+    { launches: 1, closed: false, clicks: [], shots: 1 },
   );
 });
 
@@ -786,9 +901,10 @@ test("a Jev miss on an observation pauses at that check with the browser open", 
   mockJev(t, choosing(rules));
   const { fixture, site } = liveFixture(t, shop(true).pages);
 
-  assert.deepEqual(await fixture.run(summaryCase, headingCheck), {
+  assert.deepEqual(await labeled(await fixture.run(summaryCase, headingCheck)), {
     state: "selection_required",
     handoff: {
+      kind: "selection",
       id: "h1",
       caseId: "summary",
       ordinal: 1,
@@ -808,8 +924,8 @@ test("a Jev miss on an observation pauses at that check with the browser open", 
         { id: "c4", description: described("BUTTON", "Help") },
       ],
       links: homeLinks,
-      linksTruncated: false,
       diagnostics: noneDiagnostics(6),
+      image: LABELED,
     },
   });
   assert.deepEqual(
@@ -839,7 +955,7 @@ test("navigate retries Jev with the original intent on the linked page and conti
         { model: "jev-transport-mock", choice: "c1", confidence: 0.99, candidateDigest: "sha256" },
         { model: "jev-transport-mock", choice: "c4", confidence: 0.99, candidateDigest: "sha256" },
       ],
-      screenshot: { path: "uuid.png", digest: sha256("shot-1") },
+      screenshot: { path: "uuid.png", digest: sha256(shot(2)) },
     },
   });
   assert.deepEqual(intents, [
@@ -882,7 +998,7 @@ test("choose completes the original operation and records agent provenance witho
         },
         { model: "jev-transport-mock", choice: "c4", confidence: 0.99, candidateDigest: "sha256" },
       ],
-      screenshot: { path: "uuid.png", digest: sha256("shot-1") },
+      screenshot: { path: "uuid.png", digest: sha256(shot(2)) },
     },
   });
   assert.deepEqual(intents, [
@@ -942,7 +1058,7 @@ test("UI choose only completes a read-only measurement and UI never runs statefu
           },
         },
       ],
-      screenshot: { path: "uuid.png", digest: sha256("shot-1") },
+      screenshot: { path: "uuid.png", digest: sha256(shot(2)) },
     },
   });
   assert.deepEqual({ clicks: site.clicks, fills: site.fills }, { clicks: [], fills: [] });
@@ -968,7 +1084,7 @@ test("abandon blocks the current and later checks with the agent reason, never f
     figmaProperties: null,
     designCapture: null,
   });
-  const paused = (await tool.execute!({ checkId: "heading" })) as SelectionRequired;
+  const paused = (await tool.execute!({ checkId: "heading" })) as BrowserHandoff;
 
   assert.deepEqual(
     { state: paused.state, checkId: paused.checkId, at: paused.handoff.target.at },
@@ -999,9 +1115,9 @@ test("abandon blocks the current and later checks with the agent reason, never f
       evidence.browser?.screenshot?.digest,
     ]),
     [
-      ["subtotal", "blocked", abandoned, sha256("shot-1")],
-      ["help", "blocked", abandoned, sha256("shot-1")],
-      ["heading", "pass", "Welcome", sha256("shot-1")],
+      ["subtotal", "blocked", abandoned, sha256(shot(2))],
+      ["help", "blocked", abandoned, sha256(shot(2))],
+      ["heading", "pass", "Welcome", sha256(shot(2))],
     ],
   );
   assert.deepEqual(
@@ -1010,7 +1126,7 @@ test("abandon blocks the current and later checks with the agent reason, never f
       intents: ["heading of the page", "subtotal in the order summary"],
       launches: 1,
       visits: ["http://shop.test/", "http://shop.test/"],
-      shots: 1,
+      shots: 2,
     },
   );
   const action = liveFixture(t, shop(true).pages);
@@ -1152,22 +1268,20 @@ test("a case allows three handoffs across checks, re-reads do not count, and the
       stage: "observation",
       code: "handoff_limit",
       replay: "forbidden",
-      diagnostics: {
-        choice: "none",
-        confidence: 0.99,
-        probability: 1,
-        gap: 1,
-        probabilityTotal: 1,
-        candidateCount: 3,
-        probabilityCount: 3,
-      },
+      diagnostics: noneDiagnostics(3),
     }),
-    browser: { selections: provenance, screenshot: { path: "uuid.png", digest: sha256("shot-2") } },
+    browser: {
+      selections: provenance,
+      screenshot: { path: "uuid.png", digest: sha256(shot(5)) },
+    },
   });
   assert.deepEqual(stable(await fixture.run(totalsCase, totalCheck)), {
     state: "observed",
     observed: "Total due: 3",
-    browser: { selections: provenance, screenshot: { path: "uuid.png", digest: sha256("shot-1") } },
+    browser: {
+      selections: provenance,
+      screenshot: { path: "uuid.png", digest: sha256(shot(4)) },
+    },
   });
   assert.deepEqual(intents, ["order total", "order total", "loyalty points", "loyalty points"]);
 });
@@ -1394,9 +1508,671 @@ test("an agent navigation after an observation keeps that observation's page scr
         : outcome.state,
     ),
     [
-      ["Subtotal: 1", sha256("shot-2")],
-      ["Welcome", sha256("shot-1")],
+      ["Subtotal: 1", sha256(shot(3))],
+      ["Welcome", sha256(shot(2))],
     ],
   );
-  assert.equal(site.shots, 2);
+  assert.equal(site.shots, 3);
+});
+
+function nameOf({ id, description }: Readonly<{ id: string; description: string }>): string {
+  const facts = JSON.parse(description.replace(UNMARKED, ""));
+
+  return `${id} ${facts.tag} ${facts.text || facts.label}`;
+}
+
+test("operable observes true only for a visible control without disabled, fieldset, aria-disabled or inert state", async (t) => {
+  freezeClock(t);
+  const fieldset: FakeSpec = { tag: "FIELDSET", attributes: { disabled: "" } };
+  const region: FakeSpec = { tag: "SECTION", attributes: { inert: "" } };
+  const controls: FakeSpec[] = [
+    { tag: "BUTTON", text: "Ready" },
+    { tag: "BUTTON", text: "Hidden", hidden: true },
+    { tag: "BUTTON", text: "Disabled", attributes: { disabled: "" } },
+    { tag: "BUTTON", text: "Fieldset", parent: fieldset },
+    { tag: "BUTTON", text: "Aria", attributes: { "aria-disabled": "true" } },
+    { tag: "BUTTON", text: "Aria false", attributes: { "aria-disabled": "false" } },
+    { tag: "BUTTON", text: "Inert", parent: region },
+    { tag: "BUTTON", text: "Hidden disabled", hidden: true, attributes: { disabled: "" } },
+  ];
+  mockJev(
+    t,
+    (intent, criteria) =>
+      Object.entries(criteria).find(
+        ([id, text]) => id !== "none" && text.includes(`"text":"${intent}"`),
+      )?.[0] ?? "none",
+  );
+  const checks = controls.map((control): FunctionalCheck => ({
+    id: control.text!.toLowerCase().replace(" ", "-"),
+    criterionId: "operable",
+    kind: "functional",
+    expectedObservation: "false",
+    observation: { kind: "operable", target: control.text!, comparison: "equals" },
+  }));
+  const operableCase: PlanCase = {
+    id: "operable",
+    title: "Operable",
+    preconditions: [],
+    actions: [{ kind: "navigate", path: "/" }],
+    checks,
+  };
+  const tool = createUseBrowserTool({
+    role: "ac",
+    cases: [operableCase],
+    checks,
+    fixture: liveFixture(t, { "/": controls }).fixture,
+    figmaProperties: null,
+    designCapture: null,
+  });
+  const observed: unknown[] = [];
+
+  for (const item of checks) {
+    const { evidence } = browserOutputSchema.parse(await tool.execute!({ checkId: item.id }));
+    observed.push([
+      evidence.checkId,
+      evidence.outcome,
+      "observed" in evidence && evidence.observed,
+    ]);
+  }
+
+  assert.deepEqual(observed, [
+    ["ready", "fail", "true"],
+    ["hidden", "pass", "false"],
+    ["disabled", "pass", "false"],
+    ["fieldset", "pass", "false"],
+    ["aria", "pass", "false"],
+    ["aria-false", "fail", "true"],
+    ["inert", "pass", "false"],
+    ["hidden-disabled", "pass", "false"],
+  ]);
+});
+
+test("an operable target absent from the page blocks instead of observing false", async (t) => {
+  freezeClock(t);
+  const intents = mockJev(t, () => "none");
+  const absent: FunctionalCheck = {
+    id: "absent",
+    criterionId: "operable",
+    kind: "functional",
+    expectedObservation: "false",
+    observation: { kind: "operable", target: "checkout control", comparison: "equals" },
+  };
+  const { fixture } = liveFixture(t, { "/": [] });
+
+  assert.deepEqual(
+    stable(
+      await fixture.run(
+        {
+          id: "absent",
+          title: "Absent",
+          preconditions: [],
+          actions: [{ kind: "navigate", path: "/" }],
+          checks: [absent],
+        },
+        absent,
+      ),
+    ),
+    {
+      state: "blocked",
+      reason: JSON.stringify({
+        stage: "observation",
+        code: "candidate_limit",
+        replay: "forbidden",
+      }),
+      browser: { selections: [], screenshot: { path: "uuid.png", digest: sha256(shot(1)) } },
+    },
+  );
+  assert.deepEqual(intents, []);
+});
+
+test("click, fill and operable candidates keep hidden and disabled controls with their state, but never passwords, non-editable or layout containers", async (t) => {
+  freezeClock(t);
+  mockJev(t, () => "none");
+  const controls: FakeSpec[] = [
+    { tag: "A", text: "Docs", attributes: { href: "/docs.html" } },
+    { tag: "A", text: "Plain anchor" },
+    { tag: "INPUT", attributes: { type: "text", "aria-label": "Name" } },
+    { tag: "INPUT", attributes: { type: "checkbox", "aria-label": "Agree" } },
+    { tag: "INPUT", attributes: { type: "submit", "aria-label": "Send" } },
+    { tag: "INPUT", attributes: { type: "password", "aria-label": "Secret" } },
+    {
+      tag: "INPUT",
+      attributes: { type: "password", role: "textbox", tabindex: "0", "aria-label": "Key" },
+    },
+    { tag: "SELECT", attributes: { "aria-label": "Size" } },
+    { tag: "SPAN", text: "Accept", attributes: { role: "checkbox" } },
+    { tag: "SPAN", text: "Search", attributes: { role: "searchbox" } },
+    { tag: "BUTTON", text: "Hidden disabled", hidden: true, attributes: { disabled: "" } },
+    { tag: "TEXTAREA", attributes: { "aria-label": "Notes" } },
+    { tag: "DIV", text: "Editor", children: 2, attributes: { contenteditable: "true" } },
+    { tag: "DIV", text: "Read only", attributes: { contenteditable: "false" } },
+    { tag: "DIV", text: "Card", children: 2, attributes: { onclick: "open()" } },
+    { tag: "DIV", text: "Focusable", children: 1, attributes: { tabindex: "0" } },
+    { tag: "DIV", text: "Unfocusable", children: 1, attributes: { tabindex: "-1" } },
+    { tag: "DIV", text: "Layout", children: 3 },
+  ];
+  const offered = async (
+    action: PlanCase["actions"][number],
+    check: FunctionalCheck = urlCheck,
+  ) => {
+    const outcome = await liveFixture(t, { "/": controls }).fixture.run(
+      {
+        id: "controls",
+        title: "Controls",
+        preconditions: [],
+        actions: [{ kind: "navigate", path: "/" }, action],
+        checks: [check],
+      },
+      check,
+    );
+    assert(outcome.state === "selection_required");
+
+    return outcome.handoff.candidates;
+  };
+  const clickable = await offered({ kind: "click", target: "control" });
+
+  assert.deepEqual(clickable.map(nameOf), [
+    "c0 A Docs",
+    "c1 INPUT Name",
+    "c2 INPUT Agree",
+    "c3 INPUT Send",
+    "c4 SELECT Size",
+    "c5 SPAN Accept",
+    "c6 BUTTON Hidden disabled",
+    "c7 TEXTAREA Notes",
+    "c8 DIV Editor",
+    "c9 DIV Card",
+    "c10 DIV Focusable",
+  ]);
+  assert.equal(
+    clickable[6]!.description,
+    `${described("BUTTON", "Hidden disabled", null, { visible: false, disabled: true, operable: false })}${UNMARKED}`,
+  );
+  assert.deepEqual((await offered({ kind: "fill", target: "field", value: "x" })).map(nameOf), [
+    "c0 INPUT Name",
+    "c1 SPAN Search",
+    "c2 TEXTAREA Notes",
+    "c3 DIV Editor",
+  ]);
+  assert.deepEqual(
+    (
+      await offered(
+        { kind: "navigate", path: "/" },
+        {
+          ...urlCheck,
+          expectedObservation: "true",
+          observation: { kind: "operable", target: "control", comparison: "equals" },
+        },
+      )
+    ).map(nameOf),
+    [
+      "c0 A Docs",
+      "c1 A Plain anchor",
+      "c2 INPUT Name",
+      "c3 INPUT Agree",
+      "c4 INPUT Send",
+      "c5 SELECT Size",
+      "c6 SPAN Accept",
+      "c7 SPAN Search",
+      "c8 BUTTON Hidden disabled",
+      "c9 TEXTAREA Notes",
+      "c10 DIV Editor",
+      "c11 DIV Read only",
+      "c12 DIV Card",
+      "c13 DIV Focusable",
+    ],
+  );
+});
+
+test("a hidden or disabled action target is skipped and recorded while later actions and checks still run", async (t) => {
+  freezeClock(t);
+  mockJev(
+    t,
+    choosing({
+      minus: '"text":"Minus"',
+      note: '"label":"Note"',
+      plus: '"text":"Plus"',
+      count: '"text":"Count',
+    }),
+  );
+  const count: FakeSpec = { tag: "SPAN", text: "Count: 0" };
+  const pages = {
+    "/": [
+      {
+        tag: "BUTTON",
+        text: "Minus",
+        attributes: { disabled: "" },
+        onClick: () => {
+          count.text = "Count: -1";
+        },
+      },
+      { tag: "INPUT", hidden: true, attributes: { "aria-label": "Note", disabled: "" } },
+      {
+        tag: "BUTTON",
+        text: "Plus",
+        onClick: () => {
+          count.text = "Count: 1";
+        },
+      },
+      count,
+    ],
+  };
+  const countCheck: FunctionalCheck = {
+    id: "count",
+    criterionId: "count",
+    kind: "functional",
+    expectedObservation: "Count: 1",
+    observation: { kind: "text", target: "count display", comparison: "equals" },
+  };
+  const skipCase: PlanCase = {
+    id: "skip",
+    title: "Skip",
+    preconditions: [],
+    actions: [
+      { kind: "navigate", path: "/" },
+      { kind: "click", target: "minus control" },
+      { kind: "fill", target: "note field", value: "hello" },
+      { kind: "fill", target: "note field" },
+      { kind: "click", target: "plus control" },
+    ],
+    checks: [countCheck],
+  };
+  const { fixture, site } = liveFixture(t, pages);
+  const jev = (choice: string) => ({
+    model: "jev-transport-mock",
+    choice,
+    confidence: 0.99,
+    candidateDigest: "sha256",
+  });
+
+  assert.deepEqual(stable(await fixture.run(skipCase, countCheck)), {
+    state: "observed",
+    observed: "Count: 1",
+    browser: {
+      selections: [jev("c0"), jev("c0"), jev("c0"), jev("c2"), jev("c2")],
+      skippedActions: [
+        { actionIndex: 1, reasons: ["disabled"] },
+        { actionIndex: 2, reasons: ["hidden", "disabled"] },
+        { actionIndex: 3, reasons: ["hidden", "disabled"] },
+      ],
+      screenshot: { path: "uuid.png", digest: sha256(shot(1)) },
+    },
+  });
+  assert.deepEqual(
+    { clicks: site.clicks, fills: site.fills, shots: site.shots },
+    { clicks: ["Plus"], fills: [], shots: 1 },
+  );
+  const leaving: PlanCase = {
+    ...skipCase,
+    id: "leaving",
+    actions: [
+      { kind: "navigate", path: "/" },
+      { kind: "click", target: "minus control" },
+      { kind: "navigate", path: "http://partner.test/" },
+    ],
+  };
+
+  assert.deepEqual(stable(await liveFixture(t, pages).fixture.run(leaving, countCheck)), {
+    state: "blocked",
+    reason: JSON.stringify({
+      stage: "action_2_navigate",
+      code: "browser_or_storage_error",
+      replay: "forbidden",
+    }),
+    browser: {
+      selections: [jev("c0")],
+      skippedActions: [{ actionIndex: 1, reasons: ["disabled"] }],
+    },
+  });
+});
+
+test("Jev receives at most 254 candidates plus none, and a larger set skips Jev for a full-list handoff with untruncated links", async (t) => {
+  freezeClock(t);
+  const optionCounts: number[] = [];
+  mockJev(t, (_intent, criteria) => {
+    optionCounts.push(Object.keys(criteria).length);
+
+    return "c253";
+  });
+  const buttons = (count: number): FakeSpec[] =>
+    Array.from({ length: count }, (_, index) => ({ tag: "BUTTON", text: `Item ${index}` }));
+  const links: FakeSpec[] = Array.from({ length: 100 }, (_, index) => ({
+    tag: "A",
+    text: `Page ${index}`,
+    attributes: { href: `/page-${index}.html` },
+  }));
+  const manyCase: PlanCase = {
+    id: "many",
+    title: "Many",
+    preconditions: [],
+    actions: [
+      { kind: "navigate", path: "/" },
+      { kind: "click", target: "item control" },
+    ],
+    checks: [urlCheck],
+  };
+  const within = liveFixture(t, { "/": buttons(254) });
+
+  assert.equal((await within.fixture.run(manyCase, urlCheck)).state, "observed");
+  assert.deepEqual(
+    { optionCounts, clicks: within.site.clicks },
+    {
+      optionCounts: [255],
+      clicks: ["Item 253"],
+    },
+  );
+  const beyond = liveFixture(t, { "/": [...buttons(155), ...links] });
+  const paused = await beyond.fixture.run(manyCase, urlCheck);
+  assert(paused.state === "selection_required");
+
+  assert.deepEqual(
+    {
+      optionCounts,
+      diagnostics: paused.handoff.diagnostics,
+      later: paused.handoff.laterHandoffsAllowed,
+      candidates: [paused.handoff.candidates.length, nameOf(paused.handoff.candidates.at(-1)!)],
+      links: [paused.handoff.links.length, paused.handoff.links.at(-1)],
+    },
+    {
+      optionCounts: [255],
+      diagnostics: { code: "candidate_overflow", candidateCount: 255 },
+      later: 2,
+      candidates: [255, "c254 A Page 99"],
+      links: [100, { id: "l99", description: "Page 99", url: "http://shop.test/page-99.html" }],
+    },
+  );
+  assert.equal(
+    (await beyond.fixture.run(manyCase, urlCheck, choose("h1", "c3"))).state,
+    "observed",
+  );
+  assert.deepEqual(beyond.site.clicks, ["Item 3"]);
+});
+
+test("a fill without a planned value pauses for an agent value that is typed, recorded, and never spends a selection handoff", async (t) => {
+  freezeClock(t);
+  mockJev(t, choosing({ "note field": '"label":"Note"', "code field": '"label":"Code"' }));
+  const pages = {
+    "/": [
+      { tag: "INPUT", attributes: { "aria-label": "Note" } },
+      { tag: "INPUT", attributes: { "aria-label": "Code" } },
+      { tag: "BUTTON", text: "Save" },
+    ],
+  };
+  const noteCheck: FunctionalCheck = {
+    id: "note",
+    criterionId: "note",
+    kind: "functional",
+    expectedObservation: "second note",
+    observation: { kind: "value", target: "note field", comparison: "equals" },
+  };
+  const noteTarget = (index: number) => ({
+    intent: "note field",
+    operation: "fill" as const,
+    at: { kind: "action" as const, index },
+  });
+  const fillCase: PlanCase = {
+    id: "notes",
+    title: "Notes",
+    preconditions: [],
+    actions: [
+      { kind: "navigate", path: "/" },
+      { kind: "fill", target: "note field" },
+      { kind: "fill", target: "code field", value: "" },
+      { kind: "click", target: "save button" },
+      { kind: "fill", target: "note field" },
+    ],
+    checks: [noteCheck],
+  };
+  const { fixture, site } = liveFixture(t, pages);
+  const first = await fixture.run(fillCase, noteCheck);
+
+  assert.deepEqual(await labeled(first), {
+    state: "fill_value_required",
+    handoff: {
+      kind: "fill_value",
+      id: "h1",
+      caseId: "notes",
+      laterSelectionHandoffs: 3,
+      expiresAt: "2026-10-13T00:03:00.000Z",
+      url: "http://shop.test/",
+      target: noteTarget(1),
+      field: { id: "c0", description: described("INPUT", "", "Note") },
+      links: [],
+      image: LABELED,
+    },
+  });
+  await assert.rejects(fixture.run(fillCase, noteCheck, choose("h1", "c0")), {
+    message: "Handoff h1 accepts only fill_value or abandon",
+  });
+  assert.deepEqual(await fixture.run(fillCase, noteCheck), first);
+  assert.deepEqual(site.fills, []);
+  const second = await fixture.run(fillCase, noteCheck, fillValue("h1", "sample note"));
+
+  assert.deepEqual(
+    second.state === "selection_required" && [
+      second.handoff.id,
+      second.handoff.ordinal,
+      second.handoff.laterHandoffsAllowed,
+    ],
+    ["h2", 1, 2],
+  );
+  assert.deepEqual(await fixture.run(fillCase, noteCheck, fillValue("h1", "sample note")), second);
+  await assert.rejects(fixture.run(fillCase, noteCheck, fillValue("h1", "other note")), {
+    message: "Handoff h1 was already resolved with a different decision",
+  });
+  await assert.rejects(fixture.run(fillCase, noteCheck, fillValue("h2", "typed")), {
+    message: "Handoff h2 accepts only navigate, choose or abandon",
+  });
+  assert.deepEqual(site.fills, ["sample note", ""]);
+  const third = await fixture.run(fillCase, noteCheck, choose("h2", "c2"));
+
+  assert.deepEqual(
+    third.state === "fill_value_required" && [
+      third.handoff.id,
+      third.handoff.laterSelectionHandoffs,
+    ],
+    ["h3", 2],
+  );
+  const jev = (choice: string) => ({
+    model: "jev-transport-mock",
+    choice,
+    confidence: 0.99,
+    candidateDigest: "sha256",
+  });
+  const agentFill = (handoffId: string, index: number, value: string) => ({
+    source: "agent_fill",
+    handoffId,
+    candidateId: "c0",
+    fingerprintDigest: sha256(described("INPUT", "", "Note")),
+    target: noteTarget(index),
+    value,
+  });
+
+  assert.deepEqual(stable(await fixture.run(fillCase, noteCheck, fillValue("h3", "second note"))), {
+    state: "observed",
+    observed: "second note",
+    browser: {
+      selections: [
+        jev("c0"),
+        agentFill("h1", 1, "sample note"),
+        jev("c1"),
+        {
+          source: "agent_choose",
+          handoffId: "h2",
+          candidateId: "c2",
+          fingerprintDigest: sha256(described("BUTTON", "Save")),
+          target: { intent: "save button", operation: "click", at: { kind: "action", index: 3 } },
+        },
+        jev("c0"),
+        agentFill("h3", 4, "second note"),
+        jev("c0"),
+      ],
+      screenshot: { path: "uuid.png", digest: sha256(shot(4)) },
+    },
+  });
+  assert.deepEqual(
+    { fills: site.fills, clicks: site.clicks },
+    { fills: ["sample note", "", "second note"], clicks: ["Save"] },
+  );
+});
+
+type Pixels = Readonly<{ width: number; at: (x: number, y: number) => number[] }>;
+
+async function pixels(png: Buffer): Promise<Pixels> {
+  const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
+
+  return {
+    width: info.width,
+    at: (x, y) => {
+      const offset = (y * info.width + x) * info.channels;
+
+      return [data[offset]!, data[offset + 1]!, data[offset + 2]!];
+    },
+  };
+}
+
+function changedArea(image: Pixels, raw: Pixels, height: number) {
+  const area = { left: Infinity, top: Infinity, right: -1, bottom: -1 };
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < image.width; x++) {
+      const [red, green, blue] = image.at(x, y);
+      const [rawRed, rawGreen, rawBlue] = raw.at(x, y);
+
+      if (red !== rawRed || green !== rawGreen || blue !== rawBlue) {
+        area.left = Math.min(area.left, x);
+        area.top = Math.min(area.top, y);
+        area.right = Math.max(area.right, x);
+        area.bottom = Math.max(area.bottom, y);
+      }
+    }
+  }
+
+  return area;
+}
+
+test("each handoff carries a labeled copy of the viewport with candidate and link marks while evidence screenshots stay raw", async (t) => {
+  freezeClock(t);
+  mockJev(t, choosing({ heading: '"text":"Welcome"' }));
+  const pages = {
+    "/": [
+      { tag: "H1", text: "Welcome", box: { x: 0, y: 40, width: 300, height: 40 } },
+      { tag: "BUTTON", text: "Plus", box: { x: 100, y: 200, width: 120, height: 32 } },
+      {
+        tag: "A",
+        text: "Cart",
+        attributes: { href: "/cart.html" },
+        box: { x: 400, y: 300, width: 80, height: 24 },
+      },
+      { tag: "BUTTON", text: "Hidden", hidden: true },
+      { tag: "BUTTON", text: "Below", box: { x: 100, y: 2_000, width: 50, height: 20 } },
+    ],
+  };
+  const imageCase: PlanCase = {
+    id: "image",
+    title: "Image",
+    preconditions: [],
+    actions: [
+      { kind: "navigate", path: "/" },
+      { kind: "click", target: "checkout control" },
+    ],
+    checks: [headingCheck],
+  };
+  const { fixture, site } = liveFixture(t, pages);
+  const paused = await fixture.run(imageCase, headingCheck);
+  assert(paused.state === "selection_required");
+  const { candidates, links, image } = paused.handoff;
+  const bytes = await readFile(join(HANDOFF_IMAGES, image.path));
+  const marked = await pixels(bytes);
+  const raw = await pixels(shot(1));
+
+  assert.deepEqual(
+    {
+      candidates: candidates.map(({ id, description }) => [id, description.endsWith(UNMARKED)]),
+      links,
+      digest: sha256(bytes) === image.digest,
+    },
+    {
+      candidates: [
+        ["c0", false],
+        ["c1", false],
+        ["c2", true],
+        ["c3", true],
+      ],
+      links: [{ id: "l0", description: "Cart", url: "http://shop.test/cart.html" }],
+      digest: true,
+    },
+  );
+  assert.deepEqual(
+    [
+      [99, 216],
+      [101, 185],
+      [400, 312],
+      [401, 285],
+      [422, 285],
+      [420, 285],
+    ].map(([x, y]) => [marked.at(x!, y!), raw.at(x!, y!)]),
+    [
+      [
+        [208, 0, 0],
+        [200, 200, 200],
+      ],
+      [
+        [208, 0, 0],
+        [200, 200, 200],
+      ],
+      [
+        [0, 80, 208],
+        [200, 200, 200],
+      ],
+      [
+        [208, 0, 0],
+        [200, 200, 200],
+      ],
+      [
+        [0, 80, 208],
+        [200, 200, 200],
+      ],
+      [
+        [200, 200, 200],
+        [200, 200, 200],
+      ],
+    ],
+  );
+  assert.deepEqual(changedArea(marked, raw, 900), { left: 99, top: 184, right: 480, bottom: 324 });
+  assert.deepEqual(await fixture.run(imageCase, headingCheck), paused);
+  assert.equal(site.shots, 1);
+  const done = await fixture.run(imageCase, headingCheck, choose("h1", "c0"));
+  assert(done.state === "observed");
+  const evidence = done.browser!.screenshot!;
+
+  assert.deepEqual(
+    {
+      clicks: site.clicks,
+      digest: evidence.digest,
+      bytes: await readFile(join(evidenceDirectory, evidence.path)),
+    },
+    { clicks: ["Plus"], digest: sha256(shot(2)), bytes: shot(2) },
+  );
+});
+
+test("a handoff whose labeled screenshot cannot be captured blocks the case instead of pausing", async (t) => {
+  freezeClock(t);
+  mockJev(t, choosing(rules));
+  const { fixture, site } = liveFixture(t, shop(true).pages);
+  site.brokenCamera = true;
+
+  assert.deepEqual(await fixture.run(quantityCase, subtotalCheck), {
+    state: "blocked",
+    reason: JSON.stringify({
+      stage: "action_1_click",
+      code: "handoff_image_failed",
+      replay: "forbidden",
+    }),
+    browser: { selections: [] },
+  });
+  assert.deepEqual({ clicks: site.clicks, closed: site.closed }, { clicks: [], closed: true });
+  await assert.rejects(fixture.run(quantityCase, subtotalCheck, navigate("h1", "l0")), {
+    message: "Handoff h1 is not pending for case quantity",
+  });
 });

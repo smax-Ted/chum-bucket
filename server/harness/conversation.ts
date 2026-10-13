@@ -28,6 +28,16 @@ export function projectConversation(state: ConversationState): RunProjection {
   return { version: 1, display: state.display, context: state.context };
 }
 
+export function isHandoffImage(message: UIMessage): boolean {
+  return message.metadata?.browserHandoffImage !== undefined;
+}
+
+function displayed(message: UIMessage): UIMessage {
+  return isHandoffImage(message)
+    ? { ...message, parts: message.parts.filter((part) => part.type !== "image") }
+    : message;
+}
+
 export function advanceConversation(
   state: ConversationState,
   next: UIMessage[],
@@ -46,14 +56,14 @@ export function advanceConversation(
     }
 
     if (message.metadata?.fromSummary !== true) {
-      updates.set(message.id, message);
+      updates.set(message.id, displayed(message));
     }
   }
 
   return {
     display: [
       ...state.display.map((message) => updates.get(message.id) ?? message),
-      ...context.filter((message) => !displayIds.has(message.id) && updates.has(message.id)),
+      ...[...updates.values()].filter((message) => !displayIds.has(message.id)),
     ],
     context,
   };

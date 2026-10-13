@@ -11,17 +11,23 @@ import {
 } from "playwright";
 import {
   MAX_CASE_HANDOFFS,
+  MAX_JEV_CANDIDATES,
   type BrowserSelection,
+  type FillTarget,
+  type FillValueSnapshot,
   type FunctionalCheck,
   type HandoffDecision,
   type HandoffResolution,
-  type HandoffSnapshot,
   type HandoffTarget,
   type PlanCase,
   type PlanCheck,
   type PublicEvidence,
+  type SelectionDiagnostics,
+  type SelectionSnapshot,
+  type SkippedAction,
   type StyleCheck,
 } from "../../shared/testing";
+import { captureHandoffImage } from "./handoff-image";
 import { JevError, selectCandidate } from "./jev-client";
 import type { BrowserAdapter, BrowserOutcome, BrowserRunOutcome } from "./tools/use-browser";
 
@@ -103,11 +109,46 @@ function originPath(url: URL): string {
   return `${url.origin}${url.pathname}`;
 }
 
+type ElementState = Readonly<{
+  visible: boolean;
+  disabled: boolean;
+  ariaDisabled: boolean;
+  inert: boolean;
+  operable: boolean;
+}>;
+
+async function elementState(element: ElementHandle<Element>): Promise<ElementState> {
+  const visible = await element.isVisible();
+  const { disabled, ariaDisabled, inert } = await element.evaluate((node) => ({
+    disabled: node.hasAttribute("disabled") || node.closest("fieldset[disabled]") !== null,
+    ariaDisabled: node.getAttribute("aria-disabled") === "true",
+    inert: node.closest("[inert]") !== null,
+  }));
+
+  return {
+    visible,
+    disabled,
+    ariaDisabled,
+    inert,
+    operable: visible && !disabled && !ariaDisabled && !inert,
+  };
+}
+
+function nonOperable(state: ElementState): SkippedAction["reasons"] {
+  if (state.visible) {
+    return ["disabled"];
+  }
+
+  const disabledState = state.disabled || state.ariaDisabled || state.inert;
+
+  return disabledState ? ["hidden", "disabled"] : ["hidden"];
+}
+
 async function fingerprint(element: ElementHandle<Element>): Promise<string> {
   return element.evaluate(
-    (node, visible) =>
+    (node, state) =>
       JSON.stringify({
-        visible,
+        visible: state.visible,
         tag: node.tagName,
         id: node.id,
         role: node.getAttribute("role"),
@@ -121,10 +162,14 @@ async function fingerprint(element: ElementHandle<Element>): Promise<string> {
           .slice(0, 240),
         label: node.getAttribute("aria-label"),
         type: node.getAttribute("type"),
+        disabled: state.disabled,
+        ariaDisabled: state.ariaDisabled,
+        inert: state.inert,
+        operable: state.operable,
         context: node.parentElement?.innerText?.trim().slice(0, 300),
         connected: node.isConnected,
       }),
-    await element.isVisible(),
+    await elementState(element),
   );
 }
 
@@ -134,38 +179,68 @@ type TargetCandidate = Readonly<{
   element: ElementHandle<Element>;
 }>;
 
+const EDITABLE = '[contenteditable]:not([contenteditable="false"])';
+const FOCUSABLE = '[tabindex]:not([tabindex="-1"])';
+
+const CLICK_SELECTOR = [
+  "button",
+  "a[href]",
+  "input:not([type=hidden]):not([type=password])",
+  "select",
+  "textarea",
+  "label",
+  "summary",
+  EDITABLE,
+  "[onclick]",
+  FOCUSABLE,
+  "[role=button],[role=link],[role=checkbox],[role=radio],[role=switch],[role=tab]",
+  "[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],[role=option]",
+  "[role=combobox],[role=slider],[role=spinbutton],[role=treeitem]",
+].join(",");
+
+const FILL_SELECTOR = [
+  "input:not([type=password]):not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button]):not([type=reset]):not([type=file]):not([type=image]):not([type=color]):not([type=range])",
+  "textarea",
+  EDITABLE,
+  "[role=textbox],[role=searchbox],[role=combobox]",
+].join(",");
+
+const OBSERVE_SELECTOR =
+  "h1,h2,h3,p,span,button,a,input:not([type=password]):not([type=hidden]),textarea,label,[role],strong,small,output,dd,dt,div";
+
+const STATE_SELECTOR = `${OBSERVE_SELECTOR},${CLICK_SELECTOR},${FILL_SELECTOR}`;
+
+const SELECTORS: Readonly<Record<Operation, string>> = {
+  click: CLICK_SELECTOR,
+  fill: FILL_SELECTOR,
+  observe: OBSERVE_SELECTOR,
+  visible: STATE_SELECTOR,
+  operable: STATE_SELECTOR,
+};
+
 async function targetCandidates(
   page: Page,
   operation: Operation,
 ): Promise<readonly TargetCandidate[]> {
-  const selector =
-    operation === "fill"
-      ? "input:not([type=password]):not([type=hidden]),textarea"
-      : operation === "click"
-        ? "button,a,[role=button],input[type=submit]"
-        : "h1,h2,h3,p,span,button,a,input:not([type=password]):not([type=hidden]),textarea,label,[role],strong,small,output,dd,dt,div";
-  const all = await page.$$(selector);
+  const all = await page.$$(SELECTORS[operation]);
   const candidates: TargetCandidate[] = [];
 
   for (const element of all) {
-    const layoutContainer = await element.evaluate(
-      (node) =>
-        node.tagName === "DIV" &&
-        node.childElementCount > 0 &&
-        !node.hasAttribute("role") &&
-        !node.hasAttribute("aria-label"),
+    const excluded = await element.evaluate(
+      (node, interactive) =>
+        node.matches("input[type=password]") ||
+        (node.childElementCount > 0 &&
+          node.matches("div:not([role]):not([aria-label])") &&
+          !node.matches(interactive)),
+      `[onclick],${FOCUSABLE},${EDITABLE}`,
     );
 
-    if (!layoutContainer && (operation === "visible" || (await element.isVisible()))) {
+    if (!excluded && (operation !== "observe" || (await element.isVisible()))) {
       candidates.push({
         id: `c${candidates.length}`,
         description: await fingerprint(element),
         element,
       });
-
-      if (candidates.length > 80) {
-        throw new BrowserBlocked("DOM candidate limit exceeded; narrow the page");
-      }
     }
   }
 
@@ -194,10 +269,7 @@ function linkFacts(element: ElementHandle<Element>) {
   }));
 }
 
-async function linkCandidates(
-  page: Page,
-  target: URL,
-): Promise<Readonly<{ links: readonly LinkCandidate[]; truncated: boolean }>> {
+async function linkCandidates(page: Page, target: URL): Promise<readonly LinkCandidate[]> {
   const links: LinkCandidate[] = [];
   const seen = new Set<string>();
 
@@ -213,10 +285,6 @@ async function linkCandidates(
       continue;
     }
 
-    if (links.length === 80) {
-      return { links, truncated: true };
-    }
-
     seen.add(url.href);
     links.push({
       id: `l${links.length}`,
@@ -228,7 +296,7 @@ async function linkCandidates(
     });
   }
 
-  return { links, truncated: false };
+  return links;
 }
 
 const supportedStyleProperties = new Set(["width", "height", ...Object.keys(styleProperties)]);
@@ -268,6 +336,7 @@ type CaseProgress = {
   segment: number;
   navigationDenied: boolean;
   readonly selections: BrowserSelection[];
+  readonly skipped: SkippedAction[];
   readonly records: Map<string, Recorded>;
   readonly screenshots: Map<number, Screenshot>;
 };
@@ -286,12 +355,15 @@ type Followed = Readonly<{
   link: LinkCandidate;
 }>;
 
-type Handoff = (
-  run: CaseRun,
-  target: HandoffTarget,
-  candidates: readonly TargetCandidate[],
-  error: JevError,
-) => Promise<Chosen | Followed>;
+type Filled = Readonly<{ kind: "fill_value"; handoffId: string; value: string }>;
+
+type SelectionRequest = Readonly<{
+  target: HandoffTarget;
+  candidates: readonly TargetCandidate[];
+  diagnostics: SelectionDiagnostics;
+}>;
+
+type FillRequest = Readonly<{ target: FillTarget; field: TargetCandidate }>;
 
 type CaseEnv = Readonly<{
   targetUrl: string;
@@ -300,7 +372,8 @@ type CaseEnv = Readonly<{
   signal: AbortSignal;
   artifactDirectory?: string;
   launch: () => Promise<Browser>;
-  handoff: Handoff;
+  select: (run: CaseRun, request: SelectionRequest) => Promise<Chosen | Followed>;
+  fillValue: (run: CaseRun, request: FillRequest) => Promise<Filled>;
 }>;
 
 type CaseRun = Readonly<{ env: CaseEnv; page: Page; target: URL; progress: CaseProgress }>;
@@ -309,7 +382,11 @@ async function jevSelection(
   intent: string,
   candidates: readonly TargetCandidate[],
   signal: AbortSignal,
-): Promise<JevSelection | JevError> {
+): Promise<JevSelection | SelectionDiagnostics> {
+  if (candidates.length > MAX_JEV_CANDIDATES) {
+    return { code: "candidate_overflow", candidateCount: candidates.length };
+  }
+
   try {
     return await selectCandidate(
       intent,
@@ -318,18 +395,22 @@ async function jevSelection(
     );
   } catch (error) {
     if (error instanceof JevError && error.code === "uncertain_or_invalid_selection") {
-      return error;
+      return { code: "uncertain_or_invalid_selection", ...error.diagnostics! };
     }
 
     throw error;
   }
 }
 
+function descriptionDigest(description: string): string {
+  return createHash("sha256").update(description).digest("hex");
+}
+
 async function acceptedTarget(
   run: CaseRun,
   candidates: readonly TargetCandidate[],
   selection: JevSelection,
-): Promise<ElementHandle<Element>> {
+): Promise<TargetCandidate> {
   run.progress.selections.push(selection);
   run.env.signal.throwIfAborted();
   const candidate = candidates.find((item) => item.id === selection.choice)!;
@@ -338,29 +419,31 @@ async function acceptedTarget(
     throw new BrowserBlocked("DOM target changed during selection");
   }
 
-  return candidate.element;
+  return candidate;
+}
+
+async function assertUnchanged(candidate: TargetCandidate, handoffId: string): Promise<void> {
+  if ((await fingerprint(candidate.element).catch(() => null)) !== candidate.description) {
+    throw new CaseEnded("handoff_target_changed", { handoffId });
+  }
 }
 
 async function chosenTarget(
   run: CaseRun,
   target: HandoffTarget,
   chosen: Chosen,
-): Promise<ElementHandle<Element>> {
+): Promise<TargetCandidate> {
   const { candidate } = chosen;
-
-  if ((await fingerprint(candidate.element).catch(() => null)) !== candidate.description) {
-    throw new CaseEnded("handoff_target_changed", { handoffId: chosen.handoffId });
-  }
-
+  await assertUnchanged(candidate, chosen.handoffId);
   run.progress.selections.push({
     source: "agent_choose",
     handoffId: chosen.handoffId,
     candidateId: chosen.candidateId,
-    fingerprintDigest: createHash("sha256").update(candidate.description).digest("hex"),
+    fingerprintDigest: descriptionDigest(candidate.description),
     target,
   });
 
-  return candidate.element;
+  return candidate;
 }
 
 async function freezeAnimations(page: Page): Promise<void> {
@@ -427,16 +510,16 @@ async function followLink(run: CaseRun, { handoffId, linkId, link }: Followed): 
   });
 }
 
-async function selectTarget(run: CaseRun, target: HandoffTarget): Promise<ElementHandle<Element>> {
+async function selectTarget(run: CaseRun, target: HandoffTarget): Promise<TargetCandidate> {
   for (;;) {
     const candidates = await targetCandidates(run.page, target.operation);
     const selection = await jevSelection(target.intent, candidates, run.env.signal);
 
-    if (!(selection instanceof JevError)) {
+    if (!("code" in selection)) {
       return acceptedTarget(run, candidates, selection);
     }
 
-    const resolved = await run.env.handoff(run, target, candidates, selection);
+    const resolved = await run.env.select(run, { target, candidates, diagnostics: selection });
 
     if (resolved.kind === "choose") {
       return chosenTarget(run, target, resolved);
@@ -457,14 +540,21 @@ async function functionalObservation(run: CaseRun, check: FunctionalCheck): Prom
     return observedUrl(run.page);
   }
 
-  const element = await selectTarget(run, {
+  const { element } = await selectTarget(run, {
     intent: observation.target,
-    operation: observation.kind === "visible" ? "visible" : "observe",
+    operation:
+      observation.kind === "visible" || observation.kind === "operable"
+        ? observation.kind
+        : "observe",
     at: { kind: "check", checkId: check.id },
   });
 
   if (observation.kind === "visible") {
     return String(await element.isVisible());
+  }
+
+  if (observation.kind === "operable") {
+    return String((await elementState(element)).operable);
   }
 
   if (observation.kind === "value") {
@@ -484,7 +574,7 @@ async function styleObservation(run: CaseRun, check: StyleCheck): Promise<string
   }
 
   await ensureFontsReady(run.page);
-  const element = await selectTarget(run, {
+  const { element } = await selectTarget(run, {
     intent: check.target,
     operation: "observe",
     at: { kind: "check", checkId: check.id },
@@ -570,25 +660,47 @@ async function applyAction(
     return;
   }
 
-  const element = await selectTarget(run, {
-    intent: action.target,
-    operation: action.kind,
-    at: { kind: "action", index },
-  });
+  const at = { kind: "action", index } as const;
+  const bound = await selectTarget(run, { intent: action.target, operation: action.kind, at });
+  const state = await elementState(bound.element);
 
-  if (action.kind === "fill") {
-    await element.fill(action.value, { timeout: 5_000 });
+  if (!state.operable) {
+    run.progress.skipped.push({ actionIndex: index, reasons: nonOperable(state) });
 
     return;
   }
 
-  const href = await element.getAttribute("href");
+  if (action.kind === "fill") {
+    if (action.value === undefined) {
+      await agentFill(run, bound, { intent: action.target, operation: "fill", at });
+    } else {
+      await bound.element.fill(action.value, { timeout: 5_000 });
+    }
+
+    return;
+  }
+
+  const href = await bound.element.getAttribute("href");
 
   if (href) {
     allowedUrl(href, new URL(page.url()));
   }
 
-  await element.click({ timeout: 5_000 });
+  await bound.element.click({ timeout: 5_000 });
+}
+
+async function agentFill(run: CaseRun, field: TargetCandidate, target: FillTarget): Promise<void> {
+  const { handoffId, value } = await run.env.fillValue(run, { target, field });
+  await assertUnchanged(field, handoffId);
+  await field.element.fill(value, { timeout: 5_000 });
+  run.progress.selections.push({
+    source: "agent_fill",
+    handoffId,
+    candidateId: field.id,
+    fingerprintDigest: descriptionDigest(field.description),
+    target,
+    value,
+  });
 }
 
 function record(progress: CaseProgress, checkId: string, outcome: BrowserOutcome): void {
@@ -620,17 +732,25 @@ async function observeChecks(run: CaseRun): Promise<void> {
   }
 }
 
-function outcomes(checks: readonly PlanCheck[], progress: CaseProgress): Map<string, Observation> {
-  const selections = [...progress.selections];
+function browserDetails(progress: CaseProgress, screenshot?: Screenshot): BrowserDetails {
+  return {
+    selections: [...progress.selections],
+    ...(progress.skipped.length ? { skippedActions: [...progress.skipped] } : {}),
+    ...(screenshot ? { screenshot } : {}),
+  };
+}
 
+function outcomes(checks: readonly PlanCheck[], progress: CaseProgress): Map<string, Observation> {
   return new Map(
     checks.map((check): [string, Observation] => {
       const recorded = progress.records.get(check.id)!;
-      const screenshot = progress.screenshots.get(recorded.segment);
 
       return [
         check.id,
-        { ...recorded.outcome, browser: { selections, ...(screenshot ? { screenshot } : {}) } },
+        {
+          ...recorded.outcome,
+          browser: browserDetails(progress, progress.screenshots.get(recorded.segment)),
+        },
       ];
     }),
   );
@@ -715,6 +835,7 @@ async function executeCase(env: CaseEnv): Promise<Map<string, Observation>> {
     segment: 0,
     navigationDenied: false,
     selections: [],
+    skipped: [],
     records: new Map(),
     screenshots: new Map(),
   };
@@ -772,7 +893,7 @@ async function executeCase(env: CaseEnv): Promise<Map<string, Observation>> {
       progress.navigationDenied ? new BrowserBlocked("navigation_denied") : error,
       env.signal,
     );
-    const browser = { selections: [...progress.selections] };
+    const browser = browserDetails(progress);
 
     return new Map(
       env.checks.map((check): [string, Observation] => [
@@ -821,13 +942,21 @@ async function claimMarker(path: string): Promise<boolean> {
   }
 }
 
-type Pending = Readonly<{
-  snapshot: HandoffSnapshot;
-  candidates: ReadonlyMap<string, TargetCandidate>;
-  links: ReadonlyMap<string, LinkCandidate>;
-  deadline: number;
-  settle: (outcome: Chosen | Followed | Error) => void;
-}>;
+type Pending =
+  | Readonly<{
+      kind: "selection";
+      snapshot: SelectionSnapshot;
+      candidates: ReadonlyMap<string, TargetCandidate>;
+      links: ReadonlyMap<string, LinkCandidate>;
+      deadline: number;
+      settle: (outcome: Chosen | Followed | Error) => void;
+    }>
+  | Readonly<{
+      kind: "fill_value";
+      snapshot: FillValueSnapshot;
+      deadline: number;
+      settle: (outcome: Filled | Error) => void;
+    }>;
 
 type SessionState =
   | Readonly<{ kind: "running"; settled: Promise<void> }>
@@ -835,19 +964,32 @@ type SessionState =
   | Readonly<{ kind: "terminal"; results: ReadonlyMap<string, Observation> }>
   | Readonly<{ kind: "forbidden" }>;
 
-type SessionInput = Omit<CaseEnv, "signal" | "handoff"> &
+type SessionInput = Omit<CaseEnv, "signal" | "select" | "fillValue"> &
   Readonly<{ marker: string; parent?: AbortSignal; handoffId: () => string }>;
 
 function expired(pending: Pending): CaseEnded {
   return new CaseEnded("handoff_expired", { handoffId: pending.snapshot.id });
 }
 
-function decided(
-  pending: Pending,
-  { handoffId, decision }: HandoffResolution,
-): Chosen | Followed | CaseEnded {
+function settleDecision(pending: Pending, { handoffId, decision }: HandoffResolution): void {
   if (decision.kind === "abandon") {
-    return new CaseEnded("handoff_abandoned", { handoffId, reason: decision.reason });
+    pending.settle(new CaseEnded("handoff_abandoned", { handoffId, reason: decision.reason }));
+
+    return;
+  }
+
+  if (pending.kind === "fill_value") {
+    if (decision.kind !== "fill_value") {
+      throw new Error(`Handoff ${handoffId} accepts only fill_value or abandon`);
+    }
+
+    pending.settle({ kind: "fill_value", handoffId, value: decision.value });
+
+    return;
+  }
+
+  if (decision.kind === "fill_value") {
+    throw new Error(`Handoff ${handoffId} accepts only navigate, choose or abandon`);
   }
 
   if (decision.kind === "choose") {
@@ -857,7 +999,9 @@ function decided(
       throw new Error(`Handoff ${handoffId} has no candidate ${decision.candidateId}`);
     }
 
-    return { kind: "choose", handoffId, candidateId: decision.candidateId, candidate };
+    pending.settle({ kind: "choose", handoffId, candidateId: decision.candidateId, candidate });
+
+    return;
   }
 
   const link = pending.links.get(decision.linkId);
@@ -866,7 +1010,7 @@ function decided(
     throw new Error(`Handoff ${handoffId} has no link ${decision.linkId}`);
   }
 
-  return { kind: "navigate", handoffId, linkId: decision.linkId, link };
+  pending.settle({ kind: "navigate", handoffId, linkId: decision.linkId, link });
 }
 
 function projection(
@@ -874,7 +1018,9 @@ function projection(
   checkId: string,
 ): BrowserRunOutcome {
   if (state.kind === "paused") {
-    return { state: "selection_required", handoff: state.pending.snapshot };
+    return state.pending.kind === "selection"
+      ? { state: "selection_required", handoff: state.pending.snapshot }
+      : { state: "fill_value_required", handoff: state.pending.snapshot };
   }
 
   if (state.kind === "forbidden") {
@@ -952,64 +1098,99 @@ class CaseSession {
     const results = await executeCase({
       ...this.input,
       signal: this.signal,
-      handoff: (run, target, candidates, error) => this.handoff(run, target, candidates, error),
+      select: (run, request) => this.select(run, request),
+      fillValue: (run, request) => this.fillValue(run, request),
     });
     this.budget.stop();
     this.settleTo({ kind: "terminal", results });
   }
 
-  private async handoff(
-    run: CaseRun,
-    target: HandoffTarget,
-    candidates: readonly TargetCandidate[],
-    error: JevError,
-  ): Promise<Chosen | Followed> {
+  private async select(run: CaseRun, request: SelectionRequest): Promise<Chosen | Followed> {
     if (this.issued === MAX_CASE_HANDOFFS) {
-      throw new CaseEnded("handoff_limit", { diagnostics: error.diagnostics });
+      throw new CaseEnded("handoff_limit", { diagnostics: request.diagnostics });
     }
 
-    const { links, truncated } = await linkCandidates(run.page, run.target);
-    this.signal.throwIfAborted();
+    const staged = await this.stage(run, request.candidates);
     this.issued += 1;
-    const deadline = Date.now() + PAUSED_CASE_MS;
 
-    return this.pause({
+    return this.pause<Chosen | Followed>((settle) => ({
+      kind: "selection",
       snapshot: {
-        id: this.input.handoffId(),
-        caseId: this.input.planCase.id,
+        kind: "selection",
+        ...staged.shared,
         ordinal: this.issued,
         laterHandoffsAllowed: MAX_CASE_HANDOFFS - this.issued,
-        expiresAt: new Date(deadline).toISOString(),
-        url: observedUrl(run.page),
-        target,
-        candidates: candidates.map(({ id, description }) => ({ id, description })),
-        links: links.map(({ id, description, url }) => ({ id, description, url })),
-        linksTruncated: truncated,
-        diagnostics: { code: "uncertain_or_invalid_selection", ...error.diagnostics! },
+        target: request.target,
+        candidates: request.candidates.map(staged.entry),
+        diagnostics: request.diagnostics,
       },
-      candidates: new Map(candidates.map((item) => [item.id, item])),
-      links: new Map(links.map((item) => [item.id, item])),
-      deadline,
-    });
+      candidates: new Map(request.candidates.map((item) => [item.id, item])),
+      links: new Map(staged.links.map((item) => [item.id, item])),
+      deadline: staged.deadline,
+      settle,
+    }));
   }
 
-  private pause(paused: Omit<Pending, "settle">): Promise<Chosen | Followed> {
-    return new Promise((resolve, reject) => {
-      const pending: Pending = {
-        ...paused,
-        settle: (outcome) => {
-          clearTimeout(timer);
-          this.signal.removeEventListener("abort", abort);
-          this.budget.resume();
-          this.state = this.running();
+  private async fillValue(run: CaseRun, request: FillRequest): Promise<Filled> {
+    const staged = await this.stage(run, [request.field]);
 
-          if (outcome instanceof Error) {
-            reject(outcome);
-          } else {
-            resolve(outcome);
-          }
-        },
-      };
+    return this.pause<Filled>((settle) => ({
+      kind: "fill_value",
+      snapshot: {
+        kind: "fill_value",
+        ...staged.shared,
+        laterSelectionHandoffs: MAX_CASE_HANDOFFS - this.issued,
+        target: request.target,
+        field: staged.entry(request.field),
+      },
+      deadline: staged.deadline,
+      settle,
+    }));
+  }
+
+  private async stage(run: CaseRun, candidates: readonly TargetCandidate[]) {
+    const links = await linkCandidates(run.page, run.target);
+    const { image, unmarked } = await captureHandoffImage(run.page, { candidates, links }).catch(
+      () => {
+        throw new BrowserBlocked("handoff_image_failed");
+      },
+    );
+    this.signal.throwIfAborted();
+    const deadline = Date.now() + PAUSED_CASE_MS;
+    const entry = ({ id, description }: Readonly<{ id: string; description: string }>) => ({
+      id,
+      description: unmarked.has(id) ? `${description} (no visible mark)` : description,
+    });
+
+    return {
+      links,
+      deadline,
+      entry,
+      shared: {
+        id: this.input.handoffId(),
+        caseId: this.input.planCase.id,
+        expiresAt: new Date(deadline).toISOString(),
+        url: observedUrl(run.page),
+        links: links.map((link) => ({ ...entry(link), url: link.url })),
+        image,
+      },
+    };
+  }
+
+  private pause<T>(park: (settle: (outcome: T | Error) => void) => Pending): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const pending = park((outcome) => {
+        clearTimeout(timer);
+        this.signal.removeEventListener("abort", abort);
+        this.budget.resume();
+        this.state = this.running();
+
+        if (outcome instanceof Error) {
+          reject(outcome);
+        } else {
+          resolve(outcome);
+        }
+      });
       const abort = () => pending.settle(new BrowserBlocked("cancelled"));
       const timer = setTimeout(() => pending.settle(expired(pending)), PAUSED_CASE_MS);
       this.signal.addEventListener("abort", abort, { once: true });
@@ -1043,10 +1224,8 @@ class CaseSession {
       );
     }
 
-    const pending = this.state.pending;
-    const outcome = decided(pending, resolution);
+    settleDecision(this.state.pending, resolution);
     this.consumed.set(resolution.handoffId, resolution.decision);
-    pending.settle(outcome);
   }
 
   private async settled(): Promise<Exclude<SessionState, { kind: "running" }>> {

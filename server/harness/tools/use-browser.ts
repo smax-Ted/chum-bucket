@@ -2,15 +2,16 @@ import { toolDefinition } from "@tanstack/ai";
 import {
   designCaptureSchema,
   useBrowserInputSchema,
+  type BrowserHandoff,
   type BrowserOutput,
   type DesignCapture,
+  type FillValueSnapshot,
   type FixtureIdentity,
   type HandoffResolution,
-  type HandoffSnapshot,
   type PlanCase,
   type PlanCheck,
   type PublicEvidence,
-  type SelectionRequired,
+  type SelectionSnapshot,
 } from "../../../shared/testing";
 import { digestOf, withinTolerance } from "../testing-domain";
 
@@ -22,7 +23,8 @@ export type BrowserOutcome = (
 
 export type BrowserRunOutcome =
   | BrowserOutcome
-  | Readonly<{ state: "selection_required"; handoff: HandoffSnapshot }>;
+  | Readonly<{ state: "selection_required"; handoff: SelectionSnapshot }>
+  | Readonly<{ state: "fill_value_required"; handoff: FillValueSnapshot }>;
 
 export type BrowserAdapter = Readonly<{
   identity: FixtureIdentity;
@@ -260,7 +262,7 @@ async function browserOutput(
   casesByCheck: ReadonlyMap<string, PlanCase>,
   design: TrustedDesign,
   raw: unknown,
-): Promise<BrowserOutput | SelectionRequired> {
+): Promise<BrowserOutput | BrowserHandoff> {
   const input = useBrowserInputSchema.parse(raw);
   const check = scope.checks.find((item) => item.id === input.checkId);
 
@@ -280,8 +282,8 @@ async function browserOutput(
     throw new Error(`Browser adapter returned no outcome for ${input.checkId}`);
   }
 
-  if (outcome.state === "selection_required") {
-    return { state: "selection_required", checkId: input.checkId, handoff: outcome.handoff };
+  if (outcome.state === "selection_required" || outcome.state === "fill_value_required") {
+    return { checkId: input.checkId, ...outcome };
   }
 
   return {
@@ -291,7 +293,7 @@ async function browserOutput(
 }
 
 const browserToolDescription =
-  "Verify one assigned canonical check. The host owns actions, targets, observations and expectations. Supply checkId, and resolution only to answer the pending handoff of a selection_required result; never supply selectors, URLs or expected values.";
+  "Verify one assigned canonical check. The host owns actions, targets, observations and expectations. Supply checkId, and resolution only to answer the pending handoff of a selection_required or fill_value_required result; never supply selectors, URLs or expected values.";
 
 export const verifyAcTool = toolDefinition({
   name: "verify_ac",
@@ -321,7 +323,7 @@ export function createUseBrowserTool(
   assertScopedChecks(scope, casesByCheck);
   const design = trustedDesign(scope);
 
-  return definition.server(async (raw): Promise<BrowserOutput | SelectionRequired> =>
+  return definition.server(async (raw): Promise<BrowserOutput | BrowserHandoff> =>
     browserOutput(scope, casesByCheck, design, raw),
   );
 }

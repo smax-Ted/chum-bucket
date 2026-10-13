@@ -3,10 +3,11 @@ import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ToolExecutionContext, UIMessage } from "@tanstack/ai";
 import {
-  selectionRequiredSchema,
+  browserHandoffSchema,
   type DesignReference,
-  type HandoffSnapshot,
+  type FillValueSnapshot,
   type PlanCase,
+  type SelectionSnapshot,
   type TestingRequestInput,
 } from "../../../shared/testing";
 import type { ModelCall } from "../../../server/harness/model-turn";
@@ -153,7 +154,7 @@ function fixtureHost(options: {
       }
 
       const output = await work();
-      const handoff = selectionRequiredSchema.safeParse(output);
+      const handoff = browserHandoffSchema.safeParse(output);
 
       if (handoff.success) {
         return { kind: "ephemeral", output: handoff.data };
@@ -657,8 +658,13 @@ test("AC role returns Host receipt envelopes and rejects foreign tools", async (
   );
 });
 
-test("a selection_required handoff reaches the model without receipt fields while the resolved result keeps the terminal envelope", async () => {
-  const handoff: HandoffSnapshot = {
+test("selection and fill value handoffs reach the model without receipt fields while the resolved result keeps the terminal envelope", async () => {
+  const image = {
+    path: `${"0".repeat(8)}-0000-4000-8000-${"0".repeat(12)}.png`,
+    digest: "d".repeat(64),
+  };
+  const handoff: SelectionSnapshot = {
+    kind: "selection",
     id: "h1",
     caseId: "case-1",
     ordinal: 1,
@@ -668,7 +674,6 @@ test("a selection_required handoff reaches the model without receipt fields whil
     target: { intent: "submit", operation: "click", at: { kind: "action", index: 1 } },
     candidates: [{ id: "c0", description: "untrusted page text" }],
     links: [],
-    linksTruncated: false,
     diagnostics: {
       code: "uncertain_or_invalid_selection",
       choice: "none",
@@ -679,10 +684,24 @@ test("a selection_required handoff reaches the model without receipt fields whil
       candidateCount: 2,
       probabilityCount: 2,
     },
+    image,
   };
+  const fill: FillValueSnapshot = {
+    kind: "fill_value",
+    id: "h2",
+    caseId: "case-1",
+    laterSelectionHandoffs: 2,
+    expiresAt: "2026-10-13T00:06:00.000Z",
+    url: "http://127.0.0.1:4173/app",
+    target: { intent: "note", operation: "fill", at: { kind: "action", index: 2 } },
+    field: { id: "c1", description: "untrusted note field" },
+    links: [],
+    image,
+  };
+  const choice = { handoffId: "h1", decision: { kind: "choose", candidateId: "c0" } };
   const resolution = {
-    handoffId: "h1",
-    decision: { kind: "abandon", reason: "No submit control" },
+    handoffId: "h2",
+    decision: { kind: "abandon", reason: "No note field" },
   };
   const received: unknown[] = [];
   const harness = fixtureHost({
@@ -691,9 +710,13 @@ test("a selection_required handoff reaches the model without receipt fields whil
       run: async (_planCase, _check, decided) => {
         received.push(decided ?? null);
 
-        return decided
-          ? { state: "blocked", reason: "handoff_abandoned", browser: { selections: [] } }
-          : { state: "selection_required", handoff };
+        if (!decided) {
+          return { state: "selection_required", handoff };
+        }
+
+        return decided.handoffId === "h1"
+          ? { state: "fill_value_required", handoff: fill }
+          : { state: "blocked", reason: "handoff_abandoned", browser: { selections: [] } };
       },
     },
   });
@@ -703,6 +726,14 @@ test("a selection_required handoff reaches the model without receipt fields whil
       assert.deepEqual(
         await tools.executeTool([], modelCall("verify_ac", { checkId: "check-f" }), context),
         { state: "selection_required", checkId: "check-f", handoff },
+      );
+      assert.deepEqual(
+        await tools.executeTool(
+          [],
+          modelCall("verify_ac", { checkId: "check-f", resolution: choice }),
+          context,
+        ),
+        { state: "fill_value_required", checkId: "check-f", handoff: fill },
       );
       const resolved = (await tools.executeTool(
         [],
@@ -723,10 +754,14 @@ test("a selection_required handoff reaches the model without receipt fields whil
       );
     },
   );
-  assert.deepEqual(received, [null, resolution]);
+  assert.deepEqual(received, [null, choice, resolution]);
   assert.deepEqual(
     harness.invocations.map((invocation) => invocation.input),
-    [{ checkId: "check-f" }, { checkId: "check-f", resolution }],
+    [
+      { checkId: "check-f" },
+      { checkId: "check-f", resolution: choice },
+      { checkId: "check-f", resolution },
+    ],
   );
 });
 
