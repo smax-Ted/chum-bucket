@@ -1584,3 +1584,37 @@ test("undiscovered native calls are rejected before any MCP dispatch and succeed
     fixture,
   );
 });
+
+test("FastMCP-wrapped results are unwrapped into their JSON value", async () => {
+  const wrappedOutput = {
+    type: "object",
+    properties: { result: { type: "string" } },
+    required: ["result"],
+    "x-fastmcp-wrap-result": true,
+  };
+  const wrapped = (result: string) => ({
+    content: [{ type: "text", text: result }],
+    structuredContent: { result },
+  });
+  const issue = { id: "1", key: "TEST-1", summary: "Wrapped issue" };
+  const fixture = mcpFixture({
+    pages: [coreTools.map((tool) => ({ ...tool, outputSchema: wrappedOutput }))],
+    rules: [
+      { method: "tools/call", name: "jira_get_issue", result: wrapped(JSON.stringify(issue)) },
+      { method: "tools/call", name: "confluence_get_page", result: wrapped("plain page text") },
+    ],
+  });
+  await withMcpEnvironment(
+    () =>
+      withRunTools(async (tools) => {
+        const history = await discover(tools, ["jira_get_issue", "confluence_get_page"]);
+        assert.deepEqual(await tools.executeTool(history, jiraCall, context), issue);
+        assert.equal(
+          await tools.executeTool(history, call("confluence_get_page", { page_id: "1" }), context),
+          "plain page text",
+        );
+      }),
+    true,
+    fixture,
+  );
+});

@@ -10,6 +10,7 @@ import {
 import { composeCodeModeTurn } from "../../server/harness/tools/code-mode";
 import { read, write, edit } from "../../server/harness/tools/fs";
 import { getFigma } from "../../server/harness/tools/get-figma";
+import { toolOutputSchemas } from "../../server/harness/tools/output-schemas";
 
 const locals = [getFigma, read, write, edit];
 const handlers: ReadonlyMap<string, LocalToolHandler> = new Map([
@@ -56,6 +57,7 @@ export async function withCatalogTools<T>(
         definitions: native,
         dispatch: dispatch(messages),
         guard: await scope.guard(),
+        outputSchemas: toolOutputSchemas,
       });
       return { native, turn };
     };

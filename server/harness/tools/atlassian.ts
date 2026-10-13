@@ -447,6 +447,23 @@ function assertCatalogEntry(
   }
 }
 
+function unwrapResult(tool: McpToolList[number], output: unknown): unknown {
+  const wrapped = (tool.outputSchema as Record<string, unknown> | undefined)?.[
+    "x-fastmcp-wrap-result"
+  ];
+  const result = (output as { result?: unknown } | undefined)?.result;
+
+  if (wrapped !== true || typeof result !== "string") {
+    return output;
+  }
+
+  try {
+    return JSON.parse(result);
+  } catch {
+    return result;
+  }
+}
+
 function remoteRegistration(tool: McpToolList[number]): RemoteRegistration {
   const inputSchema = convertSchemaToJsonSchema(tool.inputSchema);
 
@@ -456,7 +473,7 @@ function remoteRegistration(tool: McpToolList[number]): RemoteRegistration {
 
   return {
     definition: { name: tool.name, description: tool.description, inputSchema },
-    handler: async (input, context) => tool.execute!(input, context),
+    handler: async (input, context) => unwrapResult(tool, await tool.execute!(input, context)),
   };
 }
 

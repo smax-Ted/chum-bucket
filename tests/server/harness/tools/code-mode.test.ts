@@ -167,7 +167,35 @@ test("the model turn documents exactly the bindings the sandbox exposes", async 
     assert.match(turn.systemPrompt, /path: string;/);
     assert.doesNotMatch(turn.systemPrompt, /external_codemode/);
     assert.doesNotMatch(turn.systemPrompt, /external_discover_atlassian_tools/);
+    assert.match(
+      turn.systemPrompt,
+      /declare function external_read\(input: External_readInput\): Promise<External_readOutput>;/,
+    );
+    assert.match(turn.systemPrompt, /interface External_readOutput \{\n {2}content: Array</);
+    assert.match(turn.systemPrompt, /Promise<unknown>;/);
   });
+});
+
+test("discovered Atlassian bindings declare the unwrapped output fields", async () => {
+  const fixture = mcpFixture({ pages: [coreTools] });
+  await withMcpEnvironment(
+    async () => {
+      await withRunTools(async (tools) => {
+        const history = await discoveryHistory(tools, ["jira_get_issue"]);
+        const { systemPrompt } = await tools.getModelTools(history);
+        assert.match(
+          systemPrompt,
+          /declare function external_jira_get_issue\(input: External_jira_get_issueInput\): Promise<External_jira_get_issueOutput>;/,
+        );
+        assert.match(
+          systemPrompt,
+          /interface External_jira_get_issueOutput \{\n {2}id: string;\n {2}key: string;\n {2}summary\?: string;/,
+        );
+      });
+    },
+    true,
+    fixture,
+  );
 });
 
 test("codemode executes TypeScript with genuinely empty bindings and projects its events", async () => {

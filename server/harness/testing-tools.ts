@@ -43,6 +43,7 @@ import {
   withRemoteLinks,
 } from "./source-links";
 import { codeModeToolName, composeCodeModeTurn, type CodeModeTurn } from "./tools/code-mode";
+import { toolOutputSchemas } from "./tools/output-schemas";
 import { createUseBrowserTool, type BrowserAdapter } from "./tools/use-browser";
 import type { RunTools } from "./tools";
 
@@ -207,6 +208,7 @@ function roleRunTools(options: {
       ),
       dispatch: (call, context) => dispatchFor(messages)(call, context, "codemode"),
       guard: options.guard,
+      outputSchemas: toolOutputSchemas,
     });
 
   return {

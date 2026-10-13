@@ -14,6 +14,7 @@ import {
   type ModelTool,
 } from "./atlassian";
 import { codeModeToolName, composeCodeModeTurn } from "./code-mode";
+import { toolOutputSchemas } from "./output-schemas";
 import { DELEGATE_TASK_TOOL } from "./delegate-task";
 
 export { DELEGATE_TASK_TOOL };
@@ -103,6 +104,7 @@ export async function withRunTools<T>(
         definitions: bindable,
         dispatch: dispatchFor(messages),
         guard,
+        outputSchemas: toolOutputSchemas,
       });
 
       return { definitions: advertised, turn };

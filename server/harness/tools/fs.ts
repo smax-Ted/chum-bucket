@@ -18,6 +18,15 @@ const editInput = z.object({
   edits: z.array(z.object({ oldText: z.string(), newText: z.string() })),
 });
 
+export const fileToolOutput = z.object({
+  content: z.array(
+    z.union([
+      z.object({ type: z.literal("text"), text: z.string() }),
+      z.object({ type: z.literal("image"), data: z.string(), mimeType: z.string() }),
+    ]),
+  ),
+});
+
 function requireToolCallId(context?: ToolExecutionContext) {
   if (!context?.toolCallId) {
     throw new Error("Missing tool call ID");

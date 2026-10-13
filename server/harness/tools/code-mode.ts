@@ -1,6 +1,7 @@
 import {
   convertSchemaToJsonSchema,
   parseWithStandardSchema,
+  type JSONSchema,
   type ToolExecutionContext,
 } from "@tanstack/ai";
 import {
@@ -546,12 +547,14 @@ function sandboxTool(
   boundary: CodeModeBoundary,
   dispatch: Dispatch,
   definition: ModelTool,
+  outputSchema: JSONSchema | undefined,
 ): CodeModeTool {
   return {
     __toolSide: "server",
     name: definition.name,
     description: definition.description,
     inputSchema: definition.inputSchema,
+    ...(outputSchema ? { outputSchema } : {}),
     execute: async (value: unknown) => {
       const argumentsText = admitHostCall(boundary, value);
       const { state } = boundary;
@@ -700,6 +703,7 @@ export function composeCodeModeTurn(input: {
   definitions: readonly ModelTool[];
   dispatch: Dispatch;
   guard: Guard;
+  outputSchemas?: ReadonlyMap<string, JSONSchema>;
   policy?: Partial<CodeModePolicy>;
 }): CodeModeTurn {
   const policy: CodeModePolicy = { ...defaultPolicy, ...input.policy };
@@ -720,7 +724,9 @@ export function composeCodeModeTurn(input: {
     .filter(
       (definition) => definition.name !== codeModeToolName && definition.name !== discoveryToolName,
     )
-    .map((definition) => sandboxTool(boundary, input.dispatch, definition));
+    .map((definition) =>
+      sandboxTool(boundary, input.dispatch, definition, input.outputSchemas?.get(definition.name)),
+    );
   const composed =
     sandboxTools.length > 0
       ? createCodeMode({
