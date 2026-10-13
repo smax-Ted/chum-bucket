@@ -3,7 +3,7 @@ import { DBOS, DBOSClient, type WorkflowHandle } from "@dbos-inc/dbos-sdk";
 import type { ModelCall } from "./model-turn";
 import type { AcceptedRun } from "./run-store";
 import {
-  acceptRoleCandidate,
+  acceptRoleCompletion,
   admitAttachedTesting,
   database,
   closeTesting,
@@ -49,7 +49,7 @@ const FAILURE_CODES = new Map<string, RoleFailureCode>([
   ["budget", "budget"],
   ["missing", "missing"],
   ["proposal_rejected", "proposal_rejected"],
-  ["requirements_not_extractable", "requirements_not_extractable"],
+  ["source_reads_incomplete", "source_reads_incomplete"],
   ["nonce", "denied"],
   ["scope", "denied"],
   ["terminal", "denied"],
@@ -73,7 +73,7 @@ async function settleChild(
     return;
   }
 
-  if (!result || result.state !== "proposed") {
+  if (!result || result.state !== "ready") {
     await recordRoleFailure(
       ownerRunId,
       child.taskId,
@@ -85,7 +85,7 @@ async function settleChild(
   }
 
   try {
-    await acceptRoleCandidate(ownerRunId, child.taskId, result.proposal);
+    await acceptRoleCompletion(ownerRunId, child.taskId, result.completion);
   } catch {
     await recordRoleFailure(ownerRunId, child.taskId, "proposal_rejected");
   }

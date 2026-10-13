@@ -2,18 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ToolExecutionContext, UIMessage } from "@tanstack/ai";
-import type {
-  DesignReference,
-  PlanCase,
-  Source,
-  TestingRequestInput,
-} from "../../../shared/testing";
+import type { DesignReference, PlanCase, TestingRequestInput } from "../../../shared/testing";
 import type { ModelCall } from "../../../server/harness/model-turn";
-import {
-  digestOf,
-  type CanonicalPlan,
-  type SourceCapture,
-} from "../../../server/harness/testing-domain";
+import { digestOf, type CanonicalPlan } from "../../../server/harness/testing-domain";
 import {
   testingRoleToolNames,
   withTestingRoleTools,
@@ -59,13 +50,13 @@ function testPlan(): CanonicalPlan {
     checks: [
       {
         id: "check-f",
-        criterionId: "crit:1",
+        criterionId: "AC-1",
         kind: "functional",
         expectedObservation: "Submitted",
       },
       {
         id: "check-s",
-        criterionId: "crit:1",
+        criterionId: "AC-1",
         kind: "style",
         design,
         property: "padding-left",
@@ -79,6 +70,8 @@ function testPlan(): CanonicalPlan {
     goal: intent.goal,
     targetUrl: intent.targetUrl,
     design,
+    criteria: [{ id: "AC-1", statement: "Submitting the form shows Submitted" }],
+    unresolved: [],
     cases: [planCase],
     assignments: { ac: ["check-f"], ui: ["check-s"] },
     bounds: { maxCases: 4, maxChecks: 8, maxChecksPerCase: 4 },
@@ -92,36 +85,6 @@ const context: ToolExecutionContext = {
 
 function modelCall(name: string, input: unknown = {}): ModelCall {
   return { id: `call-${name}`, name, arguments: JSON.stringify(input), input };
-}
-
-function leafAnchors(value: unknown, limit = 32): string[] {
-  const anchors: string[] = [];
-
-  const walk = (node: unknown, path: string) => {
-    if (anchors.length >= limit) {
-      return;
-    }
-
-    if (node === null || typeof node !== "object") {
-      anchors.push(path || "$");
-
-      return;
-    }
-
-    if (Array.isArray(node)) {
-      node.forEach((item, index) => walk(item, `${path}[${index}]`));
-
-      return;
-    }
-
-    for (const key of Object.keys(node).sort()) {
-      walk((node as Record<string, unknown>)[key], path ? `${path}.${key}` : key);
-    }
-  };
-
-  walk(value, "");
-
-  return anchors.length > 0 ? anchors : ["$"];
 }
 
 function designCapture(raw: unknown): DesignCaptureResult {
@@ -156,14 +119,8 @@ function fixtureHost(options: {
   invokeDelayMs?: number;
   design?: (raw: unknown) => DesignCaptureResult;
   restoredDesign?: DesignCaptureResult;
-  source?: (raw: unknown, reference: Source) => SourceCapture;
 }) {
   const invocations: TestingNativeInvocation[] = [];
-  const sourceInputs: Readonly<{
-    reference: Source;
-    raw: unknown;
-    nativeReceipt: { receiptId: string; outputDigest: string };
-  }>[] = [];
   const designInputs: Readonly<{
     reference: DesignReference;
     raw: unknown;
@@ -185,18 +142,6 @@ function fixtureHost(options: {
 
       return { output, receiptId: `receipt-${receipts}`, outputDigest: digestOf(output) };
     },
-    async captureSource(input) {
-      sourceInputs.push(input);
-
-      return (
-        options.source?.(input.raw, input.reference) ?? {
-          reference: input.reference,
-          digest: digestOf(input.raw),
-          anchors: leafAnchors(input.raw),
-          capturedAt: "2026-01-01T00:00:00.000Z",
-        }
-      );
-    },
     async captureDesign(input) {
       designInputs.push(input);
 
@@ -204,7 +149,7 @@ function fixtureHost(options: {
     },
   };
 
-  return { host, invocations, sourceInputs, designInputs };
+  return { host, invocations, designInputs };
 }
 
 async function discoveryHistory(
@@ -380,7 +325,7 @@ test("discovered comments have no actual Code Mode callable or stub", async () =
   );
 });
 
-test("atlassian role restricts discovery and reads, then captures the raw read output", async () => {
+test("atlassian role restricts discovery and reads and returns the raw read output", async () => {
   const fixture = mcpFixture();
   await withMcpEnvironment(
     async () => {
@@ -478,29 +423,17 @@ test("atlassian role restricts discovery and reads, then captures the raw read o
           );
           assert.equal(harness.invocations.length, 1);
 
-          const read = (await tools.executeTool(
+          const read = await tools.executeTool(
             history,
             modelCall("jira_get_issue", { issue_key: "PROJ-1" }),
             context,
-          )) as { output: unknown; sourceCapture: SourceCapture };
+          );
           assert.equal(harness.invocations.length, 2);
           assert.deepEqual(harness.invocations[1]!.input, {
             issue_key: "PROJ-1",
             include: "remote_links",
           });
-          assert.equal(harness.sourceInputs.length, 1);
-          assert.deepEqual(harness.sourceInputs[0]!.reference, {
-            kind: "jira",
-            issueKey: "PROJ-1",
-          });
-          assert.equal(harness.sourceInputs[0]!.nativeReceipt.receiptId, "receipt-2");
-          assert.equal(
-            harness.sourceInputs[0]!.nativeReceipt.outputDigest,
-            digestOf(harness.sourceInputs[0]!.raw),
-          );
-          assert.equal(read.sourceCapture.digest, digestOf(read.output));
-          assert.deepEqual(read.sourceCapture.anchors, leafAnchors(read.output));
-          assert.equal(read.sourceCapture.capturedAt, "2026-01-01T00:00:00.000Z");
+          assert.deepEqual(read, { issue: "PROJ-1" });
 
           await assert.rejects(
             () =>
@@ -511,35 +444,29 @@ test("atlassian role restricts discovery and reads, then captures the raw read o
               ),
             /not authorized for the requested sources/,
           );
-          const page = (await tools.executeTool(
+          const page = await tools.executeTool(
             history,
             modelCall("confluence_get_page", { page_id: "123", include_metadata: false }),
             context,
-          )) as { output: unknown; sourceCapture: SourceCapture };
+          );
           assert.equal(harness.invocations.length, 3);
           assert.deepEqual(harness.invocations[2]!.input, {
             page_id: "123",
             include_metadata: true,
           });
-          assert.equal(harness.sourceInputs.length, 2);
-          assert.deepEqual(harness.sourceInputs[1]!.reference, {
-            kind: "confluence",
-            pageId: "123",
-          });
-          assert.equal(page.sourceCapture.digest, digestOf(page.output));
+          assert.equal(page, "Native tool result");
 
           const sandbox = (await tools.executeTool(
             history,
             modelCall("codemode", {
-              code: "const r = await external_jira_get_issue({ issue_key: 'PROJ-1' }); return r.sourceCapture.digest;",
+              code: "const r = await external_jira_get_issue({ issue_key: 'PROJ-1' }); return r.issue;",
             }),
             context,
           )) as { success: boolean; result: unknown };
           assert.equal(sandbox.success, true);
-          assert.equal(sandbox.result, read.sourceCapture.digest);
+          assert.equal(sandbox.result, "PROJ-1");
           assert.equal(harness.invocations.length, 4);
           assert.equal(harness.invocations[3]!.route, "codemode");
-          assert.equal(harness.sourceInputs.length, 3);
 
           for (const name of [
             "external_jira_add_comment",
@@ -676,20 +603,20 @@ test("browser roles scope verify_ac to their own kind across cases in plan order
         checks: [
           {
             id: "s-1",
-            criterionId: "crit:1",
+            criterionId: "AC-1",
             kind: "style",
             design,
             property: "gap",
             tolerance: { kind: "numeric", unit: "px", maxDelta: 1 },
           },
-          { id: "f-1", criterionId: "crit:1", kind: "functional", expectedObservation: "one" },
+          { id: "f-1", criterionId: "AC-1", kind: "functional", expectedObservation: "one" },
         ],
       },
       {
         ...first!,
         id: "case-2",
         checks: [
-          { id: "f-2", criterionId: "crit:1", kind: "functional", expectedObservation: "two" },
+          { id: "f-2", criterionId: "AC-1", kind: "functional", expectedObservation: "two" },
         ],
       },
     ],

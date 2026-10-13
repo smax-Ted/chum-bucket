@@ -30,26 +30,23 @@ const completedRows: Record<RoleId, ProgressRow> = {
 
 const requirements: PublicRequirements = {
   goal: "驗證結帳流程與樣式",
-  criteria: [
+  sources: [
     {
-      id: "crit:AC-1",
-      key: "AC-1",
-      statement: "送出後顯示訂單成立",
-      sourceDigest: "digest-1",
-      anchor: "anchor-1",
-    },
-    {
-      id: "crit:AC-2",
-      key: "AC-2",
-      statement: "按鈕使用品牌色",
-      sourceDigest: "digest-2",
-      anchor: "anchor-2",
+      reference: { kind: "jira", issueKey: "CHUM-42" },
+      text: "CHUM-42 結帳\n\n## 驗收條件\n1. AC-1 送出後顯示訂單成立\n2. AC-2 按鈕使用品牌色",
+      links: [],
+      digest: "digest-1",
+      capturedAt: "2026-10-09T00:00:00.000Z",
     },
   ],
-  unresolved: ["來源中有 1 條敘述無法解析"],
 };
 
 const plan: PublicPlan = {
+  criteria: [
+    { id: "AC-1", statement: "送出後顯示訂單成立" },
+    { id: "AC-2", statement: "按鈕使用品牌色" },
+  ],
+  unresolved: ["來源中有 1 條敘述無法解析"],
   cases: [
     {
       id: "case-1",
@@ -62,13 +59,13 @@ const plan: PublicPlan = {
       checks: [
         {
           id: "check-1",
-          criterionId: "crit:AC-1",
+          criterionId: "AC-1",
           kind: "functional",
           expectedObservation: "顯示訂單編號",
         },
         {
           id: "check-2",
-          criterionId: "crit:AC-2",
+          criterionId: "AC-2",
           kind: "style",
           design: { fileKey: "CheckoutDemo", nodeId: "12:34" },
           property: "background-color",
@@ -156,13 +153,13 @@ function report(overrides: Partial<PublicTestReport> = {}): PublicTestReport {
     },
     coverage: [
       {
-        criterionId: "crit:AC-1",
+        criterionId: "AC-1",
         caseId: "case-1",
         checkId: "check-1",
         state: "simulated_pass",
       },
       {
-        criterionId: "crit:AC-2",
+        criterionId: "AC-2",
         caseId: null,
         checkId: null,
         state: "uncovered",
@@ -462,7 +459,15 @@ test("a finished view renders the public report with mock-only acceptance", () =
   assert.match(text, /檢查結果只描述已驗證範圍，不構成整體網站或發布驗收。/);
 
   assert.match(text, /目標：驗證結帳流程與樣式/);
-  assert.match(text, /AC-1<\/span> · 送出後顯示訂單成立<\/li>/);
+  assert.match(text, /Jira CHUM-42 · 讀取於 2026-10-09T00:00:00.000Z · 內容摘要 digest-1/);
+  assert.match(
+    text,
+    /<pre[^>]*>CHUM-42 結帳\n\n## 驗收條件\n1\. AC-1 送出後顯示訂單成立\n2\. AC-2 按鈕使用品牌色<\/pre>/,
+  );
+  assert.match(
+    text,
+    /data-criterion-id="AC-1"[^>]*><span class="font-mono">AC-1<\/span> · 送出後顯示訂單成立<\/li>/,
+  );
   assert.match(text, /AC-2<\/span> · 按鈕使用品牌色<\/li>/);
   assert.doesNotMatch(html, /data-selected/);
   assert.doesNotMatch(text, /選取範圍|已選|未選/);
@@ -473,8 +478,8 @@ test("a finished view renders the public report with mock-only acceptance", () =
   assert.match(text, /預定動作 1：前往 \/checkout/);
   assert.match(text, /預定動作 2：點擊 送出訂單/);
   assert.match(text, /不是實際瀏覽器操作紀錄/);
-  assert.match(text, /功能檢查 check-1（準則 crit:AC-1）：預期 顯示訂單編號/);
-  assert.match(text, /樣式檢查 check-2（準則 crit:AC-2）：background-color/);
+  assert.match(text, /功能檢查 check-1（準則 AC-1）：預期 顯示訂單編號/);
+  assert.match(text, /樣式檢查 check-2（準則 AC-2）：background-color/);
   assert.match(text, /設計 Figma 檔案 CheckoutDemo，節點 12:34/);
 
   assert.match(text, /模擬符合/);
@@ -494,7 +499,7 @@ test("a finished view renders the public report with mock-only acceptance", () =
   assert.match(text, /Fixture：checkout-pass@3/);
   assert.match(text, /Adapter：mock-1/);
 
-  assert.match(text, /crit:AC-2/);
+  assert.match(text, /AC-2/);
   assert.match(text, /未指定/);
   assert.match(text, /未覆蓋/);
   assert.match(text, /Jira CHUM-42/);
@@ -521,7 +526,7 @@ test("report metadata is escaped and a missing plan stays defensive", () => {
             goal: '<script>alert(1)</script>"><img src=x>',
           },
           plan: null,
-          coverage: [{ criterionId: "crit:AC-9", caseId: null, checkId: null, state: "uncovered" }],
+          coverage: [{ criterionId: "AC-9", caseId: null, checkId: null, state: "uncovered" }],
         }),
       )}
     />,
@@ -530,14 +535,17 @@ test("report metadata is escaped and a missing plan stays defensive", () => {
   assert.doesNotMatch(escaped, /<script>/);
   assert.doesNotMatch(escaped, /<img/);
   assert.match(plainText(escaped), /需求缺失|計畫缺失/);
-  assert.match(plainText(escaped), /crit:AC-9/);
+  assert.match(plainText(escaped), /AC-9/);
   assert.match(plainText(escaped), /未覆蓋/);
+  assert.doesNotMatch(escaped, /data-criterion-id/);
 
   const missingBoth = renderToStaticMarkup(
-    <TestingPanel view={finishedView(report({ requirements: null, plan: null }))} />,
+    <TestingPanel view={finishedView(report({ requirements: null, plan: null, coverage: [] }))} />,
   );
-  assert.match(plainText(missingBoth), /需求缺失，未取得固定需求全集/);
+  assert.match(plainText(missingBoth), /需求缺失，未取得來源內容/);
   assert.match(plainText(missingBoth), /計畫缺失，未產生案例與檢查/);
+  assert.match(plainText(missingBoth), /沒有覆蓋資料。/);
+  assert.doesNotMatch(missingBoth, /data-criterion-id|未覆蓋/);
 });
 
 test("a blocked acceptance labels root cancellation without touching completed rows", () => {
@@ -665,6 +673,8 @@ test("a planner card shows only its own result, summary, and artifact", () => {
   };
   const markup = renderToStaticMarkup(<TestingPanel view={view} />);
   assert.match(markup, /Plan checkout only/);
+  assert.match(plainText(markup), /AC-1<\/span> · 送出後顯示訂單成立<\/li>/);
+  assert.match(markup, /待解決：來源中有 1 條敘述無法解析/);
   assert.match(markup, /結帳成功/);
   assert.match(markup, /artifact:plan:1/);
   assert.doesNotMatch(markup, /測試報告|覆蓋不完整|AC 結果缺失|Test AC|Test UI/);
@@ -737,6 +747,12 @@ test("a cancelling individual card retains its actual tool activity", () => {
 });
 
 const deferredPlan: PublicPlan = {
+  criteria: [
+    { id: "UI-AC-1", statement: "加入購物車按鈕使用品牌色" },
+    { id: "UI-AC-2", statement: "停用按鈕維持原色" },
+    { id: "UI-AC-3", statement: "按鈕圓角 8px" },
+  ],
+  unresolved: [],
   cases: [],
   deferredCases: [
     {
@@ -744,8 +760,8 @@ const deferredPlan: PublicPlan = {
       title: "加入購物車按鈕樣式",
       steps: ["開啟商品頁", "檢查按鈕外觀"],
       expectations: [
-        { criterionId: "crit:UI-AC-1", expectedObservation: "背景色 #2D6A4F，文字白色 16px" },
-        { criterionId: "crit:UI-AC-2", expectedObservation: "停用按鈕維持原色且整體不透明度 45%" },
+        { criterionId: "UI-AC-1", expectedObservation: "背景色 #2D6A4F，文字白色 16px" },
+        { criterionId: "UI-AC-2", expectedObservation: "停用按鈕維持原色且整體不透明度 45%" },
       ],
       reason: "Jira 描述的樣式值沒有綁定設計稿",
     },
@@ -775,10 +791,10 @@ test("deferred cases render separately from executable cases and are never shown
   );
   assert.match(markup, /延後案例/);
   assert.match(markup, /加入購物車按鈕樣式/);
-  assert.match(markup, /crit:UI-AC-1/);
+  assert.match(markup, /UI-AC-1/);
   assert.match(markup, /開啟商品頁/);
   assert.match(markup, /背景色 #2D6A4F，文字白色 16px/);
-  assert.match(markup, /準則 crit:UI-AC-2，預期：停用按鈕維持原色且整體不透明度 45%/);
+  assert.match(markup, /準則 UI-AC-2，預期：停用按鈕維持原色且整體不透明度 45%/);
   assert.match(markup, /Jira 描述的樣式值沒有綁定設計稿/);
   assert.match(markup, /未自動執行/);
   assert.match(markup, /data-deferred-case-id="deferred-ui-1"/);
@@ -788,8 +804,8 @@ test("deferred cases render separately from executable cases and are never shown
   );
   assert.ok(parsed);
   const reloaded = plainText(renderToStaticMarkup(<TestingPanel view={parsed} />));
-  assert.match(reloaded, /準則 crit:UI-AC-1，預期：背景色 #2D6A4F，文字白色 16px/);
-  assert.match(reloaded, /準則 crit:UI-AC-2，預期：停用按鈕維持原色且整體不透明度 45%/);
+  assert.match(reloaded, /準則 UI-AC-1，預期：背景色 #2D6A4F，文字白色 16px/);
+  assert.match(reloaded, /準則 UI-AC-2，預期：停用按鈕維持原色且整體不透明度 45%/);
 });
 
 test("requirements list host-derived Figma links with source, label, file and node", () => {
@@ -800,7 +816,16 @@ test("requirements list host-derived Figma links with source, label, file and no
           kind: "requirements",
           ref: artifact,
           payload: {
-            ...requirements,
+            goal: "驗證 <b>連結</b>",
+            sources: [
+              {
+                reference: { kind: "jira", issueKey: "FETM-78" },
+                text: "FETM-78 <script>alert(1)</script>",
+                links: [],
+                digest: "digest-links",
+                capturedAt: "2026-10-13T00:00:00.000Z",
+              },
+            ],
             links: [
               {
                 source: { kind: "jira", issueKey: "FETM-78" },
@@ -826,6 +851,9 @@ test("requirements list host-derived Figma links with source, label, file and no
   assert.match(markup, /節點 1:81/);
   assert.match(markup, /整份檔案/);
   assert.match(markup, /data-figma-file="DiPISvcpFmaPsK9QonpeDf"/);
+  assert.match(markup, /FETM-78 &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(markup, /目標：驗證 &lt;b&gt;連結&lt;\/b&gt;/);
+  assert.doesNotMatch(markup, /<script>|<b>/);
 });
 
 test("deferred coverage and not-required execution roles are labeled truthfully", () => {
@@ -834,7 +862,8 @@ test("deferred coverage and not-required execution roles are labeled truthfully"
       plan: deferredPlan,
       results: { ac: [], ui: [] },
       coverage: [
-        { criterionId: "crit:UI-AC-1", caseId: "deferred-ui-1", checkId: null, state: "deferred" },
+        { criterionId: "UI-AC-1", caseId: "deferred-ui-1", checkId: null, state: "deferred" },
+        { criterionId: "UI-AC-3", caseId: null, checkId: null, state: "uncovered" },
       ],
       roleOutcomes: {
         ...completedRows,
@@ -846,6 +875,7 @@ test("deferred coverage and not-required execution roles are labeled truthfully"
   const markup = plainText(renderToStaticMarkup(<TestingPanel view={view} />));
   assert.match(markup, /data-coverage-state="deferred"/);
   assert.match(markup, /延後，未自動執行/);
+  assert.match(markup, /UI-AC-3<\/span> · 案例 未指定 · 檢查 未指定 · 未覆蓋/);
   assert.match(markup, /無功能檢查，不需要派工/);
 });
 
@@ -858,7 +888,7 @@ test("a failed role shows its bounded validator issues next to the reason code",
           outcome: "failed",
           reasonCode: "proposal_rejected",
           issues: [
-            "criterion crit:UI-AC-2 has no executable check or deferred case",
+            "criteria[1].id: duplicate criterion id UI-AC-2",
             "deferredCases[0].steps: Too small",
           ],
         })}
@@ -867,6 +897,6 @@ test("a failed role shows its bounded validator issues next to the reason code",
   );
   assert.match(markup, /proposal_rejected/);
   assert.match(markup, /驗證問題/);
-  assert.match(markup, /crit:UI-AC-2 has no executable check or deferred case/);
+  assert.match(markup, /criteria\[1\]\.id: duplicate criterion id UI-AC-2/);
   assert.match(markup, /deferredCases\[0\]\.steps: Too small/);
 });

@@ -8,8 +8,9 @@ import {
   deferredCaseSchema,
   evidenceSchema,
   planCaseSchema,
-  requirementCriterionSchema,
+  planCriteriaSchema,
   requirementLinkSchema,
+  requirementSourceSchema,
   sourceSchema,
   testRunIdSchema,
   type TestView,
@@ -138,12 +139,13 @@ const reuseDecisionSchema = z.discriminatedUnion("kind", [
 
 const publicRequirementsSchema = z.object({
   goal: boundedText(2_000),
-  criteria: z.array(requirementCriterionSchema).max(500),
-  unresolved: z.array(boundedText(512)).max(500),
+  sources: z.array(requirementSourceSchema).min(1).max(20),
   links: z.array(requirementLinkSchema).optional(),
 });
 
 const publicPlanSchema = z.object({
+  criteria: planCriteriaSchema,
+  unresolved: z.array(boundedText(512)).max(500),
   cases: z.array(planCaseSchema).max(20),
   deferredCases: z.array(deferredCaseSchema).max(20).optional(),
   assignments: z.object({
@@ -187,7 +189,7 @@ const publicTestReportSchema = z.object({
     ac: z.array(publicCheckResultSchema).max(80),
     ui: z.array(publicCheckResultSchema).max(80),
   }),
-  coverage: z.array(coverageSchema).max(500),
+  coverage: z.array(coverageSchema),
   unresolvedSources: z.array(sourceSchema).max(20),
   artifacts: z.array(artifactRefSchema).max(500),
   roleOutcomes: roleProgressSchema,

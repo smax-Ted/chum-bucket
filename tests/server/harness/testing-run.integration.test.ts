@@ -34,20 +34,28 @@ import {
   ensureStarted,
   executeRun,
 } from "../../../server/harness/run";
-import { coreTools, mcpFixture, withMcpEnvironment } from "../../fixtures/mcp-fixture";
+import {
+  mcpFixture,
+  sourceReadPages,
+  sourceReadRule,
+  withMcpEnvironment,
+} from "../../fixtures/mcp-fixture";
 import { digestOf } from "../../../server/harness/testing-domain";
 import { agentRegistry, roleRegistry } from "../../../server/harness/agents";
 import { ROLE_IDS } from "../../../shared/testing";
 
 const require = createRequire(import.meta.url);
-const { scriptedEvents, anchorScenarioSource } =
-  require("../../fixtures/testing-runtime-external-fixture.mjs") as {
-    anchorScenarioSource: string;
-    scriptedEvents: (
-      options: { systemPrompts?: string[]; messages?: unknown[] },
-      control: { intent?: Record<string, unknown>; failUi?: boolean; planningMixed?: boolean },
-    ) => Array<Record<string, unknown>>;
-  };
+const { scriptedEvents } = require("../../fixtures/testing-runtime-external-fixture.mjs") as {
+  scriptedEvents: (
+    options: { systemPrompts?: string[]; messages?: unknown[] },
+    control: {
+      intent?: Record<string, unknown>;
+      failUi?: boolean;
+      planningMixed?: boolean;
+      plannerScenario?: string;
+    },
+  ) => Array<Record<string, unknown>>;
+};
 const enabled = process.env.TESTING_RUNTIME_DATABASE_URL;
 const originalEnvironment = {
   DATABASE_URL: process.env.DATABASE_URL,
@@ -79,9 +87,21 @@ function userTaskText(options: Pick<ProviderRequest, "messages">): string {
 const control: {
   intent?: Record<string, unknown>;
   failUi?: boolean;
-  sourceAnchor?: string;
   planningMixed?: boolean;
+  plannerScenario?: string;
 } = {};
+const checkoutIssue = {
+  key: "CHUM-42",
+  summary: "Checkout",
+  description: "## 驗收條件\n1. AC-1 Checkout succeeds",
+  customfield_10009: "考核說明：private grading note",
+};
+
+function sourceFixture(
+  rules = [sourceReadRule("jira_get_issue", { issue_key: "CHUM-42" }, checkoutIssue)],
+) {
+  return mcpFixture({ pages: sourceReadPages, rules });
+}
 const cancelledDelegation = DBOS.registerWorkflow(
   async () => {
     const payload = await DBOS.recv<{
@@ -213,15 +233,7 @@ async function installProviderBoundary() {
       const events = scriptedEvents(options, control);
 
       for (const event of events) {
-        if (role === "atlassian" && control.sourceAnchor && event.type === "TEXT_MESSAGE_CONTENT") {
-          const proposal = JSON.parse(String(event.delta)) as {
-            criteria: Array<{ anchor: string }>;
-          };
-          for (const criterion of proposal.criteria) criterion.anchor = control.sourceAnchor;
-          yield { ...event, delta: JSON.stringify(proposal) };
-        } else {
-          yield event.type === "RUN_STARTED" ? { ...event, type: EventType.RUN_STARTED } : event;
-        }
+        yield event.type === "RUN_STARTED" ? { ...event, type: EventType.RUN_STARTED } : event;
       }
     },
   );
@@ -421,42 +433,47 @@ test(
   "plan-only conversation creates exactly two durable tasks and reloads both",
   { skip: !enabled, timeout: 120_000 },
   async () => {
-    await withMcpEnvironment(async () => {
-      const thread = await createThread();
-      const start = providerCalls.length;
-      const parent = await chat(thread, intent);
-      const done = await waitChat(thread.id);
-      assert.deepEqual(
-        done.publishedTasks.map((view) => view.task?.role),
-        ["atlassian", "planner"],
-      );
-      assert.equal(
-        done.publishedTasks.every((view) => view.state === "finished"),
-        true,
-      );
-      assert.equal(new Set(done.publishedTasks.map((view) => view.runId)).size, 2);
-      const plan = done.publishedTasks.find((view) => view.task?.role === "planner")?.task?.result;
-      assert.equal(plan?.kind === "plan" && plan.payload.cases[0]?.id, "case-1");
-      assert.equal(
-        done.publishedTasks.every((view) => view.report === null),
-        true,
-      );
-      assert.equal(providerCalls.slice(start).includes("ac"), false);
-      assert.equal(providerCalls.slice(start).includes("ui"), false);
-      const db = await database();
-      const operations = await db
-        .select()
-        .from(testingOperationsTable)
-        .where(eq(testingOperationsTable.parent_run_id, parent.runId));
-      assert.equal(operations.length, 2);
-      for (const operation of operations) {
-        const deliveries = await readStartCancelDeliveries(operation.id);
-        assert.equal(deliveries.length, 1);
-        assert.equal(deliveries[0]?.kind, "start");
-        assert.equal(deliveries[0]?.acknowledgement, "quiet");
-      }
-      assert.deepEqual((await hydrateThread(thread.id)).publishedTasks, done.publishedTasks);
-    });
+    await withMcpEnvironment(
+      async () => {
+        const thread = await createThread();
+        const start = providerCalls.length;
+        const parent = await chat(thread, intent);
+        const done = await waitChat(thread.id);
+        assert.deepEqual(
+          done.publishedTasks.map((view) => view.task?.role),
+          ["atlassian", "planner"],
+        );
+        assert.equal(
+          done.publishedTasks.every((view) => view.state === "finished"),
+          true,
+        );
+        assert.equal(new Set(done.publishedTasks.map((view) => view.runId)).size, 2);
+        const plan = done.publishedTasks.find((view) => view.task?.role === "planner")?.task
+          ?.result;
+        assert.equal(plan?.kind === "plan" && plan.payload.cases[0]?.id, "case-1");
+        assert.equal(
+          done.publishedTasks.every((view) => view.report === null),
+          true,
+        );
+        assert.equal(providerCalls.slice(start).includes("ac"), false);
+        assert.equal(providerCalls.slice(start).includes("ui"), false);
+        const db = await database();
+        const operations = await db
+          .select()
+          .from(testingOperationsTable)
+          .where(eq(testingOperationsTable.parent_run_id, parent.runId));
+        assert.equal(operations.length, 2);
+        for (const operation of operations) {
+          const deliveries = await readStartCancelDeliveries(operation.id);
+          assert.equal(deliveries.length, 1);
+          assert.equal(deliveries[0]?.kind, "start");
+          assert.equal(deliveries[0]?.acknowledgement, "quiet");
+        }
+        assert.deepEqual((await hydrateThread(thread.id)).publishedTasks, done.publishedTasks);
+      },
+      true,
+      sourceFixture(),
+    );
   },
 );
 
@@ -464,185 +481,181 @@ test(
   "unresolved functional-only planning persists mixed final replies without UI or execution children",
   { skip: !enabled, timeout: 120_000 },
   async () => {
-    await withMcpEnvironment(async () => {
-      const thread = await createThread();
-      const start = providerCalls.length;
-      control.planningMixed = true;
-      try {
-        await chat(thread, {
-          goal: intent.goal,
-          sources: intent.sources,
-        });
-        const done = await waitChat(thread.id);
-        assert.deepEqual(
-          done.publishedTasks.map((view) => view.task?.role),
-          ["atlassian", "planner"],
-        );
-        const requirements = done.publishedTasks.find((view) => view.task?.role === "atlassian")
-          ?.task?.result;
-        assert.equal(requirements?.kind, "requirements");
-        if (requirements?.kind === "requirements") {
-          assert.deepEqual(requirements.payload.unresolved, [
-            "Price rule is not specified",
-            "Execution URL is not supplied",
-            "UI validation is not required",
+    await withMcpEnvironment(
+      async () => {
+        const thread = await createThread();
+        const start = providerCalls.length;
+        control.planningMixed = true;
+        try {
+          await chat(thread, {
+            goal: intent.goal,
+            sources: intent.sources,
+          });
+          const done = await waitChat(thread.id);
+          assert.deepEqual(
+            done.publishedTasks.map((view) => view.task?.role),
+            ["atlassian", "planner"],
+          );
+          const requirements = done.publishedTasks.find((view) => view.task?.role === "atlassian")
+            ?.task?.result;
+          assert.equal(requirements?.kind, "requirements");
+          assert.equal(
+            requirements?.kind === "requirements" && "unresolved" in requirements.payload,
+            false,
+          );
+          const plan = done.publishedTasks.find((view) => view.task?.role === "planner")?.task
+            ?.result;
+          assert.equal(plan?.kind, "plan");
+          if (plan?.kind === "plan") {
+            assert.deepEqual(plan.payload.unresolved, [
+              "Price rule is not specified",
+              "Execution URL is not supplied",
+              "UI validation is not required",
+            ]);
+            assert.deepEqual(plan.payload.assignments, { ac: ["check-1"], ui: [] });
+          }
+          assert.deepEqual([...new Set(providerCalls.slice(start))].sort(), [
+            "atlassian",
+            "main",
+            "planner",
           ]);
+          const reply = done.messages
+            .filter((message) => message.role === "assistant")
+            .flatMap((message) => message.parts)
+            .filter((part) => part.type === "text")
+            .map((part) => part.content)
+            .join("");
+          assert.match(reply, /Here's the functional-only plan/);
+          assert.match(reply, /Middle prose/);
+          assert.match(reply, /Trailing prose/);
+          assert.equal((reply.match(/root = Stack/g) ?? []).length, 2);
+          const reloaded = await hydrateThread(thread.id);
+          assert.deepEqual(reloaded.messages, done.messages);
+          assert.deepEqual(reloaded.publishedTasks, done.publishedTasks);
+        } finally {
+          control.planningMixed = false;
         }
-        const plan = done.publishedTasks.find((view) => view.task?.role === "planner")?.task
-          ?.result;
-        assert.equal(plan?.kind, "plan");
-        if (plan?.kind === "plan") {
-          assert.deepEqual(plan.payload.assignments, { ac: ["check-1"], ui: [] });
-        }
-        assert.deepEqual([...new Set(providerCalls.slice(start))].sort(), [
-          "atlassian",
-          "main",
-          "planner",
-        ]);
-        const reply = done.messages
-          .filter((message) => message.role === "assistant")
-          .flatMap((message) => message.parts)
-          .filter((part) => part.type === "text")
-          .map((part) => part.content)
-          .join("");
-        assert.match(reply, /Here's the functional-only plan/);
-        assert.match(reply, /Middle prose/);
-        assert.match(reply, /Trailing prose/);
-        assert.equal((reply.match(/root = Stack/g) ?? []).length, 2);
-        const reloaded = await hydrateThread(thread.id);
-        assert.deepEqual(reloaded.messages, done.messages);
-        assert.deepEqual(reloaded.publishedTasks, done.publishedTasks);
-      } finally {
-        control.planningMixed = false;
-      }
-    });
+      },
+      true,
+      sourceFixture(),
+    );
   },
 );
 
 test(
-  "anchor extraction preserves full scope, repairs field errors once and persists explicit failure privately",
+  "source reads retry unread sources once, ignore invented JSON and persist failures privately",
   { skip: !enabled, timeout: 120_000 },
   async () => {
-    const fixture = mcpFixture({
-      rules: [
-        {
-          method: "tools/call",
-          name: "jira_get_issue",
-          result: {
-            content: [{ type: "text", text: anchorScenarioSource }],
-            structuredContent: { issue: "FETM-78", fields: { description: anchorScenarioSource } },
-          },
-        },
-      ],
-    });
+    const page = {
+      metadata: {
+        id: "PAGE-7",
+        title: "結帳規格",
+        content: { value: "## 運費\n- 滿 NT$500 免運", format: "markdown" },
+      },
+    };
+    const fixture = sourceFixture([
+      sourceReadRule("jira_get_issue", { issue_key: "CHUM-42" }, checkoutIssue),
+      sourceReadRule("confluence_get_page", { page_id: "PAGE-7" }, page),
+    ]);
+    const issueText = "CHUM-42 Checkout\n\n## 驗收條件\n1. AC-1 Checkout succeeds";
     await withMcpEnvironment(
       async () => {
         for (const scenario of [
-          "anchor-all",
-          "anchor-repair",
-          "anchor-not-extractable",
-          "anchor-incomplete-captures",
-          "anchor-malformed-failure",
-          "anchor-rejected",
+          "source-all",
+          "source-retry",
+          "source-invented",
+          "source-missing",
         ]) {
           const thread = await createThread();
           const start = providerRequests.length;
           await chat(thread, {
             role: "atlassian",
             summary: scenario,
-            goal: "Extract synthetic acceptance criteria",
-            sources:
-              scenario === "anchor-incomplete-captures"
-                ? [
-                    { kind: "jira", issueKey: "FETM-78" },
-                    { kind: "confluence", pageId: "missing-page" },
-                  ]
-                : [{ kind: "jira", issueKey: "FETM-78" }],
+            goal: "Read checkout sources",
+            sources: [
+              { kind: "jira", issueKey: "CHUM-42" },
+              { kind: "confluence", pageId: "PAGE-7" },
+            ],
           });
           const done = await waitChat(thread.id);
           const view = done.publishedTasks[0]!;
           const result = view.task?.result;
-          const feedback = JSON.stringify(
-            providerRequests.slice(start).flatMap((request) => request.messages ?? []),
-          );
-          if (
-            [
-              "anchor-not-extractable",
-              "anchor-incomplete-captures",
-              "anchor-malformed-failure",
-              "anchor-rejected",
-            ].includes(scenario)
-          ) {
-            assert.equal(result, null);
-            assert.deepEqual(view.progress.rows.atlassian, {
-              status: "terminal",
-              outcome: "failed",
-              reasonCode: ["anchor-rejected", "anchor-incomplete-captures"].includes(scenario)
-                ? "proposal_rejected"
-                : "requirements_not_extractable",
-            });
-          } else {
-            assert.equal(result?.kind, "requirements");
-            if (result?.kind === "requirements") {
-              assert.deepEqual(
-                result.payload.criteria.map((criterion) => criterion.key),
-                ["AC-1", "AC-2", "AC-3", "AC-4", "AC-5", "AC-6", "AC-7"],
-              );
-              assert.equal(result.payload.criteria[6]?.anchor, anchorScenarioSource);
-            }
-          }
-          if (scenario === "anchor-repair") {
-            assert.match(feedback, /criteria\[0\]\.anchorId/);
-            assert.match(feedback, /criteria\[1\]\.key/);
-          }
-          if (scenario === "anchor-malformed-failure") assert.match(feedback, /unresolved.*1/);
-          if (scenario === "anchor-incomplete-captures")
-            assert.match(feedback, /task.sources.*do not cover/);
+          const feedback = providerRequests
+            .slice(start)
+            .flatMap((request) => (request.messages ?? []) as Array<{ content?: unknown }>)
+            .map((message) => (typeof message.content === "string" ? message.content : ""))
+            .filter((text) => text.startsWith("Private validation failed:"));
           const pool = new pg.Pool({ connectionString: enabled });
           try {
-            const artifacts = await pool.query(
-              "select * from testing_artifacts where thread_id = $1",
-              [thread.id],
-            );
-            assert.equal(artifacts.rows.length, result ? 1 : 0);
             const receipts = await pool.query(
-              "select r.* from testing_receipts r join testing_tasks t on t.id = r.task_id join testing_operations o on o.id = t.operation_id where o.thread_id = $1 and r.native_name = 'source_capture'",
+              "select r.native_name, r.output_digest, r.bindings from testing_receipts r join testing_tasks t on t.id = r.task_id join testing_operations o on o.id = t.operation_id where o.thread_id = $1 and r.native_name in ('jira_get_issue', 'confluence_get_page') order by r.slot",
               [thread.id],
             );
-            assert.equal(receipts.rows.length, 1);
-            assert.equal("anchorRefs" in receipts.rows[0].output, false);
             const checkpoints = await pool.query(
-              "select f.function_name, f.output from dbos.operation_outputs f join testing_tasks t on t.child_workflow_id = f.workflow_uuid join testing_operations o on o.id = t.operation_id where o.thread_id = $1 and f.function_name in ('proposal', 'proposal-2') order by f.function_id",
+              "select f.function_name from dbos.operation_outputs f join testing_tasks t on t.child_workflow_id = f.workflow_uuid join testing_operations o on o.id = t.operation_id where o.thread_id = $1 and f.function_name in ('proposal', 'proposal-2') order by f.function_id",
+              [thread.id],
+            );
+            const artifacts = await pool.query(
+              "select payload from testing_artifacts where thread_id = $1",
               [thread.id],
             );
             assert.deepEqual(
               checkpoints.rows.map((row) => row.function_name),
-              [
-                "anchor-repair",
-                "anchor-incomplete-captures",
-                "anchor-malformed-failure",
-                "anchor-rejected",
-              ].includes(scenario)
+              scenario === "source-retry" || scenario === "source-missing"
                 ? ["proposal", "proposal-2"]
                 : ["proposal"],
+              scenario,
             );
-            const publicEvents = await pool.query(
-              "select e.payload from chat_events e join chat_runs r on r.id = e.run_id where r.thread_id = $1",
-              [thread.id],
+            assert.deepEqual(
+              [...new Set(feedback)],
+              scenario === "source-retry" || scenario === "source-missing"
+                ? [
+                    "Private validation failed: task.sources[1]: confluence:PAGE-7 has no successful read",
+                  ]
+                : [],
+              scenario,
             );
-            assert.equal(
-              JSON.stringify(publicEvents.rows).includes(
-                "Synthetic source has no testable behavior",
-              ),
-              false,
+            if (scenario === "source-missing") {
+              assert.equal(result, null);
+              assert.deepEqual(view.progress.rows.atlassian, {
+                status: "terminal",
+                outcome: "failed",
+                reasonCode: "source_reads_incomplete",
+                issues: ["task.sources[1]: confluence:PAGE-7 has no successful read"],
+              });
+              assert.equal(artifacts.rows.length, 0);
+              continue;
+            }
+            const [jira, confluence] = receipts.rows;
+            assert.equal(result?.kind, "requirements", scenario);
+            assert.deepEqual(result?.kind === "requirements" ? result.payload : null, {
+              goal: "Read checkout sources",
+              sources: [
+                {
+                  reference: { kind: "jira", issueKey: "CHUM-42" },
+                  text: issueText,
+                  links: [],
+                  digest: jira.output_digest,
+                  capturedAt: jira.bindings.capturedAt,
+                },
+                {
+                  reference: { kind: "confluence", pageId: "PAGE-7" },
+                  text: "結帳規格\n\n## 運費\n- 滿 NT$500 免運",
+                  links: [],
+                  digest: confluence.output_digest,
+                  capturedAt: confluence.bindings.capturedAt,
+                },
+              ],
+            });
+            assert.deepEqual(
+              artifacts.rows[0]?.payload,
+              result?.kind === "requirements" ? result.payload : null,
             );
+            assert.equal(JSON.stringify(view).includes("Invented"), false);
+            assert.equal(JSON.stringify(view).includes("private grading note"), false);
           } finally {
             await pool.end();
           }
-          assert.equal(
-            JSON.stringify(view).includes("Synthetic source has no testable behavior"),
-            false,
-          );
           assert.deepEqual((await hydrateThread(thread.id)).publishedTasks, done.publishedTasks);
         }
       },
@@ -656,84 +669,161 @@ test(
   "Jira result wrappers produce requirements bound to the original native receipt",
   { skip: !enabled, timeout: 120_000 },
   async () => {
-    const output = {
-      result: JSON.stringify({
-        key: "FETM-78",
-        summary: "Plan checkout",
-        description: "d".repeat(456),
-      }),
-    };
-    const fixture = mcpFixture({
-      pages: [
-        coreTools.map((tool) =>
-          tool.name === "jira_get_issue"
-            ? {
-                ...tool,
-                outputSchema: {
-                  type: "object",
-                  properties: { result: { type: "string" } },
-                  required: ["result"],
-                },
-              }
-            : tool,
-        ),
-      ],
-      rules: [
-        {
-          method: "tools/call",
-          name: "jira_get_issue",
-          result: { content: [{ type: "text", text: output.result }], structuredContent: output },
-        },
-      ],
-    });
-    control.sourceAnchor = "FETM-78";
-    try {
-      await withMcpEnvironment(
-        async () => {
-          const thread = await createThread();
-          await chat(thread, {
-            role: "atlassian",
-            summary: "Capture Jira requirements",
-            goal: "Plan checkout",
-            sources: [{ kind: "jira", issueKey: "FETM-78" }],
-          });
-          const done = await waitChat(thread.id);
-          const result = done.publishedTasks[0]?.task?.result;
+    const description = ["## 使用者故事", "身為顧客，我想把司康加入購物車。", "", "## 驗收條件"]
+      .concat(
+        Array.from({ length: 40 }, (_, index) => `${index + 1}. 第 ${index + 1} 項驗收條件。`),
+      )
+      .join("\n");
+    const issue = { key: "FETM-78", summary: "司康小舖：商品與購物車", description };
+    const output = { result: JSON.stringify(issue) };
+    const fixture = sourceFixture([
+      sourceReadRule("jira_get_issue", { issue_key: "FETM-78" }, issue),
+    ]);
+    await withMcpEnvironment(
+      async () => {
+        const thread = await createThread();
+        const before = new Date().toISOString();
+        await chat(thread, {
+          role: "atlassian",
+          summary: "Capture Jira requirements",
+          goal: "Plan checkout",
+          sources: [{ kind: "jira", issueKey: "FETM-78" }],
+        });
+        const done = await waitChat(thread.id);
+        const result = done.publishedTasks[0]?.task?.result;
+        const pool = new pg.Pool({ connectionString: enabled });
+        try {
+          const receipts = await pool.query(
+            "select r.native_name, r.input, r.output, r.output_digest, r.bindings from testing_receipts r join testing_tasks t on t.id = r.task_id join testing_operations o on o.id = t.operation_id where o.thread_id = $1 order by r.slot",
+            [thread.id],
+          );
+          assert.deepEqual(
+            receipts.rows.map((row) => row.native_name),
+            ["discover_atlassian_tools", "jira_get_issue"],
+          );
+          const native = receipts.rows[1]!;
+          assert.deepEqual(native.input, { issue_key: "FETM-78", include: "remote_links" });
+          assert.deepEqual(native.output, output);
+          assert.equal(native.output_digest, digestOf(output));
+          assert.ok(native.bindings.capturedAt >= before);
           assert.equal(result?.kind, "requirements");
-          assert.equal(
-            result?.kind === "requirements" && result.payload.criteria[0]?.sourceDigest,
-            digestOf(output),
+          assert.deepEqual(result?.kind === "requirements" ? result.payload : null, {
+            goal: "Plan checkout",
+            sources: [
+              {
+                reference: { kind: "jira", issueKey: "FETM-78" },
+                text: `FETM-78 司康小舖：商品與購物車\n\n${description}`,
+                links: [],
+                digest: digestOf(output),
+                capturedAt: native.bindings.capturedAt,
+              },
+            ],
+          });
+        } finally {
+          await pool.end();
+        }
+      },
+      true,
+      fixture,
+    );
+  },
+);
+
+test(
+  "planner receives raw source text and a subset summary and persists its own criteria",
+  { skip: !enabled, timeout: 120_000 },
+  async () => {
+    const issue = {
+      key: "CHUM-42",
+      summary: "Checkout",
+      description:
+        "## 驗收條件\n1. AC-1 Cart starts empty\n2. AC-2 Checkout succeeds\n3. AC-3 Receipt appears",
+    };
+    await withMcpEnvironment(
+      async () => {
+        const thread = await createThread();
+        const start = providerRequests.length;
+        await chat(thread, { ...intent, plannerSummary: "Plan only AC-2 from CHUM-42" });
+        const done = await waitChat(thread.id);
+        const planner = providerRequests
+          .slice(start)
+          .find((request) => userTaskText(request).startsWith("testing-role:planner\n"));
+        const task = JSON.parse(userTaskText(planner!).split("testing-task:\n")[1]!);
+        assert.equal(task.summary, "Plan only AC-2 from CHUM-42");
+        assert.deepEqual(
+          task.requirements.sources.map((source: { text: string }) => source.text),
+          [`CHUM-42 Checkout\n\n${issue.description}`],
+        );
+        assert.equal("criteria" in task.requirements, false);
+        const plan = done.publishedTasks.find((view) => view.task?.role === "planner")?.task
+          ?.result;
+        assert.equal(plan?.kind, "plan");
+        assert.deepEqual(plan?.kind === "plan" ? plan.payload.criteria : null, [
+          { id: "AC-2", statement: "Checkout succeeds" },
+        ]);
+        assert.deepEqual(plan?.kind === "plan" ? plan.payload.unresolved : null, []);
+        assert.deepEqual(
+          plan?.kind === "plan"
+            ? plan.payload.cases[0]?.checks.map((check) => check.criterionId)
+            : null,
+          ["AC-2"],
+        );
+      },
+      true,
+      sourceFixture([sourceReadRule("jira_get_issue", { issue_key: "CHUM-42" }, issue)]),
+    );
+  },
+);
+
+test(
+  "planner structural feedback repairs duplicate criterion ids and unknown references once",
+  { skip: !enabled, timeout: 120_000 },
+  async () => {
+    await withMcpEnvironment(
+      async () => {
+        const thread = await createThread();
+        const start = providerRequests.length;
+        control.plannerScenario = "planner-repair";
+        try {
+          await chat(thread, intent);
+          const done = await waitChat(thread.id);
+          const feedback = providerRequests
+            .slice(start)
+            .filter((request) => userTaskText(request).startsWith("testing-role:planner\n"))
+            .flatMap((request) => (request.messages ?? []) as Array<{ content?: unknown }>)
+            .map((message) => (typeof message.content === "string" ? message.content : ""))
+            .filter((text) => text.startsWith("Private validation failed:"));
+          assert.deepEqual(
+            [...new Set(feedback)],
+            [
+              "Private validation failed: criteria[1].id: duplicate criterion id AC-1; check check-unknown references an unknown criterion",
+            ],
           );
-          assert.equal(
-            result?.kind === "requirements" && result.payload.criteria[0]?.anchor,
-            "FETM-78",
-          );
+          const plan = done.publishedTasks.find((view) => view.task?.role === "planner")?.task
+            ?.result;
+          assert.deepEqual(plan?.kind === "plan" ? plan.payload.criteria : null, [
+            { id: "AC-1", statement: "Checkout succeeds" },
+          ]);
           const pool = new pg.Pool({ connectionString: enabled });
           try {
-            const receipts = await pool.query(
-              "select r.native_name, r.output, r.output_digest, r.bindings from testing_receipts r join testing_tasks t on t.id = r.task_id join testing_operations o on o.id = t.operation_id where o.thread_id = $1",
+            const checkpoints = await pool.query(
+              "select f.function_name from dbos.operation_outputs f join testing_tasks t on t.child_workflow_id = f.workflow_uuid join testing_operations o on o.id = t.operation_id where o.thread_id = $1 and t.role = 'planner' and f.function_name in ('proposal', 'proposal-2') order by f.function_id",
               [thread.id],
             );
-            const native = receipts.rows.find((row) => row.native_name === "jira_get_issue");
-            const capture = receipts.rows.find((row) => row.native_name === "source_capture");
-            assert.deepEqual(native?.output, output);
-            assert.equal(native?.output_digest, digestOf(output));
-            assert.equal(capture?.output.digest, digestOf(output));
-            assert.deepEqual(capture?.output.reference, { kind: "jira", issueKey: "FETM-78" });
-            assert.deepEqual(capture?.bindings, {
-              nativeName: "jira_get_issue",
-              nativeOutputDigest: digestOf(output),
-            });
+            assert.deepEqual(
+              checkpoints.rows.map((row) => row.function_name),
+              ["proposal", "proposal-2"],
+            );
           } finally {
             await pool.end();
           }
-        },
-        true,
-        fixture,
-      );
-    } finally {
-      delete control.sourceAnchor;
-    }
+        } finally {
+          delete control.plannerScenario;
+        }
+      },
+      true,
+      sourceFixture(),
+    );
   },
 );
 
@@ -741,95 +831,103 @@ test(
   "explicit AC/UI calls persist live-adapter blocked evidence without Jev or browser execution",
   { skip: !enabled, timeout: 120_000 },
   async () => {
-    await withMcpEnvironment(async () => {
-      const thread = await createThread();
-      const start = providerRequests.length;
-      const parent = await chat(thread, {
-        ...intent,
-        design: { fileKey: "FILE", nodeId: "12:34" },
-        executionRoles: ["ac", "ui"],
-      });
-      const done = await waitChat(thread.id);
-      const db = await database();
-      const operations = await db
-        .select()
-        .from(testingOperationsTable)
-        .where(eq(testingOperationsTable.parent_run_id, parent.runId));
-      assert.equal(operations.length, 4);
-      for (const operation of operations) {
-        const runtime = operation.runtime as { model: string; versions: { model: string } };
-        assert.equal(runtime.model, "deepseek-ai/DeepSeek-V4.1-Flash");
-        assert.equal(runtime.versions.model, "deepseek-ai/DeepSeek-V4.1-Flash");
-      }
-      assert.deepEqual(
-        done.publishedTasks.map((view) => view.task?.role),
-        ["atlassian", "planner", "ac", "ui"],
-      );
-      for (const role of ["ac", "ui"] as const) {
-        const view = done.publishedTasks.find((item) => item.task?.role === role);
-        assert.equal(view?.state, "finished");
-        const result = view?.task?.result;
-        assert.ok(result && (result.kind === "ac-result" || result.kind === "ui-result"));
-        assert.equal(result.payload.length, 1);
-        assert.equal(result.payload[0]?.judgment, "blocked");
-        const evidence = result.payload[0]?.evidence[0];
-        assert.equal(evidence?.origin, "browser");
-        assert.equal(evidence?.outcome, "blocked");
-        assert.deepEqual(evidence?.fixture, { id: "playwright-chromium", version: "v1" });
-        assert.equal(evidence?.adapterVersion, "playwright-jev-v1");
-        assert.deepEqual(evidence?.browser, { selections: [] });
-        assert.equal(
-          evidence?.outcome === "blocked" && evidence.reason,
-          JSON.stringify({ stage: "scope", code: "JEV_API_KEY is required", replay: "forbidden" }),
-        );
-      }
-      const pool = new pg.Pool({ connectionString: enabled });
-      try {
-        const receipts = await pool.query(
-          "select t.role, r.native_name, r.output, r.output_digest, r.bindings from testing_receipts r join testing_tasks t on t.id = r.task_id join testing_operations o on o.id = t.operation_id where o.parent_run_id = $1 and r.native_name in ('verify_ac', 'verify_ui') order by t.role",
-          [parent.runId],
-        );
+    await withMcpEnvironment(
+      async () => {
+        const thread = await createThread();
+        const start = providerRequests.length;
+        const parent = await chat(thread, {
+          ...intent,
+          design: { fileKey: "FILE", nodeId: "12:34" },
+          executionRoles: ["ac", "ui"],
+        });
+        const done = await waitChat(thread.id);
+        const db = await database();
+        const operations = await db
+          .select()
+          .from(testingOperationsTable)
+          .where(eq(testingOperationsTable.parent_run_id, parent.runId));
+        assert.equal(operations.length, 4);
+        for (const operation of operations) {
+          const runtime = operation.runtime as { model: string; versions: { model: string } };
+          assert.equal(runtime.model, "deepseek-ai/DeepSeek-V4.1-Flash");
+          assert.equal(runtime.versions.model, "deepseek-ai/DeepSeek-V4.1-Flash");
+        }
         assert.deepEqual(
-          receipts.rows.map((row) => ({ role: row.role, nativeName: row.native_name })),
-          [
-            { role: "ac", nativeName: "verify_ac" },
-            { role: "ui", nativeName: "verify_ui" },
-          ],
+          done.publishedTasks.map((view) => view.task?.role),
+          ["atlassian", "planner", "ac", "ui"],
         );
-        for (const row of receipts.rows) {
-          const evidence = done.publishedTasks.find((view) => view.task?.role === row.role)?.task
-            ?.result;
-          assert.ok(evidence && (evidence.kind === "ac-result" || evidence.kind === "ui-result"));
-          assert.deepEqual(row.output.evidence, evidence.payload[0]?.evidence[0]);
-          assert.equal(row.output_digest, digestOf(row.output));
-          assert.equal(row.bindings.checkId, row.output.checkId);
-          assert.deepEqual(row.bindings.fixture, { id: "playwright-chromium", version: "v1" });
-          assert.equal(row.bindings.adapterVersion, "playwright-jev-v1");
-        }
-      } finally {
-        await pool.end();
-      }
-      for (const role of ROLE_IDS) {
-        const calls = providerRequests
-          .slice(start)
-          .filter((request) => userTaskText(request).startsWith(`testing-role:${role}\n`));
-        assert.ok(calls.length > 0, `${role} must reach the provider`);
-        for (const call of calls) {
-          assert.equal(call.model, "deepseek-ai/DeepSeek-V4.1-Flash");
-          assert.equal(call.adapterModel, "deepseek-ai/DeepSeek-V4.1-Flash");
-          assert.equal(call.systemPrompts?.[0], roleRegistry[role].systemPrompt);
+        for (const role of ["ac", "ui"] as const) {
+          const view = done.publishedTasks.find((item) => item.task?.role === role);
+          assert.equal(view?.state, "finished");
+          const result = view?.task?.result;
+          assert.ok(result && (result.kind === "ac-result" || result.kind === "ui-result"));
+          assert.equal(result.payload.length, 1);
+          assert.equal(result.payload[0]?.judgment, "blocked");
+          const evidence = result.payload[0]?.evidence[0];
+          assert.equal(evidence?.origin, "browser");
+          assert.equal(evidence?.outcome, "blocked");
+          assert.deepEqual(evidence?.fixture, { id: "playwright-chromium", version: "v1" });
+          assert.equal(evidence?.adapterVersion, "playwright-jev-v1");
+          assert.deepEqual(evidence?.browser, { selections: [] });
           assert.equal(
-            call.systemPrompts?.some((prompt) => prompt.includes("testing-task:")),
-            false,
+            evidence?.outcome === "blocked" && evidence.reason,
+            JSON.stringify({
+              stage: "scope",
+              code: "JEV_API_KEY is required",
+              replay: "forbidden",
+            }),
           );
-          const task = JSON.parse(userTaskText(call).split("testing-task:\n")[1]!);
-          assert.equal(task.goal, "Verify checkout");
-          assert.deepEqual(task.bounds, { maxCases: 20, maxChecks: 80, maxChecksPerCase: 12 });
-          if (role === "planner") assert.equal(task.targetUrl, null);
-          if (role === "ac" || role === "ui") assert.equal(task.targetUrl, intent.targetUrl);
         }
-      }
-    });
+        const pool = new pg.Pool({ connectionString: enabled });
+        try {
+          const receipts = await pool.query(
+            "select t.role, r.native_name, r.output, r.output_digest, r.bindings from testing_receipts r join testing_tasks t on t.id = r.task_id join testing_operations o on o.id = t.operation_id where o.parent_run_id = $1 and r.native_name in ('verify_ac', 'verify_ui') order by t.role",
+            [parent.runId],
+          );
+          assert.deepEqual(
+            receipts.rows.map((row) => ({ role: row.role, nativeName: row.native_name })),
+            [
+              { role: "ac", nativeName: "verify_ac" },
+              { role: "ui", nativeName: "verify_ui" },
+            ],
+          );
+          for (const row of receipts.rows) {
+            const evidence = done.publishedTasks.find((view) => view.task?.role === row.role)?.task
+              ?.result;
+            assert.ok(evidence && (evidence.kind === "ac-result" || evidence.kind === "ui-result"));
+            assert.deepEqual(row.output.evidence, evidence.payload[0]?.evidence[0]);
+            assert.equal(row.output_digest, digestOf(row.output));
+            assert.equal(row.bindings.checkId, row.output.checkId);
+            assert.deepEqual(row.bindings.fixture, { id: "playwright-chromium", version: "v1" });
+            assert.equal(row.bindings.adapterVersion, "playwright-jev-v1");
+          }
+        } finally {
+          await pool.end();
+        }
+        for (const role of ROLE_IDS) {
+          const calls = providerRequests
+            .slice(start)
+            .filter((request) => userTaskText(request).startsWith(`testing-role:${role}\n`));
+          assert.ok(calls.length > 0, `${role} must reach the provider`);
+          for (const call of calls) {
+            assert.equal(call.model, "deepseek-ai/DeepSeek-V4.1-Flash");
+            assert.equal(call.adapterModel, "deepseek-ai/DeepSeek-V4.1-Flash");
+            assert.equal(call.systemPrompts?.[0], roleRegistry[role].systemPrompt);
+            assert.equal(
+              call.systemPrompts?.some((prompt) => prompt.includes("testing-task:")),
+              false,
+            );
+            const task = JSON.parse(userTaskText(call).split("testing-task:\n")[1]!);
+            assert.equal(task.goal, "Verify checkout");
+            assert.deepEqual(task.bounds, { maxCases: 20, maxChecks: 80, maxChecksPerCase: 12 });
+            if (role === "planner") assert.equal(task.targetUrl, null);
+            if (role === "ac" || role === "ui") assert.equal(task.targetUrl, intent.targetUrl);
+          }
+        }
+      },
+      true,
+      sourceFixture(),
+    );
   },
 );
 
@@ -859,29 +957,33 @@ test(
   "a failed UI task preserves completed AC and source tasks",
   { skip: !enabled, timeout: 120_000 },
   async () => {
-    await withMcpEnvironment(async () => {
-      const thread = await createThread();
-      control.failUi = true;
-      try {
-        await chat(thread, {
-          ...intent,
-          design: { fileKey: "FILE", nodeId: "12:34" },
-          executionRoles: ["ac", "ui"],
-        });
-        const done = await waitChat(thread.id);
-        const ui = done.publishedTasks.find((view) => view.task?.role === "ui");
-        const ac = done.publishedTasks.find((view) => view.task?.role === "ac");
-        assert.equal(ui?.progress.rows.ui.status, "terminal");
-        assert.equal(
-          ui?.progress.rows.ui.status === "terminal" && ui.progress.rows.ui.outcome,
-          "failed",
-        );
-        assert.equal(ac?.task?.result?.kind === "ac-result" && ac.task.result.payload.length, 1);
-        assert.equal(done.publishedTasks.length, 4);
-      } finally {
-        control.failUi = false;
-      }
-    });
+    await withMcpEnvironment(
+      async () => {
+        const thread = await createThread();
+        control.failUi = true;
+        try {
+          await chat(thread, {
+            ...intent,
+            design: { fileKey: "FILE", nodeId: "12:34" },
+            executionRoles: ["ac", "ui"],
+          });
+          const done = await waitChat(thread.id);
+          const ui = done.publishedTasks.find((view) => view.task?.role === "ui");
+          const ac = done.publishedTasks.find((view) => view.task?.role === "ac");
+          assert.equal(ui?.progress.rows.ui.status, "terminal");
+          assert.equal(
+            ui?.progress.rows.ui.status === "terminal" && ui.progress.rows.ui.outcome,
+            "failed",
+          );
+          assert.equal(ac?.task?.result?.kind === "ac-result" && ac.task.result.payload.length, 1);
+          assert.equal(done.publishedTasks.length, 4);
+        } finally {
+          control.failUi = false;
+        }
+      },
+      true,
+      sourceFixture(),
+    );
   },
 );
 
@@ -937,34 +1039,38 @@ test(
   { skip: !enabled, timeout: 120_000 },
   async () => {
     const thread = await createThread();
-    await withMcpEnvironment(async () => {
-      await chat(thread, intent);
-      const before = await waitChat(thread.id);
-      const calls = providerCalls.length;
-      await shutdownChatRuntime();
-      runtimeLaunched = false;
-      const restart = spawnSync(
-        process.execPath,
-        [
-          "--import",
-          "tsx",
-          "--input-type=module",
-          "-e",
-          `
+    await withMcpEnvironment(
+      async () => {
+        await chat(thread, intent);
+        const before = await waitChat(thread.id);
+        const calls = providerCalls.length;
+        await shutdownChatRuntime();
+        runtimeLaunched = false;
+        const restart = spawnSync(
+          process.execPath,
+          [
+            "--import",
+            "tsx",
+            "--input-type=module",
+            "-e",
+            `
       const { launchChatRuntime, shutdownChatRuntime } = await import("./server/harness/run.ts");
       const { hydrateThread } = await import("./server/harness/run-store.ts");
       await launchChatRuntime();
       console.log("RELOADED " + JSON.stringify((await hydrateThread("${thread.id}")).publishedTasks));
       await shutdownChatRuntime();
     `,
-        ],
-        { encoding: "utf8", env: process.env, timeout: 30_000 },
-      );
-      assert.equal(restart.status, 0, restart.stderr);
-      const reloaded = restart.stdout.split("\n").find((line) => line.startsWith("RELOADED "));
-      assert.deepEqual(JSON.parse(reloaded!.slice(9)), before.publishedTasks);
-      assert.equal(providerCalls.length, calls);
-    });
+          ],
+          { encoding: "utf8", env: process.env, timeout: 30_000 },
+        );
+        assert.equal(restart.status, 0, restart.stderr);
+        const reloaded = restart.stdout.split("\n").find((line) => line.startsWith("RELOADED "));
+        assert.deepEqual(JSON.parse(reloaded!.slice(9)), before.publishedTasks);
+        assert.equal(providerCalls.length, calls);
+      },
+      true,
+      sourceFixture(),
+    );
   },
 );
 

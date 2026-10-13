@@ -71,7 +71,7 @@ export const agentRegistry = {
     tools: [atlassianToolFactory],
     registration: "atlassian_read",
     codeMode: "enabled",
-    profile: "requirements-v3",
+    profile: "requirements-v4",
     systemPrompt: qaSystemPrompts.atlassian,
   },
   planner: {
@@ -81,7 +81,7 @@ export const agentRegistry = {
     tools: [],
     registration: "none",
     codeMode: "enabled",
-    profile: "planning-v2",
+    profile: "planning-v3",
     systemPrompt: qaSystemPrompts.planner,
   },
   ac: {

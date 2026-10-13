@@ -8,13 +8,8 @@ import {
   extractJson,
   observeStream,
   restoreDesignCapture,
-  sourceAnchors,
 } from "../../../server/harness/testing-child";
-import {
-  digestOf,
-  sourceCaptureView,
-  validateRequirements,
-} from "../../../server/harness/testing-domain";
+import { assembleRequirements, digestOf } from "../../../server/harness/testing-domain";
 import { roleFeedbackPrompt } from "../../../server/harness/prompts";
 import type { TestingExecution } from "../../../server/harness/testing-store";
 import { delegationInputSchema } from "../../../shared/testing";
@@ -28,128 +23,37 @@ const { scriptedEvents } = createRequire(import.meta.url)(
   }) => Array<Record<string, unknown>>;
 };
 
-test("private ID feedback identifies the selected capture without dumping source and stays bounded", () => {
-  const source = { kind: "jira" as const, issueKey: "PROJ-123" };
-  const capture = {
-    reference: source,
-    digest: "selected-native-digest",
-    anchors: ["private source body"],
-    capturedAt: "today",
-  };
-  const validId = sourceCaptureView(capture).anchorRefs[0]!.id;
-  const decision = validateRequirements(
+test("source read feedback names unread sources without dumping read text and stays bounded", () => {
+  const output = { result: JSON.stringify({ key: "PROJ-123", summary: "private source body" }) };
+  const decision = assembleRequirements(
     {
-      criteria: [
-        { key: "AC-1", statement: "Checkout succeeds", source, anchorId: "later-read-id" },
+      goal: "Checkout",
+      sources: [
+        { kind: "jira", issueKey: "PROJ-123" },
+        { kind: "confluence", pageId: "77" },
       ],
-      unresolved: [],
     },
-    { goal: "Checkout", captures: [capture] },
+    [
+      {
+        nativeName: "jira_get_issue",
+        input: { issue_key: "PROJ-123" },
+        output,
+        outputDigest: digestOf(output),
+        bindings: { capturedAt: "2026-10-13T00:00:00.000Z" },
+      },
+    ],
   );
   assert.equal(decision.kind, "rejected");
   if (decision.kind !== "rejected") throw new Error("Expected private rejection");
-  const feedback = roleFeedbackPrompt(decision.issues);
-  assert.match(feedback, /host-selected capture/);
-  assert.ok(feedback.includes(capture.digest));
-  assert.ok(feedback.includes(validId));
-  assert.equal(feedback.includes(capture.anchors[0]!), false);
+  assert.equal(
+    roleFeedbackPrompt(decision.issues),
+    "Private validation failed: task.sources[1]: confluence:77 has no successful read",
+  );
   const bounded = roleFeedbackPrompt(
     Array.from({ length: 25 }, (_, index) => `${index}:` + "x".repeat(600)),
   );
   assert.equal(bounded.length, "Private validation failed: ".length + 20 * 512 + 19 * 2);
   assert.equal(bounded.includes("20:"), false);
-});
-
-test("source anchors come from actual leaf strings", () => {
-  assert.deepEqual(sourceAnchors({ issue: { summary: "AC-1", empty: "  " }, count: 1 }), ["AC-1"]);
-});
-
-test("source anchors decode the Jira result envelope without treating serialized JSON as evidence", () => {
-  const issue = { key: "FETM-78", summary: "Plan checkout", description: "d".repeat(456) };
-  assert.deepEqual(sourceAnchors({ result: JSON.stringify(issue) }, 24, "jira_get_issue"), [
-    "d".repeat(456),
-    "FETM-78",
-    "Plan checkout",
-  ]);
-  assert.deepEqual(
-    sourceAnchors(
-      { result: JSON.stringify({ ...issue, description: "d".repeat(2048) }) },
-      24,
-      "jira_get_issue",
-    ),
-    ["FETM-78", "Plan checkout"],
-  );
-  for (const result of ["", "{broken", "null", "[]", "{}", '{"error":"not found"}']) {
-    assert.deepEqual(sourceAnchors({ result }, 24, "jira_get_issue"), [], result);
-  }
-  assert.deepEqual(sourceAnchors({ description: '{"key":"FETM-78"}' }), ['{"key":"FETM-78"}']);
-});
-
-test("Jira content anchors survive metadata exhausting the leaf budget", () => {
-  const metadata = Object.fromEntries(
-    Array.from({ length: 30 }, (_, index) => [`custom-${index}`, { field_id: `field-${index}` }]),
-  );
-  const anchors = sourceAnchors(
-    {
-      result: JSON.stringify({
-        ...metadata,
-        key: "FETM-78",
-        summary: "Plan checkout",
-        description: "The product costs NT$100",
-      }),
-    },
-    24,
-    "jira_get_issue",
-  );
-  assert.deepEqual(anchors.slice(0, 3), ["The product costs NT$100", "FETM-78", "Plan checkout"]);
-});
-
-test("non-Jira result wrappers keep generic leaf anchors without decoding", () => {
-  const page = { title: "Confluence page", body: "Checkout rules" };
-  const result = JSON.stringify(page);
-  for (const nativeName of [undefined, "confluence_get_page", "unknown_tool"]) {
-    assert.deepEqual(sourceAnchors({ result }, 24, nativeName), [result]);
-    assert.deepEqual(sourceAnchors({ result: page }, 24, nativeName), [
-      "Checkout rules",
-      "Confluence page",
-    ]);
-    assert.deepEqual(
-      sourceAnchors({ result: [{ title: "Confluence page" }, "Checkout rules"] }, 24, nativeName),
-      ["Confluence page", "Checkout rules"],
-    );
-    assert.deepEqual(sourceAnchors({ result: '{"key":"FETM-78"}' }, 24, nativeName), [
-      '{"key":"FETM-78"}',
-    ]);
-  }
-});
-
-test("Jira plain objects and object or array results retain generic leaf behavior", () => {
-  const issue = { key: "FETM-78", summary: "Plan checkout", description: "Checkout rules" };
-  const expected = ["Checkout rules", "FETM-78", "Plan checkout"];
-  assert.deepEqual(sourceAnchors(issue, 24, "jira_get_issue"), expected);
-  assert.deepEqual(sourceAnchors({ result: issue }, 24, "jira_get_issue"), expected);
-  assert.deepEqual(sourceAnchors({ result: [issue] }, 24, "jira_get_issue"), expected);
-});
-
-test("duplicate Jira priority anchors do not spend the unique anchor budget", () => {
-  const result = JSON.stringify({
-    description: "Checkout description",
-    key: "FETM-78",
-    summary: "Plan checkout",
-    details: ["detail-1", "detail-2", "detail-3", "detail-4"],
-    zAcceptance: "Tail acceptance",
-    zzOverflow: "Over budget",
-  });
-  assert.deepEqual(sourceAnchors({ result }, 8, "jira_get_issue"), [
-    "Checkout description",
-    "FETM-78",
-    "Plan checkout",
-    "detail-1",
-    "detail-2",
-    "detail-3",
-    "detail-4",
-    "Tail acceptance",
-  ]);
 });
 
 test("design capture rejects truncated output, the wrong node, and missing properties", () => {
@@ -389,16 +293,13 @@ test("scripted provider IDs are stable and do not collide with conversation hist
       role: "tool",
       name: "jira_get_issue",
       toolCallId: "read-jira",
-      content: JSON.stringify({
-        output: { fields: { summary: "Order confirmation page" } },
-        sourceCapture: { anchors: ["Order confirmation page"] },
-      }),
+      content: JSON.stringify({ result: JSON.stringify({ key: "CHUM-42", summary: "Order" }) }),
     },
     { id: "requirements-json", role: "assistant", content: "{}" },
     { id: "feedback-3", role: "user", content: "Private validation feedback" },
   ];
   const options = {
-    systemPrompts: ["Extract grounded acceptance criteria."],
+    systemPrompts: ["Read the requested sources."],
     messages: [
       {
         role: "user",
@@ -444,15 +345,13 @@ test("scripted provider IDs are stable and do not collide with conversation hist
     generatedIds.some((id) => historyIds.has(id)),
     false,
   );
-  const content = events.find((event) => event.type === "TEXT_MESSAGE_CONTENT")?.delta;
-  const requirements = JSON.parse(String(content)) as {
-    criteria: Array<{ anchor: string; source: { issueKey: string } }>;
-  };
-  assert.equal(requirements.criteria[0]?.anchor, "Order confirmation page");
-  assert.equal(requirements.criteria[0]?.source.issueKey, "CHUM-42");
+  assert.equal(
+    events.find((event) => event.type === "TEXT_MESSAGE_CONTENT")?.delta,
+    "Requested sources were read.",
+  );
 });
 
-test("planner fixture uses the accepted requirement identity from its root task", () => {
+test("planner fixture defines criteria from raw source text and references them", () => {
   const events = scriptedEvents({
     systemPrompts: ["Plan reproducible test cases."],
     messages: [
@@ -461,7 +360,7 @@ test("planner fixture uses the accepted requirement identity from its root task"
         content: `testing-role:planner\ntesting-task:\n${JSON.stringify({
           targetUrl: "https://preview.example.test/orders",
           requirements: {
-            criteria: [{ id: "crit:AC-9", key: "AC-9", statement: "Receipt appears" }],
+            sources: [{ text: "CHUM-9 Orders\n\n## 驗收條件\n1. AC-9 Receipt appears" }],
           },
         })}`,
       },
@@ -469,9 +368,11 @@ test("planner fixture uses the accepted requirement identity from its root task"
   });
   const content = events.find((event) => event.type === "TEXT_MESSAGE_CONTENT")?.delta;
   const proposal = JSON.parse(String(content)) as {
+    criteria: Array<{ id: string; statement: string }>;
     cases: Array<{ checks: Array<{ criterionId: string }> }>;
   };
-  assert.equal(proposal.cases[0]?.checks[0]?.criterionId, "crit:AC-9");
+  assert.deepEqual(proposal.criteria, [{ id: "AC-9", statement: "Receipt appears" }]);
+  assert.equal(proposal.cases[0]?.checks[0]?.criterionId, "AC-9");
 });
 
 test("the retired whole-pipeline tool is rejected instead of rerouted", async () => {

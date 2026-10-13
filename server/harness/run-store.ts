@@ -46,7 +46,7 @@ import {
 } from "../../shared/testing";
 import {
   admitAttachedInTransaction,
-  acceptRoleCandidateInTransaction,
+  acceptRoleCompletionInTransaction,
   cancelTestingInTransaction,
   closeTestingInTransaction,
   closeUnfinishedTesting,
@@ -65,6 +65,7 @@ import {
   type ActualIoGuard,
   type ActualIoInput,
   type AppendTestingEvent,
+  type RoleCompletion,
   type RoleFrame,
   type TestingAdmission,
   type TestingExecution,
@@ -1542,13 +1543,13 @@ export async function guardActualIO(input: ActualIoInput): Promise<ActualIoGuard
   });
 }
 
-export async function acceptRoleCandidate(
+export async function acceptRoleCompletion(
   ownerRunId: string,
   taskId: string,
-  proposal: unknown,
+  completion: RoleCompletion,
 ): Promise<{ ref: ArtifactRef; kind: ArtifactKind }> {
   return withTestingRoot(ownerRunId, (tx) =>
-    acceptRoleCandidateInTransaction(tx, ownerRunId, taskId, proposal),
+    acceptRoleCompletionInTransaction(tx, ownerRunId, taskId, completion),
   );
 }
 

@@ -102,6 +102,17 @@ export const allTools: WireTool[] = [
   })),
 ];
 
+const wrappedResult = {
+  type: "object",
+  properties: { result: { type: "string" } },
+  required: ["result"],
+  "x-fastmcp-wrap-result": true,
+};
+export const sourceReadPages: WireTool[][] = [
+  coreTools.map((tool) => ({ ...tool, outputSchema: wrappedResult })),
+  allTools.slice(coreTools.length),
+];
+
 type FixtureRule = {
   method: string;
   name?: string;
@@ -112,6 +123,21 @@ type FixtureRule = {
   result?: unknown;
   error?: { code: number; message: string; data?: unknown };
 };
+
+export function sourceReadRule(
+  name: "jira_get_issue" | "confluence_get_page",
+  input: Record<string, unknown>,
+  payload: unknown,
+): FixtureRule {
+  const result = JSON.stringify(payload);
+
+  return {
+    method: "tools/call",
+    name,
+    arguments: input,
+    result: { content: [{ type: "text", text: result }], structuredContent: { result } },
+  };
+}
 type FixtureOptions = {
   pages?: WireTool[][];
   rules?: FixtureRule[];

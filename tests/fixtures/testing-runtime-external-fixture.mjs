@@ -12,42 +12,6 @@ const HISTORY_ID_KEYS = new Set([
   "entityid",
 ]);
 
-function leaves(value, limit = 24) {
-  const found = [];
-
-  const visit = (item) => {
-    if (found.length >= limit) {
-      return;
-    }
-
-    if (typeof item === "string") {
-      const text = item.trim();
-
-      if (text.length > 0 && text.length <= 512) {
-        found.push(text);
-      }
-
-      return;
-    }
-
-    if (Array.isArray(item)) {
-      item.forEach(visit);
-
-      return;
-    }
-
-    if (item && typeof item === "object") {
-      for (const key of Object.keys(item).sort()) {
-        visit(item[key]);
-      }
-    }
-  };
-
-  visit(value);
-
-  return [...new Set(found)];
-}
-
 function textOf(message) {
   if (!message) {
     return "";
@@ -150,12 +114,34 @@ function parseJson(content) {
   }
 }
 
-export const anchorScenarioSource = Array.from(
-  { length: 7 },
-  (_, index) => `AC-${index + 1}: Observable requirement ${index + 1} must hold.`,
-)
-  .join(" ")
-  .padEnd(456, ".");
+function readTool(source) {
+  return source.kind === "jira" ? "jira_get_issue" : "confluence_get_page";
+}
+
+function readInput(source) {
+  return source.kind === "jira" ? { issue_key: source.issueKey } : { page_id: source.pageId };
+}
+
+function plannedCriteria(task) {
+  const lines = (task.requirements?.sources ?? []).flatMap((source) => source.text.split("\n"));
+  const labelled = new Map();
+
+  for (const line of lines) {
+    const match = line.match(/\b(AC-\d+)\b[:：]?\s*(.*)$/);
+
+    if (match && !labelled.has(match[1])) {
+      labelled.set(match[1], { id: match[1], statement: match[2] || line.trim() });
+    }
+  }
+
+  const scoped = new Set((task.summary ?? "").match(/\bAC-\d+\b/g) ?? []);
+  const criteria =
+    labelled.size > 0
+      ? [...labelled.values()]
+      : [{ id: "AC-1", statement: lines[0]?.trim() || "Checkout succeeds" }];
+
+  return scoped.size > 0 ? criteria.filter((criterion) => scoped.has(criterion.id)) : criteria;
+}
 
 export const planningMixedPrompt =
   "Plan CHUM-42 functional checks only. No execution URL or UI validation is needed.";
@@ -205,7 +191,7 @@ export function scriptedEvents(options, control = {}) {
     if (!planned) {
       return toolEvents(identity, "delegate_task", {
         role: "planner",
-        summary: "Plan checkout acceptance checks",
+        summary: intent.plannerSummary ?? "Plan checkout acceptance checks",
         requirementsRef: requirements,
         ...(intent.design ? { design: intent.design } : {}),
       });
@@ -239,117 +225,64 @@ export function scriptedEvents(options, control = {}) {
   }
 
   if (role === "atlassian") {
+    const sources = task.sources ?? [];
+    const feedback = messages
+      .filter((message) => message.role === "user")
+      .map(textOf)
+      .find((text) => text.startsWith("Private validation failed:"));
+    const scenario =
+      control.atlassianScenario ?? (task.summary?.startsWith("source-") ? task.summary : undefined);
+
     if (toolOutputs.length === 0) {
       return toolEvents(identity, "discover_atlassian_tools", {
-        toolNames: control.jiraComment
-          ? ["jira_get_issue", "jira_add_comment"]
-          : ["jira_get_issue"],
+        toolNames: [
+          ...new Set([
+            ...sources.map(readTool),
+            ...(control.jiraComment ? ["jira_add_comment"] : []),
+          ]),
+        ],
       });
     }
 
-    if (toolOutputs.length === 1) {
-      return toolEvents(identity, "jira_get_issue", {
-        issue_key: task.sources?.[0]?.issueKey,
-      });
+    const requested =
+      scenario === "source-missing" || (scenario === "source-retry" && !feedback)
+        ? sources.slice(0, 1)
+        : sources;
+    const reads = toolOutputs.length - 1;
+
+    if (reads < requested.length) {
+      const source = requested[reads];
+
+      return toolEvents(identity, readTool(source), readInput(source));
     }
 
-    if (control.jiraComment && toolOutputs.length === 2) {
+    if (control.jiraComment && reads === requested.length) {
       return toolEvents(identity, "jira_add_comment", {
         issue_key: "CHUM-42",
         body: "Approval fixture **exact body**\nSecond line. No live Jira write.",
       });
     }
-    if (control.jiraComment && toolOutputs.length >= 3) {
-      const source = parseJson(textOf(toolOutputs[1]));
-      return textEvents(
-        identity,
-        JSON.stringify({
-          criteria: [
-            {
-              key: "AC-1",
-              statement: "Checkout succeeds",
-              source: task.sources[0],
-              anchorId: source?.sourceCapture?.anchorRefs?.[0]?.id,
-            },
-          ],
-          unresolved: [],
-        }),
-      );
-    }
-
-    const sourceOutput = [...toolOutputs].reverse()[0];
-    const sourceResponse = sourceOutput
-      ? (parseJson(textOf(sourceOutput)) ?? textOf(sourceOutput))
-      : null;
-    const capturedOutput =
-      sourceResponse && typeof sourceResponse === "object" && "output" in sourceResponse
-        ? sourceResponse.output
-        : sourceResponse;
-    const anchor = leaves(capturedOutput)[0];
-    const scenario =
-      control.atlassianScenario ?? (task.summary?.startsWith("anchor-") ? task.summary : undefined);
-    if (scenario) {
-      const feedback = messages
-        .filter((message) => message.role === "user")
-        .map(textOf)
-        .find((text) => text.startsWith("Private validation failed:"));
-      if (
-        scenario === "anchor-not-extractable" ||
-        scenario === "anchor-malformed-failure" ||
-        scenario === "anchor-incomplete-captures"
-      ) {
-        return textEvents(
-          identity,
-          JSON.stringify({
-            kind: "not_extractable",
-            unresolved:
-              scenario === "anchor-malformed-failure" && !feedback
-                ? []
-                : ["Synthetic source has no testable behavior"],
-          }),
-        );
-      }
-      const ref = sourceResponse?.sourceCapture?.anchorRefs?.find(
-        (item) => item.text === anchorScenarioSource,
-      );
-      const criteria = Array.from({ length: 7 }, (_, index) => ({
-        key: `AC-${index + 1}`,
-        statement: `Observable requirement ${index + 1} must hold`,
-        source: task.sources[0],
-        anchorId: ref?.id ?? "missing-host-anchor",
-      }));
-      if ((scenario === "anchor-repair" || scenario === "anchor-rejected") && !feedback) {
-        criteria[0].anchorId = "fake-anchor-id";
-        criteria[1].key = "AC-1";
-      }
-      if (scenario === "anchor-rejected" && feedback) criteria[0].anchorId = "still-fake";
-      return textEvents(identity, JSON.stringify({ criteria, unresolved: [] }));
-    }
 
     return textEvents(
       identity,
-      JSON.stringify({
-        criteria: [
-          {
-            key: "AC-1",
-            statement: "Checkout succeeds",
-            source: task.sources[0],
-            anchor,
-          },
-        ],
-        unresolved: control.planningMixed
-          ? [
-              "Price rule is not specified",
-              "Execution URL is not supplied",
-              "UI validation is not required",
-            ]
-          : [],
-      }),
+      scenario === "source-invented"
+        ? JSON.stringify({
+            criteria: [{ key: "AC-9", statement: "Invented by the source reader" }],
+            unresolved: ["Invented ambiguity"],
+            sources: [{ reference: sources[0], text: "Invented source text" }],
+          })
+        : "Requested sources were read.",
     );
   }
 
   if (role === "planner") {
-    const criteria = task.requirements?.criteria ?? [];
+    const criteria = plannedCriteria(task);
+    const repair =
+      control.plannerScenario === "planner-repair" &&
+      !messages
+        .filter((message) => message.role === "user")
+        .map(textOf)
+        .some((text) => text.startsWith("Private validation failed:"));
     const checks =
       criteria.length > 1
         ? criteria.map((criterion, index) => ({
@@ -362,7 +295,7 @@ export function scriptedEvents(options, control = {}) {
         : [
             {
               id: "check-1",
-              criterionId: criteria[0]?.id ?? "crit:missing",
+              criterionId: criteria[0]?.id ?? "missing",
               kind: "functional",
               expectedObservation: "UNIQUE-EXPECTED",
               observation: { kind: "text", target: "Order confirmation", comparison: "equals" },
@@ -372,7 +305,7 @@ export function scriptedEvents(options, control = {}) {
     if (task.design) {
       checks.push({
         id: "style-1",
-        criterionId: "crit:AC-1",
+        criterionId: criteria[0]?.id ?? "missing",
         kind: "style",
         design: task.design,
         property: "width",
@@ -384,13 +317,23 @@ export function scriptedEvents(options, control = {}) {
     return textEvents(
       identity,
       JSON.stringify({
+        criteria: repair ? [...criteria, criteria[0]] : criteria,
+        unresolved: control.planningMixed
+          ? [
+              "Price rule is not specified",
+              "Execution URL is not supplied",
+              "UI validation is not required",
+            ]
+          : [],
         cases: [
           {
             id: "case-1",
             title: "Checkout",
             preconditions: [],
             actions: [{ kind: "navigate", path: "/checkout" }],
-            checks,
+            checks: repair
+              ? [...checks, { ...checks[0], id: "check-unknown", criterionId: "AC-404" }]
+              : checks,
           },
         ],
       }),

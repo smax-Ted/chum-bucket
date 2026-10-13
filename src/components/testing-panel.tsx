@@ -465,7 +465,7 @@ function RequirementsSummary({ requirements }: { requirements: PublicRequirement
     return (
       <div className="flex flex-col gap-1">
         <h4 className="text-sm font-medium">需求</h4>
-        <p className="text-xs text-muted-foreground">需求缺失，未取得固定需求全集。</p>
+        <p className="text-xs text-muted-foreground">需求缺失，未取得來源內容。</p>
       </div>
     );
   }
@@ -475,27 +475,19 @@ function RequirementsSummary({ requirements }: { requirements: PublicRequirement
       <h4 className="text-sm font-medium">需求</h4>
       <p className="text-xs">目標：{requirements.goal}</p>
       <ul className="flex flex-col gap-1">
-        {requirements.criteria.map((criterion) => (
+        {requirements.sources.map((source) => (
           <li
-            key={criterion.id}
-            data-criterion-id={criterion.id}
-            className="text-xs text-muted-foreground"
+            key={sourceKey(source.reference)}
+            data-source-kind={source.reference.kind}
+            className="flex flex-col gap-1 text-xs text-muted-foreground"
           >
-            <span className="font-mono">{criterion.key}</span>
-            {" · "}
-            {criterion.statement}
+            <p>
+              {sourceText(source.reference)} · 讀取於 {source.capturedAt} · 內容摘要 {source.digest}
+            </p>
+            <pre className="font-sans break-words whitespace-pre-wrap">{source.text}</pre>
           </li>
         ))}
       </ul>
-      {requirements.unresolved.length > 0 ? (
-        <ul className="flex flex-col gap-1">
-          {requirements.unresolved.map((item) => (
-            <li key={item} className="text-xs text-destructive">
-              待解決：{item}
-            </li>
-          ))}
-        </ul>
-      ) : null}
       {requirements.links ? <FigmaLinkList links={requirements.links} /> : null}
     </div>
   );
@@ -540,6 +532,35 @@ function DeferredCaseList({ cases }: { cases: readonly DeferredCase[] }) {
   );
 }
 
+function PlanCriteria({ plan }: { plan: PublicPlan }) {
+  return (
+    <>
+      <ul className="flex flex-col gap-1">
+        {plan.criteria.map((criterion) => (
+          <li
+            key={criterion.id}
+            data-criterion-id={criterion.id}
+            className="text-xs text-muted-foreground"
+          >
+            <span className="font-mono">{criterion.id}</span>
+            {" · "}
+            {criterion.statement}
+          </li>
+        ))}
+      </ul>
+      {plan.unresolved.length > 0 ? (
+        <ul className="flex flex-col gap-1">
+          {plan.unresolved.map((item) => (
+            <li key={item} className="text-xs text-destructive">
+              待解決：{item}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </>
+  );
+}
+
 function PlanSummary({ plan }: { plan: PublicPlan | null }) {
   if (!plan) {
     return (
@@ -553,6 +574,7 @@ function PlanSummary({ plan }: { plan: PublicPlan | null }) {
   return (
     <div className="flex flex-col gap-2">
       <h4 className="text-sm font-medium">測試計畫</h4>
+      <PlanCriteria plan={plan} />
       <p className="text-xs text-muted-foreground">
         AC 指派：{plan.assignments.ac.join("、") || "無"}；UI 指派：
         {plan.assignments.ui.join("、") || "無"}

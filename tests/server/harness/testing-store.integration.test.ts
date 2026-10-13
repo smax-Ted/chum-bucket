@@ -32,14 +32,14 @@ import {
   readStartCancelDeliveries,
   hostTestingRuntime,
 } from "../../../server/harness/testing-store";
-import { digestOf, sourceCaptureView } from "../../../server/harness/testing-domain";
+import { digestOf } from "../../../server/harness/testing-domain";
 import { assertDelegationCutover } from "../../../server/harness/testing-run";
 import { createUseBrowserTool } from "../../../server/harness/tools/use-browser";
 import { MODEL } from "../../../server/harness/agents";
 import {
   BUILD,
   admitAttachedTesting,
-  acceptRoleCandidate,
+  acceptRoleCompletion,
   cancelPublishedTesting,
   cancelTesting,
   closeTesting,
@@ -180,54 +180,20 @@ async function createThread() {
   return thread;
 }
 
-async function linkSourceCapture(task: { taskId: string; attemptNonce: number }) {
-  const output = { summary: "AC-1" };
-  const digest = digestOf(output);
-  const capture = {
-    reference: source,
-    digest,
-    anchors: ["AC-1"],
-    capturedAt: "2026-10-09T00:00:00.000Z",
-  };
-  await appendTrustedReceipt({
-    id: `jira-${task.taskId}`,
-    taskId: task.taskId,
-    attemptNonce: task.attemptNonce,
-    slot: "capture",
-    nativeName: "jira_get_issue",
-    route: "direct",
-    input: { issue_key: source.issueKey },
-    output,
-    bindings: {},
-  });
-  await appendTrustedReceipt({
-    id: `cap-${task.taskId}`,
-    taskId: task.taskId,
-    attemptNonce: task.attemptNonce,
-    slot: "capture",
-    nativeName: "source_capture",
-    route: "direct",
-    input: { source },
-    output: {
-      reference: source,
-      digest,
-      anchors: ["AC-1"],
-      capturedAt: "2026-10-09T00:00:00.000Z",
-    },
-    bindings: { nativeName: "jira_get_issue", nativeOutputDigest: digest },
-  });
+const checkoutIssue = {
+  key: "CHUM-42",
+  summary: "Checkout",
+  description: "## 驗收條件\n1. AC-1 Checkout succeeds",
+  customfield_10009: rawMarker,
+};
+const checkoutText = "CHUM-42 Checkout\n\n## 驗收條件\n1. AC-1 Checkout succeeds";
 
-  return capture;
-}
-
-async function linkVersionedCapture(task: { taskId: string; attemptNonce: number }, slot: string) {
-  const output = { summary: "AC-1", revision: `${task.attemptNonce}:${slot}` };
-  const capture = {
-    reference: source,
-    digest: digestOf(output),
-    anchors: ["AC-1"],
-    capturedAt: "2026-10-11T00:00:00.000Z",
-  };
+async function readJira(
+  task: { taskId: string; attemptNonce: number },
+  slot = "io-1",
+  issue: Record<string, unknown> = checkoutIssue,
+) {
+  const output = { result: JSON.stringify(issue) };
   await appendTrustedReceipt({
     id: `jira-${task.taskId}-${task.attemptNonce}-${slot}`,
     taskId: task.taskId,
@@ -235,23 +201,16 @@ async function linkVersionedCapture(task: { taskId: string; attemptNonce: number
     slot,
     nativeName: "jira_get_issue",
     route: "direct",
-    input: { issue_key: source.issueKey },
+    input: { issue_key: source.issueKey, include: "remote_links" },
     output,
     bindings: {},
   });
-  await appendTrustedReceipt({
-    id: `cap-${task.taskId}-${task.attemptNonce}-${slot}`,
-    taskId: task.taskId,
-    attemptNonce: task.attemptNonce,
-    slot,
-    nativeName: "source_capture",
-    route: "direct",
-    input: { source },
-    output: capture,
-    bindings: { nativeName: "jira_get_issue", nativeOutputDigest: capture.digest },
-  });
 
-  return capture;
+  return output;
+}
+
+function planProposal(cases: readonly unknown[], unresolved: readonly string[] = []) {
+  return { criteria: [{ id: "AC-1", statement: "Checkout succeeds" }], unresolved, cases };
 }
 
 async function taskBudget(taskId: string) {
@@ -398,7 +357,7 @@ test(
     );
     assert.deepEqual(await taskBudget(frame.taskId), budgetBeforeCancel);
     await assert.rejects(
-      () => acceptRoleCandidate(admission.parentRunId, frame.taskId, { criteria: [] }),
+      () => acceptRoleCompletion(admission.parentRunId, frame.taskId, { role: "atlassian" }),
       /fence/,
     );
   },
@@ -749,14 +708,14 @@ test(
 );
 
 test(
-  "child-selected current-attempt lexical capture IDs pass store and replay the same ref",
+  "store assembly selects the first current-attempt native read in lexical slot order and replays the same ref",
   { skip: !enabled },
   async () => {
     await ensureDatabase();
     for (const historicalAttempt of [false, true]) {
       const thread = await createThread();
       const parent = await parentRun(thread.id);
-      const admission = await admitAttachedTesting(parent, "capture-order", sourceInput);
+      const admission = await admitAttachedTesting(parent, "read-order", sourceInput);
       const first = await reserveRoleTask(
         parent.runId,
         admission.operationId,
@@ -766,194 +725,91 @@ test(
       assert.ok(first);
       const db = await database();
       if (historicalAttempt) {
-        await linkVersionedCapture(first, "io-1");
+        await readJira(first, "io-0", { ...checkoutIssue, summary: "Previous attempt" });
         await db
           .update(testingTasksTable)
           .set({ attempt_nonce: 2 })
           .where(eq(testingTasksTable.id, first.taskId));
       }
       const task = { ...first, attemptNonce: historicalAttempt ? 2 : 1 };
-      const later = await linkVersionedCapture(task, "io-2");
-      const selected = await linkVersionedCapture(task, "io-10");
-      const execution = await readTestingExecution(parent.runId, admission.operationId);
-      const captures = execution.tasks[0]!.receipts.filter(
-        (receipt) => receipt.nativeName === "source_capture",
-      );
-      assert.deepEqual(
-        captures.map((receipt) => receipt.output),
-        [selected, later],
-      );
-      const proposal = {
-        criteria: [
-          {
-            key: "AC-1",
-            statement: "Checkout succeeds",
-            source,
-            anchorId: sourceCaptureView(selected).anchorRefs[0]!.id,
-          },
-        ],
-        unresolved: [],
-      };
-      await assert.rejects(
-        () =>
-          acceptRoleCandidate(parent.runId, task.taskId, {
-            ...proposal,
-            criteria: [
-              { ...proposal.criteria[0], anchorId: sourceCaptureView(later).anchorRefs[0]!.id },
-            ],
-          }),
-        /anchorId.*unknown anchor/,
-      );
-      const accepted = await acceptRoleCandidate(parent.runId, task.taskId, proposal);
-      assert.deepEqual(await acceptRoleCandidate(parent.runId, task.taskId, proposal), accepted);
-      const [artifact] = await db
-        .select()
-        .from(testingArtifactsTable)
-        .where(eq(testingArtifactsTable.ref, accepted.ref));
-      assert.deepEqual((artifact!.payload as { captures: unknown[] }).captures, [selected]);
-    }
-  },
-);
-
-test(
-  "legacy alternate capture snapshots replay bit-exact only with authenticated receipts and proposals",
-  { skip: !enabled },
-  async () => {
-    await ensureDatabase();
-    for (const historicalAttempt of [false, true]) {
-      const thread = await createThread();
-      const parent = await parentRun(thread.id);
-      const admission = await admitAttachedTesting(parent, "legacy-capture", sourceInput);
-      const task = await reserveRoleTask(
-        parent.runId,
-        admission.operationId,
-        "atlassian",
-        sourceInput,
-      );
-      assert.ok(task);
-      const legacyCapture = await linkVersionedCapture(task, "io-2");
-      const proposal = {
-        criteria: [{ key: "AC-1", statement: "Checkout succeeds", source, anchor: "AC-1" }],
-        unresolved: [],
-      };
-      const accepted = await acceptRoleCandidate(parent.runId, task.taskId, proposal);
-      const db = await database();
+      await readJira(task, "io-2", { ...checkoutIssue, summary: "Later slot" });
+      const selected = await readJira(task, "io-10", { ...checkoutIssue, summary: "Selected" });
+      await readJira(task, "io-10", { ...checkoutIssue, summary: "Selected" });
+      const accepted = await acceptRoleCompletion(parent.runId, task.taskId, { role: "atlassian" });
+      const [receipt] = await db
+        .select({ bindings: testingReceiptsTable.bindings })
+        .from(testingReceiptsTable)
+        .where(eq(testingReceiptsTable.id, `jira-${task.taskId}-${task.attemptNonce}-io-10`));
       const [original] = await db
         .select()
         .from(testingArtifactsTable)
         .where(eq(testingArtifactsTable.ref, accepted.ref));
       assert.ok(original);
-      if (historicalAttempt) {
-        await db
-          .update(testingTasksTable)
-          .set({ attempt_nonce: 2 })
-          .where(eq(testingTasksTable.id, task.taskId));
-      }
-      const alternate = await linkVersionedCapture(
-        { ...task, attemptNonce: historicalAttempt ? 2 : 1 },
-        "io-10",
-      );
-      assert.deepEqual(await acceptRoleCandidate(parent.runId, task.taskId, proposal), accepted);
+      assert.deepEqual(original.payload, {
+        goal,
+        sources: [
+          {
+            reference: source,
+            text: "CHUM-42 Selected\n\n## 驗收條件\n1. AC-1 Checkout succeeds",
+            links: [],
+            digest: digestOf(selected),
+            capturedAt: (receipt?.bindings as { capturedAt: string }).capturedAt,
+          },
+        ],
+      });
+      await readJira(task, "io-1", { ...checkoutIssue, summary: "Earlier slot after acceptance" });
       assert.deepEqual(
-        await acceptRoleCandidate(parent.runId, task.taskId, {
-          ...proposal,
-          criteria: [
-            {
-              key: "AC-1",
-              statement: "Checkout succeeds",
-              source,
-              anchorId: sourceCaptureView(legacyCapture).anchorRefs[0]!.id,
-            },
-          ],
-        }),
+        await acceptRoleCompletion(parent.runId, task.taskId, { role: "atlassian" }),
         accepted,
       );
-      await assert.rejects(
-        () =>
-          acceptRoleCandidate(parent.runId, task.taskId, {
-            ...proposal,
-            unresolved: ["Forged proposal"],
-          }),
-        /version mismatch/,
-      );
-      for (const capture of [
-        { ...legacyCapture, digest: "forged" },
-        { ...legacyCapture, capturedAt: "forged" },
-        { ...legacyCapture, reference: { kind: "jira", issueKey: "OTHER-1" } },
-        alternate,
-      ]) {
-        const forged = { ...(original.payload as Record<string, unknown>), captures: [capture] };
-        await db
-          .update(testingArtifactsTable)
-          .set({ payload: forged, payload_digest: digestOf(forged) })
-          .where(eq(testingArtifactsTable.ref, accepted.ref));
-        await assert.rejects(
-          () => acceptRoleCandidate(parent.runId, task.taskId, proposal),
-          /capture|version mismatch/,
-        );
-      }
-      await db
-        .update(testingArtifactsTable)
-        .set({ payload: original.payload, payload_digest: original.payload_digest })
-        .where(eq(testingArtifactsTable.ref, accepted.ref));
-      assert.deepEqual(await acceptRoleCandidate(parent.runId, task.taskId, proposal), accepted);
       const [replayed] = await db
         .select()
         .from(testingArtifactsTable)
         .where(eq(testingArtifactsTable.ref, accepted.ref));
       assert.deepEqual(replayed, original);
-      const receiptId = `cap-${task.taskId}-1-io-2`;
-      const [receipt] = await db
-        .select()
-        .from(testingReceiptsTable)
-        .where(eq(testingReceiptsTable.id, receiptId));
-      assert.ok(receipt);
-      await db
-        .update(testingReceiptsTable)
-        .set({ bindings: { nativeName: "jira_get_issue", nativeOutputDigest: "forged" } })
-        .where(eq(testingReceiptsTable.id, receiptId));
-      await assert.rejects(
-        () => acceptRoleCandidate(parent.runId, task.taskId, proposal),
-        /host capture/,
+      assert.equal(
+        (
+          await db
+            .select({ id: testingReceiptsTable.id })
+            .from(testingReceiptsTable)
+            .where(eq(testingReceiptsTable.task_id, task.taskId))
+        ).length,
+        historicalAttempt ? 4 : 3,
       );
-      await db
-        .update(testingReceiptsTable)
-        .set({ bindings: receipt.bindings })
-        .where(eq(testingReceiptsTable.id, receiptId));
-      const nativeId = `jira-${task.taskId}-1-io-2`;
-      const [native] = await db
-        .select()
-        .from(testingReceiptsTable)
-        .where(eq(testingReceiptsTable.id, nativeId));
-      assert.ok(native);
-      await db
-        .update(testingReceiptsTable)
-        .set({ output: { summary: "Forged native response" } })
-        .where(eq(testingReceiptsTable.id, nativeId));
-      await assert.rejects(
-        () => acceptRoleCandidate(parent.runId, task.taskId, proposal),
-        /native response/,
-      );
-      await db
-        .update(testingReceiptsTable)
-        .set({ output: native.output })
-        .where(eq(testingReceiptsTable.id, nativeId));
+      for (const payload of [
+        { ...(original.payload as Record<string, unknown>), goal: "Forged goal" },
+        { goal, criteria: [], unresolved: [], captures: [] },
+      ]) {
+        await db
+          .update(testingArtifactsTable)
+          .set({ payload, payload_digest: digestOf(payload) })
+          .where(eq(testingArtifactsTable.ref, accepted.ref));
+        await assert.rejects(
+          () => acceptRoleCompletion(parent.runId, task.taskId, { role: "atlassian" }),
+          /version mismatch/,
+        );
+      }
       const metadata = original.metadata as { versions: Record<string, string> };
       await db
         .update(testingArtifactsTable)
         .set({
+          payload: original.payload,
+          payload_digest: original.payload_digest,
           metadata: { ...metadata, versions: { ...metadata.versions, model: "forged-model" } },
         })
         .where(eq(testingArtifactsTable.ref, accepted.ref));
       await assert.rejects(
-        () => acceptRoleCandidate(parent.runId, task.taskId, proposal),
+        () => acceptRoleCompletion(parent.runId, task.taskId, { role: "atlassian" }),
         /version mismatch/,
       );
       await db
         .update(testingArtifactsTable)
         .set({ metadata: original.metadata })
         .where(eq(testingArtifactsTable.ref, accepted.ref));
-      assert.deepEqual(await acceptRoleCandidate(parent.runId, task.taskId, proposal), accepted);
+      assert.deepEqual(
+        await acceptRoleCompletion(parent.runId, task.taskId, { role: "atlassian" }),
+        accepted,
+      );
     }
   },
 );
@@ -989,80 +845,28 @@ test(
       /collision/,
     );
     await assert.rejects(
-      () =>
-        appendTrustedObservation({
-          taskId: sourceTask.taskId,
-          attemptNonce: 1,
-          key: "forged",
-          body: {
-            kind: "tool_started",
-            toolName: "source_capture",
-            route: "direct",
-            at: privateMarker,
-          },
-        }),
-      /minted/,
+      () => acceptRoleCompletion(parent.runId, sourceTask.taskId, { role: "atlassian" }),
+      /task\.sources\[0\]: jira:CHUM-42 has no successful read/,
     );
     await assert.rejects(
       () =>
-        appendTrustedReceipt({
-          id: "forged",
-          taskId: sourceTask.taskId,
-          attemptNonce: 1,
-          slot: "forged",
-          nativeName: "source_capture",
-          route: "direct",
-          input: { source },
-          output: {
-            reference: source,
-            digest: "forged",
-            anchors: ["AC-1"],
-            capturedAt: "today",
-            raw: rawMarker,
-          },
-          bindings: {},
-        }),
-      /private host receipt/,
+        acceptRoleCompletion(parent.runId, sourceTask.taskId, { role: "planner", proposal: {} }),
+      /Completion role does not match its task/,
     );
-    const capture = await linkSourceCapture(sourceTask);
-    const proposal = {
-      criteria: [{ key: "AC-1", statement: "Checkout succeeds", source, anchor: "AC-1" }],
-      unresolved: [],
-    };
-    await assert.rejects(
-      () =>
-        acceptRoleCandidate(parent.runId, sourceTask.taskId, {
-          kind: "not_extractable",
-          unresolved: ["No extractable behavior"],
-        }),
-      /requirements_not_extractable/,
-    );
-    const idProposal = {
-      criteria: [
-        {
-          key: "AC-1",
-          statement: "Checkout succeeds",
-          source,
-          anchorId: sourceCaptureView(capture).anchorRefs[0]!.id,
-        },
-      ],
-      unresolved: [],
-    };
-    await assert.rejects(
-      () =>
-        acceptRoleCandidate(parent.runId, sourceTask.taskId, {
-          ...idProposal,
-          criteria: [{ ...idProposal.criteria[0], anchorId: "forged" }],
-        }),
-      /anchorId.*unknown anchor/,
-    );
-    const requirements = await acceptRoleCandidate(parent.runId, sourceTask.taskId, proposal);
+    const db = await database();
     assert.deepEqual(
-      await acceptRoleCandidate(parent.runId, sourceTask.taskId, proposal),
-      requirements,
+      await db
+        .select({ ref: testingArtifactsTable.ref })
+        .from(testingArtifactsTable)
+        .where(eq(testingArtifactsTable.thread_id, thread.id)),
+      [],
     );
+    await readJira(sourceTask);
+    const requirements = await acceptRoleCompletion(parent.runId, sourceTask.taskId, {
+      role: "atlassian",
+    });
     assert.deepEqual(
-      await acceptRoleCandidate(parent.runId, sourceTask.taskId, idProposal),
+      await acceptRoleCompletion(parent.runId, sourceTask.taskId, { role: "atlassian" }),
       requirements,
     );
     await ackDelivery(`start:${sourceTask.taskId}`, "quiet");
@@ -1072,9 +876,10 @@ test(
     assert.equal(firstView.task?.result?.kind, "requirements");
     assert.equal(
       firstView.task?.result?.kind === "requirements" &&
-        firstView.task.result.payload.criteria[0]?.statement,
-      "Checkout succeeds",
+        firstView.task.result.payload.sources[0]?.text,
+      checkoutText,
     );
+    assert.equal(JSON.stringify(firstView).includes(rawMarker), false);
     assert.equal(firstView.report, null);
 
     const plannerInput = delegationInputSchema.parse({
@@ -1099,13 +904,16 @@ test(
       checks: [
         {
           id: "check-1",
-          criterionId: "crit:AC-1",
+          criterionId: "AC-1",
           kind: "functional" as const,
           expectedObservation: "Order confirmation is visible",
         },
       ],
     };
-    const plan = await acceptRoleCandidate(parent.runId, planner.taskId, { cases: [planCase] });
+    const plan = await acceptRoleCompletion(parent.runId, planner.taskId, {
+      role: "planner",
+      proposal: planProposal([planCase]),
+    });
     const execution = await readTestingExecution(parent.runId, planning.operationId);
     assert.equal(execution.intent.targetUrl, null);
     assert.equal(execution.tasks.length, 1);
@@ -1135,7 +943,7 @@ test(
           planRef: plan.ref,
           targetUrl,
         }),
-      /no checks/,
+      /no automated checks for the delegated role/,
     );
     const foreignThread = await createThread();
     const foreignParent = await parentRun(foreignThread.id);
@@ -1220,17 +1028,23 @@ test(
     };
     await assert.rejects(
       () =>
-        acceptRoleCandidate(parent.runId, ac.taskId, {
-          checks: [
-            {
-              ...resultProposal.checks[0],
-              evidence: [{ receiptId: "forged", digest: receipt.outputDigest }],
-            },
-          ],
+        acceptRoleCompletion(parent.runId, ac.taskId, {
+          role: "ac",
+          proposal: {
+            checks: [
+              {
+                ...resultProposal.checks[0],
+                evidence: [{ receiptId: "forged", digest: receipt.outputDigest }],
+              },
+            ],
+          },
         }),
       /receipt/,
     );
-    const result = await acceptRoleCandidate(parent.runId, ac.taskId, resultProposal);
+    const result = await acceptRoleCompletion(parent.runId, ac.taskId, {
+      role: "ac",
+      proposal: resultProposal,
+    });
     await ackDelivery(`start:${ac.taskId}`, "quiet");
     const lastView = await closeTesting(parent.runId, checking.operationId, "completed");
     assert.equal(
@@ -1265,10 +1079,10 @@ test(
     assert.equal(new Set(hydrated.publishedTasks.map((view) => view.runId)).size, 3);
     const storedSource = await readTestingExecution(parent.runId, sourceAdmission.operationId);
     assert.deepEqual(
-      storedSource.tasks[0]?.receipts.find((item) => item.nativeName === "source_capture")?.output,
-      capture,
+      storedSource.tasks[0]?.receipts.map((item) => item.nativeName),
+      ["jira_get_issue"],
     );
-    const db = await database();
+    assert.equal(JSON.stringify(hydrated.publishedTasks).includes(rawMarker), false);
     const pins = await db
       .select({ metadata: testingArtifactsTable.metadata })
       .from(testingPinsTable)
@@ -1315,7 +1129,10 @@ test(
       false,
     );
     assert.equal((await hydrateThread(thread.id)).activeRun?.runId, parent.runId);
-    await assert.rejects(() => acceptRoleCandidate(parent.runId, task.taskId, {}), /fence/);
+    await assert.rejects(
+      () => acceptRoleCompletion(parent.runId, task.taskId, { role: "atlassian" }),
+      /fence/,
+    );
     await assert.rejects(() => cancelPublishedTesting(thread.id, parent.runId), /not found/);
   },
 );
@@ -1335,10 +1152,9 @@ test(
       sourceInput,
     );
     assert.ok(task);
-    await linkSourceCapture(task);
-    const requirements = await acceptRoleCandidate(parent.runId, task.taskId, {
-      criteria: [{ key: "AC-1", statement: "Checkout succeeds", source, anchor: "AC-1" }],
-      unresolved: [],
+    await readJira(task);
+    const requirements = await acceptRoleCompletion(parent.runId, task.taskId, {
+      role: "atlassian",
     });
     const db = await database();
     const [storedRequirements] = await db
@@ -1350,6 +1166,7 @@ test(
       null,
       {},
       { ...(storedRequirements.payload as object), goal: "Tampered goal" },
+      { goal, criteria: [], unresolved: [], captures: [] },
     ]) {
       await db
         .update(testingArtifactsTable)
@@ -1383,8 +1200,9 @@ test(
       plannerInput,
     );
     assert.ok(planner);
-    const plan = await acceptRoleCandidate(parent.runId, planner.taskId, {
-      cases: [
+    const plan = await acceptRoleCompletion(parent.runId, planner.taskId, {
+      role: "planner",
+      proposal: planProposal([
         {
           id: "case-1",
           title: "Checkout",
@@ -1393,15 +1211,25 @@ test(
           checks: [
             {
               id: "check-1",
-              criterionId: "crit:AC-1",
+              criterionId: "AC-1",
               kind: "functional",
               expectedObservation: "Checkout succeeds",
             },
           ],
         },
-      ],
+      ]),
     });
-    for (const payload of [null, {}, { targetUrl, assignments: null }]) {
+    const [storedPlan] = await db
+      .select()
+      .from(testingArtifactsTable)
+      .where(eq(testingArtifactsTable.ref, plan.ref));
+    assert.ok(storedPlan);
+    const {
+      criteria: _criteria,
+      unresolved: _unresolved,
+      ...legacyPlan
+    } = storedPlan.payload as Record<string, unknown>;
+    for (const payload of [null, {}, { targetUrl, assignments: null }, legacyPlan]) {
       await db
         .update(testingArtifactsTable)
         .set({ payload: sql`${JSON.stringify(payload)}::jsonb` })
@@ -1417,6 +1245,45 @@ test(
         TestingRequestError,
       );
       assert.equal((await countForThread(thread.id)).operations, 2);
+    }
+    await db
+      .update(testingArtifactsTable)
+      .set({ payload: storedPlan.payload })
+      .where(eq(testingArtifactsTable.ref, plan.ref));
+    for (const [ref, role, profile] of [
+      [requirements.ref, "atlassian", "requirements-v3"],
+      [plan.ref, "planner", "planning-v2"],
+    ] as const) {
+      const [row] = await db
+        .select({ metadata: testingArtifactsTable.metadata })
+        .from(testingArtifactsTable)
+        .where(eq(testingArtifactsTable.ref, ref));
+      const metadata = row!.metadata as { profiles: Record<string, string> };
+      await db
+        .update(testingArtifactsTable)
+        .set({ metadata: { ...metadata, profiles: { ...metadata.profiles, [role]: profile } } })
+        .where(eq(testingArtifactsTable.ref, ref));
+      await assert.rejects(
+        () =>
+          admitAttachedTesting(parent, `old-${profile}`, {
+            role: "ac",
+            summary: "Check",
+            planRef: plan.ref,
+            targetUrl,
+          }),
+        (error: unknown) =>
+          error instanceof TestingRequestError &&
+          error.decisions.some(
+            (decision) =>
+              decision.kind === "rejected" &&
+              decision.ref === ref &&
+              decision.reason === "incompatible_snapshot",
+          ),
+      );
+      await db
+        .update(testingArtifactsTable)
+        .set({ metadata })
+        .where(eq(testingArtifactsTable.ref, ref));
     }
   },
 );
@@ -1579,7 +1446,7 @@ test(
 );
 
 test(
-  "planner reuses unresolved requirements without a URL while execution stays blocked",
+  "planner records unresolved notes in the plan without a URL and assigned execution stays allowed",
   { skip: !enabled },
   async () => {
     await ensureDatabase();
@@ -1593,23 +1460,60 @@ test(
       sourceInput,
     );
     assert.ok(task);
-    await linkSourceCapture(task);
-    const requirements = await acceptRoleCandidate(parent.runId, task.taskId, {
-      criteria: [{ key: "AC-1", statement: "Checkout succeeds", source, anchor: "AC-1" }],
-      unresolved: ["price rule"],
+    await readJira(task);
+    const requirements = await acceptRoleCompletion(parent.runId, task.taskId, {
+      role: "atlassian",
     });
-    const planning = await admitAttachedTesting(parent, "planner", {
+    const plannerInput = {
       role: "planner",
       summary: "Plan",
       requirementsRef: requirements.ref,
-    });
-    const planner = await reserveRoleTask(parent.runId, planning.operationId, "planner", {
-      role: "planner",
-      summary: "Plan",
-      requirementsRef: requirements.ref,
-    });
+    } as const;
+    const planning = await admitAttachedTesting(parent, "planner", plannerInput);
+    const planner = await reserveRoleTask(
+      parent.runId,
+      planning.operationId,
+      "planner",
+      plannerInput,
+    );
     assert.ok(planner);
-    const plan = await acceptRoleCandidate(parent.runId, planner.taskId, {
+    const plan = await acceptRoleCompletion(parent.runId, planner.taskId, {
+      role: "planner",
+      proposal: planProposal(
+        [
+          {
+            id: "case-1",
+            title: "Checkout",
+            preconditions: [],
+            actions: [{ kind: "navigate", path: "/checkout" }],
+            checks: [
+              {
+                id: "check-1",
+                criterionId: "AC-1",
+                kind: "functional",
+                expectedObservation: "Checkout succeeds",
+              },
+            ],
+          },
+        ],
+        ["price rule"],
+      ),
+    });
+    const execution = await readTestingExecution(parent.runId, planning.operationId);
+    assert.equal(execution.intent.targetUrl, null);
+    assert.deepEqual(
+      execution.tasks.map((entry) => entry.frame.role),
+      ["planner"],
+    );
+    const storedPlan = execution.artifacts.find((artifact) => artifact.ref === plan.ref);
+    assert.deepEqual(storedPlan?.payload, {
+      requirementsDigest: execution.artifacts.find((artifact) => artifact.kind === "requirements")
+        ?.payloadDigest,
+      goal,
+      targetUrl: null,
+      design: null,
+      criteria: [{ id: "AC-1", statement: "Checkout succeeds" }],
+      unresolved: ["price rule"],
       cases: [
         {
           id: "case-1",
@@ -1619,46 +1523,36 @@ test(
           checks: [
             {
               id: "check-1",
-              criterionId: "crit:AC-1",
+              criterionId: "AC-1",
               kind: "functional",
               expectedObservation: "Checkout succeeds",
             },
           ],
         },
       ],
-    });
-    const execution = await readTestingExecution(parent.runId, planning.operationId);
-    assert.equal(execution.intent.targetUrl, null);
-    assert.deepEqual(
-      execution.tasks.map((entry) => entry.frame.role),
-      ["planner"],
-    );
-    const storedPlan = execution.artifacts.find((artifact) => artifact.ref === plan.ref);
-    assert.deepEqual((storedPlan?.payload as { assignments: unknown }).assignments, {
-      ac: ["check-1"],
-      ui: [],
+      assignments: { ac: ["check-1"], ui: [] },
+      bounds: { maxCases: 20, maxChecks: 80, maxChecksPerCase: 12 },
     });
     const db = await database();
     const [planRow] = await db
       .select({ metadata: testingArtifactsTable.metadata })
       .from(testingArtifactsTable)
       .where(eq(testingArtifactsTable.ref, plan.ref));
-    assert.equal((planRow?.metadata as { complete: boolean }).complete, false);
-    await assert.rejects(
-      () =>
-        admitAttachedTesting(parent, "execute", {
-          role: "ac",
-          summary: "Execute",
-          planRef: plan.ref,
-          targetUrl,
-        }),
-      (error: unknown) =>
-        error instanceof TestingRequestError &&
-        error.decisions.some(
-          (decision) => decision.kind === "rejected" && decision.reason === "dependency_rejected",
-        ),
+    assert.equal((planRow?.metadata as { complete: boolean }).complete, true);
+    const execute = await admitAttachedTesting(parent, "execute", {
+      role: "ac",
+      summary: "Execute",
+      planRef: plan.ref,
+      targetUrl,
+    });
+    assert.deepEqual(
+      execute.decisions.map((decision) => [decision.ref, decision.kind]),
+      [
+        [plan.ref, "accepted"],
+        [requirements.ref, "accepted"],
+      ],
     );
-    assert.equal((await countForThread(thread.id)).operations, 2);
+    assert.equal((await countForThread(thread.id)).operations, 3);
   },
 );
 

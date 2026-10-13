@@ -168,7 +168,7 @@ function denial(state: string): ApprovalGateOutcome {
       externalId: null,
       retryable: false,
       instruction:
-        "Do not propose another comment in this task. Complete the requirements proposal.",
+        "Do not propose another comment in this task. Finish reading the requested sources.",
     },
   };
 }
@@ -296,8 +296,7 @@ export async function gateToolApproval(
       status: state,
       externalId: receipt?.externalId ?? null,
       retryable: false,
-      instruction:
-        "Continue completing the required requirements proposal. Never retry a denied action.",
+      instruction: "Continue reading the requested sources. Never retry a denied action.",
     },
   };
 }

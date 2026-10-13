@@ -37,7 +37,7 @@ function intentFor(raw: unknown): TestingRequestInput {
   assert.ok(input.role === "ac" || input.role === "ui");
   return {
     goal: requirements.goal,
-    sources: requirements.captures.map((capture) => capture.reference),
+    sources: requirements.sources.map((source) => source.reference),
     ...resultTaskContext(plan, input),
     existingArtifacts: rows.map((row) => artifactRefSchema.parse(row.ref)),
     task: { version: 2, input },
@@ -68,7 +68,6 @@ function envelope(row: StoredArtifactRow) {
 }
 
 const planContext = {
-  requirements,
   requirementsDigest: digestOf(requirements),
   goal: requirements.goal,
   targetUrl: plan.targetUrl,
@@ -94,13 +93,21 @@ test("stored live-shaped artifacts pass digest, scope and canonical reuse before
     }).kind,
     "accepted",
   );
-  assert.equal(requirements.criteria.length, 10);
+  assert.match(
+    requirements.sources[0]!.text,
+    /^FETM-78 司康小舖：商品與購物車\n\n## 驗收條件\n\n1\. AC-1：/,
+  );
+  assert.equal(requirements.sources[0]!.links.length, 5);
+  assert.deepEqual(
+    plan.criteria.map((criterion) => criterion.id),
+    ["AC-1", "AC-2", "AC-3", "AC-4", "AC-5", "AC-6", "AC-7", "UI-1", "UI-2", "UI-3"],
+  );
   assert.equal(plan.targetUrl, null);
   assert.equal(plan.assignments.ac.length, 20);
   assert.equal(plan.assignments.ui.length, 7);
 });
 
-test("URL follow-up accepts explicit assigned checks despite unresolved requirements and deferred outcomes", () => {
+test("URL follow-up accepts explicit assigned checks despite planner unresolved notes and deferred outcomes", () => {
   for (const input of fixture.inputs) {
     const decisions = decide(intentFor(input));
     assert.deepEqual(
@@ -120,8 +127,17 @@ test("URL follow-up accepts explicit assigned checks despite unresolved requirem
     progressVersion: 1,
     outcomes: {},
   });
-  assert.equal(report.acceptance.verdict, "blocked");
-  assert.deepEqual(report.requirements?.unresolved, requirements.unresolved);
+  assert.deepEqual(report.plan?.unresolved, plan.unresolved);
+  assert.equal(plan.unresolved.length, 5);
+  assert.deepEqual(report.acceptance, {
+    verdict: "blocked",
+    reasons: [
+      "ac_results_missing",
+      "ui_results_missing",
+      "requirements_unresolved",
+      "coverage_incomplete",
+    ],
+  });
   assert.ok(report.coverage.some((row) => row.state === "deferred"));
 });
 
@@ -132,7 +148,14 @@ test("assigned-check reuse still rejects altered snapshots, source scope, digest
     { ...requirementsRow, scopeDigest: "altered-scope" },
     { ...requirementsRow, payloadDigest: "altered-digest" },
     { ...requirementsRow, origin: { ...requirementsRow.origin, role: "planner" } },
-    { ...requirementsRow, payload: { ...requirements, captures: [] } },
+    { ...requirementsRow, payload: { ...requirements, sources: [] } },
+    {
+      ...requirementsRow,
+      payload: {
+        ...requirements,
+        sources: requirements.sources.map((source) => ({ ...source, text: "Altered" })),
+      },
+    },
     { ...requirementsRow, threadId: "foreign-thread" },
   ];
   for (const candidate of variants) {
@@ -140,8 +163,15 @@ test("assigned-check reuse still rejects altered snapshots, source scope, digest
       decide(intent, [candidate, planRow]).every((decision) => decision.kind === "rejected"),
     );
   }
-  assert.ok(
-    decide({ ...intent, task: undefined }).every((decision) => decision.kind === "rejected"),
+  assert.deepEqual(
+    decide({ ...intent, task: undefined }).map((decision) => [
+      decision.ref,
+      decision.kind === "rejected" ? decision.reason : decision.kind,
+    ]),
+    [
+      ["artifact-live-requirements", "accepted"],
+      ["artifact-live-plan", "scope_mismatch"],
+    ],
   );
   const input = delegationInputSchema.parse(fixture.inputs[0]);
   assert.ok(input.role === "ac" || input.role === "ui");
@@ -153,6 +183,10 @@ test("assigned-check reuse still rejects altered snapshots, source scope, digest
 
 test("27 real-shaped requirements fit grouped deferred scenarios within 20 cases and 80 checks", () => {
   const expanded = requirementsPayloadSchema.parse(fixture.expandedRequirements);
+  const { criteria, unresolved } = fixture.expandedPlanning as {
+    criteria: { id: string; statement: string }[];
+    unresolved: string[];
+  };
   const groups = Array.from({ length: 3 }, (_, index) => ({
     id: `deferred-scenario-${index}`,
     title: [
@@ -162,23 +196,25 @@ test("27 real-shaped requirements fit grouped deferred scenarios within 20 cases
     ][index]!,
     steps: [
       "Use the visible page navigation to open the relevant product or cart page",
-      "Inspect each source-bound expected outcome",
+      "Inspect each criterion-linked expected outcome",
     ],
     reason:
       "These source expectations require manual verification with setup or properties unavailable to the runner",
-    expectations: expanded.criteria.slice(index * 9, index * 9 + 9).map((criterion) => ({
+    expectations: criteria.slice(index * 9, index * 9 + 9).map((criterion) => ({
       criterionId: criterion.id,
       expectedObservation: criterion.statement,
     })),
   }));
   const context = {
     ...planContext,
-    requirements: expanded,
     requirementsDigest: digestOf(expanded),
     goal: expanded.goal,
     design: null,
   };
-  const result = canonicalizePlan({ cases: [], deferredCases: groups }, context);
+  const result = canonicalizePlan(
+    { criteria, unresolved, cases: [], deferredCases: groups },
+    context,
+  );
   assert.equal(result.kind, "accepted");
   if (result.kind !== "accepted") return;
   assert.equal(result.value.deferredCases?.length, 3);
@@ -198,9 +234,9 @@ test("27 real-shaped requirements fit grouped deferred scenarios within 20 cases
   });
   assert.deepEqual(
     report.coverage.map((row) => row.criterionId),
-    expanded.criteria.map((criterion) => criterion.id),
+    criteria.map((criterion) => criterion.id),
   );
   assert.ok(report.coverage.every((row) => row.state === "deferred"));
-  assert.equal(report.acceptance.verdict, "blocked");
+  assert.deepEqual(report.acceptance, { verdict: "blocked", reasons: ["requirements_unresolved"] });
   assert.deepEqual(report.results, { ac: [], ui: [] });
 });

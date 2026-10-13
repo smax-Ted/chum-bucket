@@ -213,14 +213,22 @@ export type FigmaLink = Readonly<z.infer<typeof figmaLinkSchema>>;
 export const requirementLinkSchema = figmaLinkSchema.extend({ source: sourceSchema });
 export type RequirementLink = Readonly<z.infer<typeof requirementLinkSchema>>;
 
-export const requirementCriterionSchema = z.strictObject({
-  id: z.string().trim().min(1).max(128),
-  key: z.string().trim().min(1).max(128),
-  statement: z.string().trim().min(1).max(2_000),
-  sourceDigest: z.string().trim().min(1).max(128),
-  anchor: z.string().trim().min(1).max(512),
+export const requirementSourceSchema = z.strictObject({
+  reference: sourceSchema,
+  text: z.string(),
+  links: z.array(figmaLinkSchema).max(20),
+  digest: z.string().trim().min(1).max(128),
+  capturedAt: z.string().trim().min(1).max(64),
 });
-export type RequirementCriterion = Readonly<z.infer<typeof requirementCriterionSchema>>;
+export type RequirementSource = Readonly<z.infer<typeof requirementSourceSchema>>;
+
+const planCriterionSchema = z.strictObject({
+  id: z.string().trim().min(1).max(128),
+  statement: z.string().trim().min(1).max(2_000),
+});
+export type PlanCriterion = Readonly<z.infer<typeof planCriterionSchema>>;
+
+export const planCriteriaSchema = z.array(planCriterionSchema).min(1).max(500);
 
 const mockEvidenceBase = {
   caseId: z.string().trim().min(1).max(64),
@@ -379,12 +387,13 @@ export class TestingRequestError extends Error {
 
 export type PublicRequirements = Readonly<{
   goal: string;
-  criteria: readonly RequirementCriterion[];
-  unresolved: readonly string[];
+  sources: readonly RequirementSource[];
   links?: readonly RequirementLink[];
 }>;
 
 export type PublicPlan = Readonly<{
+  criteria: readonly PlanCriterion[];
+  unresolved: readonly string[];
   cases: readonly PlanCase[];
   deferredCases?: readonly DeferredCase[];
   assignments: Readonly<{ ac: readonly string[]; ui: readonly string[] }>;

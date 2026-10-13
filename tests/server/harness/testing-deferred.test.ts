@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { testRunIdSchema } from "../../../shared/testing";
 import type { DeferredCase, PlanCheck } from "../../../shared/testing";
 import {
+  assembleRequirements,
   canonicalizePlan,
   deriveReport,
   digestOf,
@@ -11,23 +12,16 @@ import {
   projectProgress,
   publicIssues,
   publicTaskArtifact,
-  sourceCaptureSchema,
   validateReuse,
-  validateRequirements,
   type CanonicalPlan,
   type PlanContext,
   type Requirements,
-  type SourceCapture,
   type Validation,
 } from "../../../server/harness/testing-domain";
 
-function accept<T>(
-  validation: Validation<T> | Readonly<{ kind: "not_extractable"; unresolved: readonly string[] }>,
-): T {
+function accept<T>(validation: Validation<T>): T {
   if (validation.kind !== "accepted") {
-    throw new Error(
-      `setup failed: ${validation.kind === "rejected" ? validation.issues.join(", ") : "not extractable"}`,
-    );
+    throw new Error(`setup failed: ${validation.issues.join(", ")}`);
   }
 
   return validation.value;
@@ -36,35 +30,37 @@ function accept<T>(
 const source = { kind: "jira" as const, issueKey: "FETM-78" };
 const functionalKeys = ["AC-1", "AC-2", "AC-3", "AC-4", "AC-5", "AC-6", "AC-7"] as const;
 const uiKeys = ["UI-AC-1", "UI-AC-2", "UI-AC-3"] as const;
+const fetmCriteria = [...functionalKeys, ...uiKeys].map((key) => ({
+  id: key,
+  statement: `Statement for ${key}`,
+}));
 
-const capture: SourceCapture = {
-  reference: source,
-  digest: "native-digest",
-  anchors: [...functionalKeys, ...uiKeys],
-  capturedAt: "2026-10-13T00:00:00Z",
-};
+function fetmRequirements(remoteLinks: readonly unknown[] = []): Requirements {
+  const output = {
+    result: JSON.stringify({
+      key: "FETM-78",
+      summary: "司康小舖：商品與購物車",
+      description: [...functionalKeys, ...uiKeys].map((key) => `- ${key}`).join("\n"),
+      remote_links: remoteLinks,
+    }),
+  };
 
-function fetmRequirements(captures: readonly SourceCapture[] = [capture]): Requirements {
   return accept(
-    validateRequirements(
+    assembleRequirements({ goal: "Plan FETM-78", sources: [source] }, [
       {
-        criteria: [...functionalKeys, ...uiKeys].map((key) => ({
-          key,
-          statement: `Statement for ${key}`,
-          source,
-          anchor: key,
-        })),
-        unresolved: [],
+        nativeName: "jira_get_issue",
+        input: { issue_key: "FETM-78", include: "remote_links" },
+        output,
+        outputDigest: digestOf(output),
+        bindings: { capturedAt: "2026-10-13T00:00:00.000Z" },
       },
-      { goal: "Plan FETM-78", captures },
-    ),
+    ]),
   );
 }
 
 const requirements = fetmRequirements();
 
 const context: PlanContext = {
-  requirements,
   requirementsDigest: digestOf(requirements),
   goal: "Plan FETM-78",
   targetUrl: null,
@@ -81,7 +77,7 @@ function functionalCase(key: string) {
     checks: [
       {
         id: `check-${key}`,
-        criterionId: `crit:${key}`,
+        criterionId: `${key}`,
         kind: "functional" as const,
         expectedObservation: `Observable result for ${key}`,
         observation: {
@@ -101,7 +97,7 @@ function deferredCase(key: string, overrides: Partial<DeferredCase> = {}): Defer
     steps: ["Open the product page at desktop width", "Inspect the add-to-cart button"],
     expectations: [
       {
-        criterionId: `crit:${key}`,
+        criterionId: `${key}`,
         expectedObservation: "Button background is #2D6A4F and label is white 16px",
       },
     ],
@@ -111,12 +107,16 @@ function deferredCase(key: string, overrides: Partial<DeferredCase> = {}): Defer
 }
 
 const fetmProposal = {
+  criteria: fetmCriteria,
+  unresolved: [],
   cases: functionalKeys.map(functionalCase),
   deferredCases: uiKeys.map((key) => deferredCase(key)),
 };
 
-test("a source-complete plan covers 7 functional and 3 UI criteria without a URL or design", () => {
+test("a planner-defined plan covers 7 functional and 3 UI criteria without a URL or design", () => {
   const plan = accept(canonicalizePlan(fetmProposal, context));
+  assert.deepEqual(plan.criteria, fetmCriteria);
+  assert.deepEqual(plan.unresolved, []);
   assert.equal(plan.targetUrl, null);
   assert.equal(plan.design, null);
   assert.deepEqual(plan.assignments, {
@@ -131,6 +131,8 @@ test("an all-deferred plan is valid, has empty assignments and no executable cas
   const plan = accept(
     canonicalizePlan(
       {
+        criteria: fetmCriteria,
+        unresolved: [],
         cases: [],
         deferredCases: [...functionalKeys, ...uiKeys].map((key) => deferredCase(key)),
       },
@@ -147,7 +149,7 @@ test("style-only coverage is valid and a mixed plan assigns each executable kind
   const design = { fileKey: "DiPISvcpFmaPsK9QonpeDf", nodeId: "1:81" };
   const style: PlanCheck = {
     id: "check-style",
-    criterionId: "crit:UI-AC-1",
+    criterionId: "UI-AC-1",
     kind: "style",
     design,
     property: "width",
@@ -157,6 +159,8 @@ test("style-only coverage is valid and a mixed plan assigns each executable kind
   const plan = accept(
     canonicalizePlan(
       {
+        criteria: fetmCriteria,
+        unresolved: [],
         cases: [
           ...functionalKeys.map(functionalCase),
           {
@@ -178,13 +182,15 @@ test("style-only coverage is valid and a mixed plan assigns each executable kind
     plan.deferredCases?.flatMap((item) =>
       item.expectations.map((expectation) => expectation.criterionId),
     ),
-    ["crit:UI-AC-2", "crit:UI-AC-3"],
+    ["UI-AC-2", "UI-AC-3"],
   );
 });
 
-test("a style check without the requested design is still rejected and never covers a criterion", () => {
+test("a style check without the requested design is still rejected", () => {
   const result = canonicalizePlan(
     {
+      criteria: fetmCriteria,
+      unresolved: [],
       cases: [
         ...functionalKeys.map(functionalCase),
         {
@@ -195,7 +201,7 @@ test("a style check without the requested design is still rejected and never cov
           checks: [
             {
               id: "check-style",
-              criterionId: "crit:UI-AC-1",
+              criterionId: "UI-AC-1",
               kind: "style",
               design: { fileKey: "__blocked__", nodeId: "0:0" },
               property: "width",
@@ -212,33 +218,20 @@ test("a style check without the requested design is still rejected and never cov
   assert.equal(result.kind, "rejected");
   assert.deepEqual(result.kind === "rejected" ? result.issues : [], [
     "style check check-style does not reference the requested design",
-    "criterion crit:UI-AC-1 has no executable check or deferred case",
   ]);
-});
-
-test("every criterion must be covered and rejections name the criterion", () => {
-  const result = canonicalizePlan(
-    { cases: functionalKeys.map(functionalCase), deferredCases: [deferredCase("UI-AC-1")] },
-    context,
-  );
-  assert.deepEqual(result, {
-    kind: "rejected",
-    issues: [
-      "criterion crit:UI-AC-2 has no executable check or deferred case",
-      "criterion crit:UI-AC-3 has no executable check or deferred case",
-    ],
-  });
 });
 
 test("deferred cases reject unknown and duplicate identities", () => {
   const result = canonicalizePlan(
     {
+      criteria: fetmCriteria,
+      unresolved: [],
       cases: functionalKeys.map(functionalCase),
       deferredCases: [
         ...uiKeys.map((key) => deferredCase(key)),
         deferredCase("AC-1", {
           expectations: [
-            { criterionId: "crit:missing", expectedObservation: "Missing criterion outcome" },
+            { criterionId: "missing", expectedObservation: "Missing criterion outcome" },
           ],
           id: "deferred-missing",
         }),
@@ -268,13 +261,15 @@ test("deferred cases count against the case and check bounds and cannot hide an 
     kind: "rejected",
     issues: ["plan exceeds the case bound", "plan exceeds the check bound"],
   });
-  const empty = canonicalizePlan({ cases: [] }, context);
+  const empty = canonicalizePlan({ criteria: fetmCriteria, unresolved: [], cases: [] }, context);
   assert.equal(empty.kind, "rejected");
 });
 
 test("schema failures report field paths", () => {
   const result = canonicalizePlan(
     {
+      criteria: fetmCriteria,
+      unresolved: [],
       cases: [],
       deferredCases: [{ ...deferredCase("UI-AC-1"), steps: [], reason: "" }],
     },
@@ -286,7 +281,9 @@ test("schema failures report field paths", () => {
   assert.ok(issues.some((issue) => issue.startsWith("deferredCases[0].reason")));
 });
 
-const legacyProposal = {
+const executableProposal = {
+  criteria: fetmCriteria,
+  unresolved: [],
   cases: [...functionalKeys, ...uiKeys].map(functionalCase),
 };
 
@@ -325,15 +322,15 @@ const reuseContext = (planContext: PlanContext, plan: CanonicalPlan) => ({
   planContext,
 });
 
-test("legacy plans without deferredCases keep their digest and reuse unchanged", () => {
-  const legacy = accept(canonicalizePlan(legacyProposal, context));
-  assert.equal("deferredCases" in legacy, false);
-  const parsed = planPayloadSchema.parse(legacy);
+test("plans without deferredCases keep their digest and reuse unchanged", () => {
+  const executable = accept(canonicalizePlan(executableProposal, context));
+  assert.equal("deferredCases" in executable, false);
+  const parsed = planPayloadSchema.parse(executable);
   assert.equal("deferredCases" in parsed, false);
-  assert.equal(digestOf(parsed), digestOf(legacy));
-  const reused = accept(validateReuse(storedPlan(legacy), reuseContext(context, legacy)));
+  assert.equal(digestOf(parsed), digestOf(executable));
+  const reused = accept(validateReuse(storedPlan(executable), reuseContext(context, executable)));
   assert.equal(reused.kind, "plan");
-  assert.equal(digestOf(reused.payload), digestOf(legacy));
+  assert.equal(digestOf(reused.payload), digestOf(executable));
   assert.equal("deferredCases" in reused.payload, false);
 });
 
@@ -348,7 +345,7 @@ test("plans with deferredCases round-trip through reuse and tampering is rejecte
       index === 0
         ? {
             ...item,
-            expectations: [{ criterionId: "crit:UI-AC-1", expectedObservation: "Different" }],
+            expectations: [{ criterionId: "UI-AC-1", expectedObservation: "Different" }],
           }
         : item,
     ),
@@ -357,20 +354,24 @@ test("plans with deferredCases round-trip through reuse and tampering is rejecte
     validateReuse({ ...storedPlan(plan), payload: tampered }, reuseContext(context, plan)),
     { kind: "rejected", issues: ["invalid_evidence"] },
   );
-  const stripped = { ...plan } as Record<string, unknown>;
-  delete stripped.deferredCases;
-  assert.equal(
+  const { deferredCases: _deferredCases, ...stripped } = plan;
+  const restored = accept(
     validateReuse(
       { ...storedPlan(plan), payload: stripped, digest: digestOf(stripped) },
       reuseContext(context, plan),
-    ).kind,
-    "rejected",
+    ),
   );
+  assert.deepEqual(restored.payload, stripped);
 });
 
 test("deferred cases appear in coverage without becoming results, passes or assignments", () => {
   const allDeferred = [...functionalKeys, ...uiKeys].map((key) => deferredCase(key));
-  const plan = accept(canonicalizePlan({ cases: [], deferredCases: allDeferred }, context));
+  const plan = accept(
+    canonicalizePlan(
+      { criteria: fetmCriteria, unresolved: [], cases: [], deferredCases: allDeferred },
+      context,
+    ),
+  );
   const report = deriveReport({
     runId: testRunIdSchema.parse("run-1"),
     rootOutcome: "completed",
@@ -386,7 +387,7 @@ test("deferred cases appear in coverage without becoming results, passes or assi
   assert.deepEqual(
     report.coverage,
     [...functionalKeys, ...uiKeys].map((key) => ({
-      criterionId: `crit:${key}`,
+      criterionId: `${key}`,
       caseId: `deferred-${key}`,
       checkId: null,
       state: "deferred",
@@ -419,7 +420,7 @@ test("a mixed plan keeps unexecuted executable checks uncovered while deferred c
   });
   assert.deepEqual(
     report.coverage.filter((row) => row.state === "deferred").map((row) => row.criterionId),
-    uiKeys.map((key) => `crit:${key}`),
+    uiKeys.map((key) => key),
   );
   assert.equal(report.acceptance.verdict, "blocked");
 });
@@ -433,7 +434,7 @@ test("empty assignments make both execution roles not required", () => {
 
 test("public plan artifacts carry deferred cases only when the plan has them", () => {
   const withDeferred = accept(canonicalizePlan(fetmProposal, context));
-  const without = accept(canonicalizePlan(legacyProposal, context));
+  const without = accept(canonicalizePlan(executableProposal, context));
   const publicWith = publicTaskArtifact({ ref: "a", kind: "plan", payload: withDeferred });
   const publicWithout = publicTaskArtifact({ ref: "b", kind: "plan", payload: without });
   assert.deepEqual(
@@ -458,9 +459,10 @@ test("host-captured Figma links persist in the requirements artifact and its pub
       nodeId: "1:82",
     },
   ];
-  const linked = fetmRequirements([{ ...capture, links }]);
-  assert.deepEqual(linked.captures[0]?.links, links);
-  assert.equal(sourceCaptureSchema.safeParse(linked.captures[0]).success, true);
+  const linked = fetmRequirements(
+    links.map((link, id) => ({ id, object: { url: link.url, title: link.label } })),
+  );
+  assert.deepEqual(linked.sources[0]?.links, links);
   const view = publicTaskArtifact({ ref: "r", kind: "requirements", payload: linked });
   assert.deepEqual(
     view.kind === "requirements" ? view.payload.links : null,
@@ -468,7 +470,7 @@ test("host-captured Figma links persist in the requirements artifact and its pub
   );
   const plain = publicTaskArtifact({ ref: "r", kind: "requirements", payload: requirements });
   assert.equal(plain.kind === "requirements" && "links" in plain.payload, false);
-  assert.equal("links" in (requirements.captures[0] ?? {}), false);
+  assert.deepEqual(requirements.sources[0]?.links, []);
 });
 
 test("grouped expectations each consume the total and per-scenario check budgets", () => {
@@ -480,25 +482,40 @@ test("grouped expectations each consume the total and per-scenario check budgets
       expectations: Array.from(
         { length: Math.min(perCase, count - index * perCase) },
         (_, offset) => ({
-          criterionId: `crit:${keys[(index * perCase + offset) % keys.length]}`,
-          expectedObservation: `Source-bound expected outcome ${index * perCase + offset}`,
+          criterionId: `${keys[(index * perCase + offset) % keys.length]}`,
+          expectedObservation: `Criterion-linked expected outcome ${index * perCase + offset}`,
         }),
       ),
     }));
   const atLimit = accept(
-    canonicalizePlan({ cases: [], deferredCases: scenarios(80, 12) }, context),
+    canonicalizePlan(
+      { criteria: fetmCriteria, unresolved: [], cases: [], deferredCases: scenarios(80, 12) },
+      context,
+    ),
   );
   assert.equal(atLimit.deferredCases?.length, 7);
   assert.equal(atLimit.deferredCases?.flatMap((item) => item.expectations).length, 80);
   assert.deepEqual(atLimit.assignments, { ac: [], ui: [] });
-  assert.deepEqual(canonicalizePlan({ cases: [], deferredCases: scenarios(81, 12) }, context), {
-    kind: "rejected",
-    issues: ["plan exceeds the check bound"],
-  });
-  assert.deepEqual(canonicalizePlan({ cases: [], deferredCases: scenarios(13, 13) }, context), {
-    kind: "rejected",
-    issues: ["case group-0 exceeds the check bound"],
-  });
+  assert.deepEqual(
+    canonicalizePlan(
+      { criteria: fetmCriteria, unresolved: [], cases: [], deferredCases: scenarios(81, 12) },
+      context,
+    ),
+    {
+      kind: "rejected",
+      issues: ["plan exceeds the check bound"],
+    },
+  );
+  assert.deepEqual(
+    canonicalizePlan(
+      { criteria: fetmCriteria, unresolved: [], cases: [], deferredCases: scenarios(13, 13) },
+      context,
+    ),
+    {
+      kind: "rejected",
+      issues: ["case group-0 exceeds the check bound"],
+    },
+  );
 });
 
 test("every grouped expectation is validated and empty expectation lists are rejected", () => {
@@ -511,7 +528,7 @@ test("every grouped expectation is validated and empty expectation lists are rej
               ...scenario,
               expectations: [
                 ...scenario.expectations,
-                { criterionId: "crit:unknown", expectedObservation: "Unknown criterion outcome" },
+                { criterionId: "unknown", expectedObservation: "Unknown criterion outcome" },
               ],
             }
           : scenario,

@@ -11,7 +11,7 @@ import {
   digestOf,
   planScopeDigest,
   requirementsScopeDigest,
-  validateRequirements,
+  type Requirements,
 } from "../../../server/harness/testing-domain";
 import { roleRegistry } from "../../../server/harness/agents";
 import {
@@ -19,13 +19,25 @@ import {
   admitAttachedInTransaction,
   TestingPersistenceError,
   hostTestingRuntime,
-  missingSourceCaptures,
   resultTaskContext,
   testingFinishOutcome,
   type StoredArtifactRow,
 } from "../../../server/harness/testing-store";
 
 const host = hostTestingRuntime({ model: "owner-model", build: "owner-build" });
+const source = { kind: "jira" as const, issueKey: "CHUM-42" };
+const requirements: Requirements = {
+  goal: "Verify checkout",
+  sources: [
+    {
+      reference: source,
+      text: "CHUM-42 Checkout\n\n## 驗收條件\n1. AC-1 Receipt appears",
+      links: [],
+      digest: "source",
+      capturedAt: "2026-10-10T00:00:00.000Z",
+    },
+  ],
+};
 
 function row(
   overrides: Partial<StoredArtifactRow> & Pick<StoredArtifactRow, "ref" | "kind">,
@@ -120,8 +132,8 @@ test("owner snapshot versions are passed in and are not a second model constant"
   assert.equal(host.registration.atlassian.includes(roleRegistry.atlassian.profile), true);
   assert.notEqual(host.registration.atlassian, host.profiles.atlassian);
   assert.deepEqual(host.registration, {
-    atlassian: "requirements:requirements-v3:enabled:atlassian_read",
-    planner: "plan:planning-v2:enabled:none",
+    atlassian: "requirements:requirements-v4:enabled:atlassian_read",
+    planner: "plan:planning-v3:enabled:none",
     ac: "ac-result:functional-v2:enabled:browser_ac",
     ui: "ui-result:style-v2:enabled:browser_ui+figma_read",
   });
@@ -169,8 +181,7 @@ test("explicit bad refs and cross-run results reject without dropping any ref", 
   );
 });
 
-test("planner accepts grounded unresolved requirements with false completeness while retaining snapshot guards", () => {
-  const source = { kind: "jira" as const, issueKey: "CHUM-42" };
+test("planner reuses complete raw requirements while retaining snapshot guards", () => {
   const intent: TestingRequestInput = {
     goal: "Verify checkout",
     sources: [source],
@@ -184,29 +195,6 @@ test("planner accepts grounded unresolved requirements with false completeness w
       },
     },
   };
-  const requirements = validateRequirements(
-    {
-      criteria: [{ key: "AC-1", statement: "Receipt appears", source, anchor: "AC-1" }],
-      unresolved: ["Price rule is not specified", "Execution URL is not supplied"],
-    },
-    {
-      goal: intent.goal,
-      captures: [
-        {
-          reference: source,
-          digest: "source",
-          anchors: ["AC-1"],
-          capturedAt: "2026-10-10T00:00:00Z",
-        },
-      ],
-    },
-  );
-  assert.equal(requirements.kind, "accepted");
-
-  if (requirements.kind !== "accepted") {
-    return;
-  }
-
   const ref = artifactRefSchema.parse("requirements-profile-artifact");
   const metadata = {
     dependencies: [],
@@ -219,46 +207,38 @@ test("planner accepts grounded unresolved requirements with false completeness w
     producerTaskId: "task-1",
     attempt: 1,
     inputDigest: "input",
-    outputDigest: digestOf(requirements.value),
-    complete: false,
+    outputDigest: digestOf(requirements),
+    complete: true,
   };
   const artifact = row({
     ref,
     kind: "requirements",
-    payload: requirements.value,
-    payloadDigest: digestOf(requirements.value),
+    payload: requirements,
+    payloadDigest: digestOf(requirements),
     metadata,
     scopeDigest: requirementsScopeDigest({ goal: intent.goal, sources: intent.sources }),
   });
-  const decide = (value: StoredArtifactRow) =>
+  const decide = (value: StoredArtifactRow, request: TestingRequestInput = intent) =>
     closureDecisions({
       threadId: "thread-1",
-      intent,
+      intent: request,
       refs: [ref],
       rows: new Map([[ref, value]]),
       host,
     });
   assert.equal(decide(artifact)[0]?.kind, "accepted");
-  assert.deepEqual(
-    closureDecisions({
-      threadId: "thread-1",
-      intent: { ...intent, task: undefined },
-      refs: [ref],
-      rows: new Map([[ref, artifact]]),
-      host,
-    }),
-    [{ ref, kind: "rejected", reason: "incomplete" }],
-  );
+  assert.equal(decide(artifact, { ...intent, task: undefined })[0]?.kind, "accepted");
   const rejections: [StoredArtifactRow, string][] = [
     [{ ...artifact, threadId: "foreign-thread" }, "not_accessible"],
     [{ ...artifact, origin: { ...artifact.origin, role: "planner" } }, "untrusted_producer"],
     [{ ...artifact, payloadDigest: "tampered" }, "invalid_evidence"],
     [{ ...artifact, scopeDigest: "tampered" }, "scope_mismatch"],
+    [{ ...artifact, metadata: { ...metadata, complete: false } }, "incomplete"],
     [
       {
         ...artifact,
-        payload: { ...requirements.value, captures: [] },
-        payloadDigest: digestOf({ ...requirements.value, captures: [] }),
+        payload: { ...requirements, sources: [] },
+        payloadDigest: digestOf({ ...requirements, sources: [] }),
       },
       "incomplete",
     ],
@@ -273,35 +253,9 @@ test("planner accepts grounded unresolved requirements with false completeness w
   assert.deepEqual(
     decide({
       ...artifact,
-      metadata: { ...metadata, profiles: { ...metadata.profiles, atlassian: "requirements-v1" } },
+      metadata: { ...metadata, profiles: { ...metadata.profiles, atlassian: "requirements-v3" } },
     }),
     [{ ref, kind: "rejected", reason: "incompatible_snapshot" }],
-  );
-});
-
-test("source capture coverage is the requested source set", () => {
-  const requested = [{ kind: "jira" as const, issueKey: "CHUM-42" }];
-  assert.deepEqual(
-    missingSourceCaptures(requested, [
-      {
-        reference: { kind: "confluence", pageId: "99" },
-        digest: "other",
-        anchors: ["AC-1"],
-        capturedAt: "2026-10-09T00:00:00.000Z",
-      },
-    ]),
-    requested,
-  );
-  assert.deepEqual(
-    missingSourceCaptures(requested, [
-      {
-        reference: { kind: "jira", issueKey: "CHUM-42" },
-        digest: "capture",
-        anchors: ["AC-1"],
-        capturedAt: "2026-10-09T00:00:00.000Z",
-      },
-    ]),
-    [],
   );
 });
 
@@ -328,50 +282,27 @@ test("host runtime rejects an empty owner snapshot", () => {
   assert.throws(() => hostTestingRuntime({ model: " ", build: "owner-build" }), /host snapshot/);
 });
 
-test("a plan bound to no target stays reusable for an explicit execution URL", () => {
-  const source = { kind: "jira" as const, issueKey: "CHUM-42" };
+test("a plan bound to no target with unresolved notes stays reusable for an explicit execution URL", () => {
   const goal = "Verify checkout";
-  const requirements = validateRequirements(
-    {
-      criteria: [{ key: "AC-1", statement: "Receipt appears", source, anchor: "AC-1" }],
-      unresolved: [],
-    },
-    {
-      goal,
-      captures: [
-        {
-          reference: source,
-          digest: "source",
-          anchors: ["AC-1"],
-          capturedAt: "2026-10-10T00:00:00Z",
-        },
-      ],
-    },
-  );
-  assert.equal(requirements.kind, "accepted");
-
-  if (requirements.kind !== "accepted") {
-    return;
-  }
-
   const requirementsRef = artifactRefSchema.parse("requirements-artifact");
   const planRef = artifactRefSchema.parse("plan-artifact");
-  const requirementsDigest = digestOf(requirements.value);
+  const requirementsDigest = digestOf(requirements);
   const plan = canonicalizePlan(
     {
+      criteria: [{ id: "AC-1", statement: "Receipt appears" }],
+      unresolved: ["Receipt template is unspecified"],
       cases: [],
       deferredCases: [
         {
           id: "deferred-1",
           title: "Receipt copy",
           steps: ["Open the receipt"],
-          expectations: [{ criterionId: "crit:AC-1", expectedObservation: "Receipt appears" }],
+          expectations: [{ criterionId: "AC-1", expectedObservation: "Receipt appears" }],
           reason: "Receipt setup is unavailable",
         },
       ],
     },
     {
-      requirements: requirements.value,
       requirementsDigest,
       goal,
       targetUrl: null,
@@ -402,7 +333,7 @@ test("a plan bound to no target stays reusable for an explicit execution URL", (
   const requirementsRow = row({
     ref: requirementsRef,
     kind: "requirements",
-    payload: requirements.value,
+    payload: requirements,
     payloadDigest: requirementsDigest,
     metadata: metadata(requirementsDigest, []),
     scopeDigest: requirementsScopeDigest({ goal, sources: [source] }),
@@ -457,6 +388,8 @@ test("execution binds an unbound plan to the explicit URL and rejects any other 
     requirementsDigest: "digest",
     goal: "Verify checkout",
     design: null,
+    criteria: [{ id: "AC-1", statement: "Receipt appears" }],
+    unresolved: [],
     cases: [],
     bounds: host.bounds,
   };

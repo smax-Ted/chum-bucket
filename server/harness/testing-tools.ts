@@ -16,7 +16,6 @@ import {
   type PlanCheck,
   type StyleCheck,
   type RoleId,
-  type Source,
   type TestingRequestInput,
 } from "../../shared/testing";
 import type { ModelCall } from "./model-turn";
@@ -26,10 +25,8 @@ import {
   checksForRole,
   digestOf,
   sameSource,
-  sourceCaptureView,
   type CanonicalPlan,
   type Requirements,
-  type SourceCapture,
 } from "./testing-domain";
 import {
   discoveryToolName,
@@ -67,13 +64,6 @@ export type TestingNativeHost = Readonly<{
     invocation: TestingNativeInvocation,
     work: () => Promise<unknown>,
   ) => Promise<TestingNativeEnvelope>;
-  captureSource: (
-    input: Readonly<{
-      reference: Source;
-      raw: unknown;
-      nativeReceipt: TestingNativeReceiptReference;
-    }>,
-  ) => Promise<SourceCapture>;
   captureDesign: (
     input: Readonly<{
       reference: DesignReference;
@@ -262,12 +252,10 @@ const HOST_READ_INPUTS: Readonly<Record<string, (input: unknown) => unknown>> = 
   confluence_get_page: withPageMetadata,
 };
 
-function requestedSource(name: string, raw: unknown, intent: TestingRequestInput): Source | null {
+function authorizedRead(name: string, raw: unknown, intent: TestingRequestInput): boolean {
   const reference = readSource(name, raw);
 
-  return reference && intent.sources.some((source) => sameSource(source, reference))
-    ? reference
-    : null;
+  return reference !== null && intent.sources.some((source) => sameSource(source, reference));
 }
 
 async function atlassianRoleTools(
@@ -298,7 +286,7 @@ async function atlassianRoleTools(
               ? {
                   ...definition,
                   description:
-                    "Propose this exact Jira comment for human approval. Never sends before approval. Rejection is final for this task. Continue producing the required requirements artifact.",
+                    "Propose this exact Jira comment for human approval. Never sends before approval. Rejection is final for this task. Continue reading the requested sources; the host assembles the requirements artifact.",
                   inputSchema: convertSchemaToJsonSchema(toolArgumentSchemas.jira_add_comment)!,
                 }
               : definition,
@@ -309,49 +297,26 @@ async function atlassianRoleTools(
         throw new Error("Unknown tool");
       }
 
-      const hostInput = HOST_READ_INPUTS[call.name];
-      const hostCall = hostInput ? { ...call, input: hostInput(call.input) } : call;
-      const invocation = {
-        call: hostCall,
-        input: hostCall.input,
-        nativeName: call.name,
-        route,
-        context,
-      } as const;
-
-      if (call.name === discoveryToolName) {
-        requireRequestedDiscovery(call.input, allowed);
-        const envelope = envelopeOf(
-          await input.host.invoke(invocation, () =>
-            scope.executeTool(messages, hostCall, context, undefined),
-          ),
-        );
-
-        return envelope.output;
-      }
-
       if (call.name === "jira_add_comment") {
         throw new Error("Jira comments require durable orchestration approval");
       }
 
-      const reference = requestedSource(call.name, call.input, input.intent);
-
-      if (!reference) {
+      if (call.name === discoveryToolName) {
+        requireRequestedDiscovery(call.input, allowed);
+      } else if (!authorizedRead(call.name, call.input, input.intent)) {
         throw new Error(`Tool ${call.name} is not authorized for the requested sources`);
       }
 
+      const hostInput = HOST_READ_INPUTS[call.name];
+      const hostCall = hostInput ? { ...call, input: hostInput(call.input) } : call;
       const envelope = envelopeOf(
-        await input.host.invoke(invocation, () =>
-          scope.executeTool(messages, hostCall, context, undefined),
+        await input.host.invoke(
+          { call: hostCall, input: hostCall.input, nativeName: call.name, route, context },
+          () => scope.executeTool(messages, hostCall, context, undefined),
         ),
       );
-      const sourceCapture = await input.host.captureSource({
-        reference,
-        raw: envelope.output,
-        nativeReceipt: { receiptId: envelope.receiptId, outputDigest: envelope.outputDigest },
-      });
 
-      return { output: envelope.output, sourceCapture: sourceCaptureView(sourceCapture) };
+      return envelope.output;
     },
   });
 }

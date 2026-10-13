@@ -42,22 +42,50 @@ export function readSource(nativeName: string, input: unknown): Source | null {
   return null;
 }
 
-export function jiraIssue(raw: unknown): Record<string, unknown> | null {
-  if (!isRecord(raw)) {
+function resultRecord(raw: unknown): Record<string, unknown> | null {
+  if (!isRecord(raw) || typeof raw.result !== "string") {
+    return isRecord(raw) ? raw : null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(raw.result);
+
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function jiraIssue(raw: unknown): Record<string, unknown> | null {
+  const issue = resultRecord(raw);
+
+  return issue && typeof issue.key === "string" && issue.key.trim() ? issue : null;
+}
+
+function withBody(heading: string, body: unknown): string {
+  return typeof body === "string" && body.length > 0 ? `${heading}\n\n${body}` : heading;
+}
+
+function jiraText(raw: unknown, issueKey: string): string | null {
+  const issue = jiraIssue(raw);
+
+  return issue?.key === issueKey && typeof issue.summary === "string"
+    ? withBody(`${issue.key} ${issue.summary}`, issue.description)
+    : null;
+}
+
+function confluenceText(raw: unknown): string | null {
+  const metadata = resultRecord(raw)?.metadata;
+
+  if (!isRecord(metadata) || typeof metadata.title !== "string") {
     return null;
   }
 
-  let issue: unknown = raw;
+  return withBody(metadata.title, isRecord(metadata.content) ? metadata.content.value : undefined);
+}
 
-  if (typeof raw.result === "string") {
-    try {
-      issue = JSON.parse(raw.result);
-    } catch {
-      return null;
-    }
-  }
-
-  return isRecord(issue) && typeof issue.key === "string" && issue.key.trim() ? issue : null;
+export function sourceText(reference: Source, raw: unknown): string | null {
+  return reference.kind === "jira" ? jiraText(raw, reference.issueKey) : confluenceText(raw);
 }
 
 function remoteLinkObject(item: unknown): Record<string, unknown> | null {

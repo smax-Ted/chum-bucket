@@ -2,7 +2,6 @@ import { appendFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { mock } from "node:test";
 import {
-  anchorScenarioSource,
   planningMixedIntent,
   planningMixedPrompt,
   scriptedEvents,
@@ -15,8 +14,10 @@ function textOf(message) {
 }
 
 if (process.argv.some((arg) => /server\/index\.ts$|delegation-recovery-worker\.mjs$/.test(arg))) {
-  const { mcpFixture, fakeBaseUrl, fakeEmail, fakeToken } = await import("./mcp-fixture.ts");
+  const { mcpFixture, fakeBaseUrl, fakeEmail, fakeToken, sourceReadPages, sourceReadRule } =
+    await import("./mcp-fixture.ts");
   const fixture = mcpFixture({
+    pages: sourceReadPages,
     rules: [
       ...(process.env.DELEGATION_FIXTURE_SCENARIO === "jira-comment"
         ? [
@@ -34,39 +35,15 @@ if (process.argv.some((arg) => /server\/index\.ts$|delegation-recovery-worker\.m
             },
           ]
         : []),
-      {
-        method: "tools/call",
-        name: "jira_get_issue",
-        arguments: { issue_key: "CHUM-42" },
-        result: {
-          content: [{ type: "text", text: "Checkout succeeds" }],
-          structuredContent: { issue: "CHUM-42", fields: { summary: "Checkout succeeds" } },
+      sourceReadRule(
+        "jira_get_issue",
+        { issue_key: "CHUM-42" },
+        {
+          key: "CHUM-42",
+          summary: "Checkout",
+          description: "## 驗收條件\n1. AC-1 Checkout succeeds",
         },
-      },
-      {
-        method: "tools/call",
-        name: "jira_get_issue",
-        arguments: { issue_key: "FETM-78" },
-        result: {
-          content: [{ type: "text", text: anchorScenarioSource }],
-          structuredContent: {
-            issue: "FETM-78",
-            fields: { summary: "Synthetic acceptance criteria", description: anchorScenarioSource },
-          },
-        },
-      },
-      {
-        method: "tools/call",
-        name: "jira_get_issue",
-        arguments: { issue_key: "EMPTY-1" },
-        result: {
-          content: [{ type: "text", text: "Synthetic source without testable behavior" }],
-          structuredContent: {
-            issue: "EMPTY-1",
-            fields: { summary: "Synthetic source without testable behavior" },
-          },
-        },
-      },
+      ),
       { method: "tools/call", error: { code: -32602, message: "Unknown fixture resource" } },
     ],
   });

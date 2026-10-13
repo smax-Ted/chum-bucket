@@ -42,6 +42,7 @@ import {
   type TestingRequestInput,
 } from "../../shared/testing";
 import {
+  assembleRequirements,
   canonicalizePlan,
   checksForRole,
   deriveReport,
@@ -54,16 +55,12 @@ import {
   projectProgress,
   publicTaskArtifact,
   requirementsScopeDigest,
-  sameSource,
-  sourceCaptureSchema,
-  validateRequirements,
   validateResults,
   validateReuse,
   type CanonicalPlan,
   type Requirements,
   type Results,
   type RoleOutcome,
-  type SourceCapture,
   type TrustedToolReceipt,
   type Validation,
 } from "./testing-domain";
@@ -73,7 +70,6 @@ import { readSource } from "./source-links";
 
 export const TESTING_WORKFLOW_VERSION = "testing-child-v1";
 const TESTING_SCHEMA_VERSION = "supervised-testing-schema-v1";
-export const SOURCE_CAPTURE_NATIVE = "source_capture";
 export const DESIGN_CAPTURE_NATIVE = "design_capture";
 const TESTING_BOUNDS = { maxCases: 20, maxChecks: 80, maxChecksPerCase: 12 } as const;
 const TESTING_LIMITS = {
@@ -171,7 +167,7 @@ export type TestingExecutionReceipt = Readonly<{
   outputDigest: string;
   input: unknown;
   output: unknown;
-  bindings: unknown;
+  bindings: ReceiptBindings;
 }>;
 
 export type TestingExecution = Readonly<{
@@ -420,15 +416,6 @@ function testingChildWorkflowId(operationId: string, role: RoleId): string {
   return `testing-${role}-${digest}`;
 }
 
-export function missingSourceCaptures(
-  requested: readonly Source[],
-  captures: readonly SourceCapture[],
-): readonly Source[] {
-  return requested.filter(
-    (source) => !captures.some((capture) => sameSource(source, capture.reference)),
-  );
-}
-
 export function closureDecisions(input: {
   threadId: string;
   intent: TestingRequestInput;
@@ -499,24 +486,9 @@ function rowKindRejection(row: StoredArtifactRow): ReuseRejection | null {
   return isRecord(row.payload) ? null : "raw_blob";
 }
 
-type ReusePurpose = "planning" | "execution" | "assigned_checks";
-
-function reusePurpose(role: RoleId | undefined): ReusePurpose {
-  if (role === "planner") {
-    return "planning";
-  }
-
-  if (role === "ac" || role === "ui") {
-    return "assigned_checks";
-  }
-
-  return "execution";
-}
-
 function dependenciesRejected(
   row: StoredArtifactRow,
   rows: ReadonlyMap<string, StoredArtifactRow>,
-  purpose: ReusePurpose,
 ): boolean {
   if (row.dependencies.some((dependency) => !rows.has(dependency))) {
     return true;
@@ -528,10 +500,7 @@ function dependenciesRejected(
 
   const requirements = rows.get(row.dependencies[0] ?? "");
 
-  return (
-    !requirements ||
-    !reusableSnapshot(requirements, purpose === "assigned_checks" ? purpose : "execution")
-  );
+  return !requirements || !reusableSnapshot(requirements);
 }
 
 function snapshotRejection(
@@ -549,13 +518,11 @@ function snapshotRejection(
     return "incompatible_snapshot";
   }
 
-  const purpose = reusePurpose(input.intent.task?.input.role);
-
-  if (dependenciesRejected(row, input.rows, purpose)) {
+  if (dependenciesRejected(row, input.rows)) {
     return "dependency_rejected";
   }
 
-  return reusableSnapshot(row, purpose) ? null : "incomplete";
+  return reusableSnapshot(row) ? null : "incomplete";
 }
 
 function storedRowRejection(
@@ -591,28 +558,10 @@ function classifyRef(ref: string, input: ClassifyInput): ReuseDecision {
   return reusePlan(parsedRef.data, row, input.threadId, input.intent, input.rows, input.host);
 }
 
-function reusableSnapshot(row: StoredArtifactRow, purpose: ReusePurpose = "execution"): boolean {
+function reusableSnapshot(row: StoredArtifactRow): boolean {
   const metadata = metadataSchema.safeParse(row.metadata);
 
-  if (!metadata.success) {
-    return false;
-  }
-
-  if ((row.kind === "requirements" && purpose === "planning") || purpose === "assigned_checks") {
-    return true;
-  }
-
-  if (metadata.data.complete !== true) {
-    return false;
-  }
-
-  if (row.kind !== "requirements") {
-    return row.kind === "plan";
-  }
-
-  const payload = row.payload as { unresolved?: unknown };
-
-  return Array.isArray(payload.unresolved) && payload.unresolved.length === 0;
+  return metadata.success && metadata.data.complete === true;
 }
 
 function reuseRequirements(
@@ -670,7 +619,6 @@ function reusePlan(
       requirementsDigest: requirements.payloadDigest,
     }),
     planContext: {
-      requirements: requirementsValidation.value.payload,
       requirementsDigest: digestOf(requirementsValidation.value.payload),
       goal: intent.goal,
       targetUrl,
@@ -919,7 +867,7 @@ async function delegationIntent(
 
   return testingIntentSchema.parse({
     goal: source.data.goal,
-    sources: source.data.captures.map((capture) => capture.reference),
+    sources: source.data.sources.map((item) => item.reference),
     ...context,
     existingArtifacts: [...rows.keys()],
     task,
@@ -1752,10 +1700,6 @@ export async function appendTrustedObservation(input: {
     throw new TestingPersistenceError(400, "Invalid testing observation");
   }
 
-  if (parsed.data.kind === "tool_started" && parsed.data.toolName === SOURCE_CAPTURE_NATIVE) {
-    throw new TestingPersistenceError(409, "Source capture cannot be minted as a model tool");
-  }
-
   const bytes = Buffer.byteLength(JSON.stringify(parsed.data));
   const db = await database();
 
@@ -1871,27 +1815,17 @@ async function assertDerivedLink(
 
 type ReceiptBindings = z.infer<typeof receiptBindingsSchema>;
 
-function isCaptureNative(nativeName: string): boolean {
-  return nativeName === SOURCE_CAPTURE_NATIVE || nativeName === DESIGN_CAPTURE_NATIVE;
-}
-
-function captureReceiptValid(
+function designCaptureValid(
   task: TaskRow,
-  nativeName: string,
   route: "direct" | "codemode",
   output: unknown,
   bindings: ReceiptBindings,
 ): boolean {
-  const source = nativeName === SOURCE_CAPTURE_NATIVE;
-  const captured = source
-    ? sourceCaptureSchema.safeParse(output).success
-    : designCaptureSchema.safeParse(output).success;
-
   return (
     route === "direct" &&
     Boolean(bindings.nativeName && bindings.nativeOutputDigest) &&
-    captured &&
-    task.role === (source ? "atlassian" : "ui")
+    designCaptureSchema.safeParse(output).success &&
+    task.role === "ui"
   );
 }
 
@@ -1980,10 +1914,10 @@ function receiptScopeError(
   output: unknown,
   bindings: ReceiptBindings,
 ): string | null {
-  if (isCaptureNative(nativeName)) {
-    return captureReceiptValid(task, nativeName, route, output, bindings)
+  if (nativeName === DESIGN_CAPTURE_NATIVE) {
+    return designCaptureValid(task, route, output, bindings)
       ? null
-      : "Source capture is a private host receipt";
+      : "Design capture is a private host receipt";
   }
 
   if (task.role === "planner") {
@@ -2088,7 +2022,7 @@ export async function appendTrustedReceipt(input: {
       bindings.data,
     );
 
-    if (isCaptureNative(input.nativeName)) {
+    if (input.nativeName === DESIGN_CAPTURE_NATIVE) {
       await assertDerivedLink(tx, task, input.slot, bindings.data);
     }
 
@@ -2112,6 +2046,10 @@ export async function appendTrustedReceipt(input: {
   });
 }
 
+export type RoleCompletion =
+  | Readonly<{ role: "atlassian" }>
+  | Readonly<{ role: Exclude<RoleId, "atlassian">; proposal: unknown }>;
+
 type Candidate = Readonly<{
   kind: ArtifactKind;
   payload: Requirements | CanonicalPlan | Results;
@@ -2120,42 +2058,42 @@ type Candidate = Readonly<{
   dependencies: string[];
 }>;
 
-async function replayCandidate(
+type ReplayedCandidate = Pick<Candidate, "kind" | "digest">;
+
+function committedRequirements(artifact: ArtifactRow): ReplayedCandidate | null {
+  return requirementsPayloadSchema.safeParse(artifact.payload).success
+    ? { kind: "requirements", digest: digestOf(artifact.payload) }
+    : null;
+}
+
+async function replayCompletion(
   tx: Transaction,
   operation: OperationRow,
   task: TaskRow,
-  proposal: unknown,
+  completion: RoleCompletion,
   priorRef: string,
 ): Promise<{ ref: ArtifactRef; kind: ArtifactKind }> {
   const runtime = frozenRuntime(operation);
   const artifact = await artifactByRef(tx, priorRef);
   const metadata = metadataSchema.safeParse(artifact.metadata);
-  const snapshot =
-    task.role === "atlassian" ? requirementsPayloadSchema.safeParse(artifact.payload) : null;
+  const replayed =
+    completion.role === "atlassian"
+      ? committedRequirements(artifact)
+      : await validateCandidate(tx, operation, task, completion, runtime);
 
-  if (artifact.payload_digest !== digestOf(artifact.payload) || (snapshot && !snapshot.success)) {
+  if (
+    !replayed ||
+    artifact.payload_digest !== digestOf(artifact.payload) ||
+    !replayedCandidateMatches(replayed, artifact, metadata, runtime)
+  ) {
     throw new TestingPersistenceError(409, "Task result version mismatch");
   }
 
-  const again = snapshot?.success
-    ? await requirementsCandidate(
-        tx,
-        task,
-        testingIntentSchema.parse(operation.intent),
-        proposal,
-        snapshot.data.captures,
-      )
-    : await validateCandidate(tx, operation, task, proposal, runtime);
-
-  if (!replayedCandidateMatches(again, artifact, metadata, runtime)) {
-    throw new TestingPersistenceError(409, "Task result version mismatch");
-  }
-
-  return { ref: artifactRefSchema.parse(priorRef), kind: again.kind };
+  return { ref: artifactRefSchema.parse(priorRef), kind: replayed.kind };
 }
 
 function replayedCandidateMatches(
-  candidate: Candidate,
+  candidate: ReplayedCandidate,
   artifact: ArtifactRow,
   metadata: ReturnType<typeof metadataSchema.safeParse>,
   runtime: HostTestingRuntime,
@@ -2191,7 +2129,7 @@ async function storeCandidate(
     attempt: task.attempt_nonce,
     inputDigest: task.input_digest,
     outputDigest: accepted.digest,
-    complete: await artifactComplete(tx, accepted),
+    complete: accepted.kind === "requirements" || accepted.kind === "plan",
   };
   await tx.insert(testingArtifactsTable).values({
     ref,
@@ -2240,11 +2178,11 @@ async function recordCandidateDecisions(
   }
 }
 
-export async function acceptRoleCandidateInTransaction(
+export async function acceptRoleCompletionInTransaction(
   tx: Transaction,
   ownerRunId: string,
   taskId: string,
-  proposal: unknown,
+  completion: RoleCompletion,
 ): Promise<{ ref: ArtifactRef; kind: ArtifactKind }> {
   const task = await lockTask(tx, taskId);
   const operation = await requireOperation(tx, task.operation_id);
@@ -2252,6 +2190,10 @@ export async function acceptRoleCandidateInTransaction(
 
   if (operation.finished_at || operation.cancel_accepted_at) {
     throw new TestingPersistenceError(409, "Testing accept fence is closed");
+  }
+
+  if (completion.role !== task.role) {
+    throw new TestingPersistenceError(409, "Completion role does not match its task");
   }
 
   const decisions = await readDecisions(tx, operation.id);
@@ -2264,11 +2206,11 @@ export async function acceptRoleCandidateInTransaction(
       throw new TestingPersistenceError(409, "Task result is already decided");
     }
 
-    return replayCandidate(tx, operation, task, proposal, prior.ref);
+    return replayCompletion(tx, operation, task, completion, prior.ref);
   }
 
   const runtime = frozenRuntime(operation);
-  const accepted = await validateCandidate(tx, operation, task, proposal, runtime);
+  const accepted = await validateCandidate(tx, operation, task, completion, runtime);
   const ref = await storeCandidate(tx, operation, task, accepted, runtime);
   await recordCandidateDecisions(tx, operation, task, accepted, ref);
 
@@ -2287,33 +2229,11 @@ async function requirementsCandidate(
   tx: Transaction,
   task: TaskRow,
   intent: TestingRequestInput,
-  proposal: unknown,
-  priorCaptures?: readonly SourceCapture[],
+  runtime: HostTestingRuntime,
 ): Promise<Candidate> {
-  const captures = await sourceCaptures(tx, task, priorCaptures);
-
-  if (missingSourceCaptures(intent.sources, captures).length > 0) {
-    throw new TestingPersistenceError(409, "Source captures do not cover the request");
-  }
-
-  const orderedCaptures = intent.sources.flatMap((source) => {
-    const capture = captures.find((item) => sameSource(item.reference, source));
-
-    return capture ? [capture] : [];
-  });
-  const decision = validateRequirements(proposal, {
-    goal: intent.goal,
-    captures: orderedCaptures,
-  });
-
-  if (decision.kind === "not_extractable") {
-    throw new TestingPersistenceError(
-      400,
-      "requirements_not_extractable cannot create an artifact",
-    );
-  }
-
-  const payload = acceptedOrThrow(decision);
+  const payload = acceptedOrThrow(
+    assembleRequirements(intent, await taskReceipts(tx, task, runtime)),
+  );
 
   return {
     kind: "requirements",
@@ -2337,7 +2257,6 @@ function planCandidate(
   const design = intent.design ?? null;
   const payload = acceptedOrThrow(
     canonicalizePlan(proposal, {
-      requirements: requirements.payload as Requirements,
       requirementsDigest: requirements.payload_digest,
       goal: intent.goal,
       targetUrl: intent.targetUrl,
@@ -2402,114 +2321,22 @@ async function validateCandidate(
   tx: Transaction,
   operation: OperationRow,
   task: TaskRow,
-  proposal: unknown,
+  completion: RoleCompletion,
   runtime: HostTestingRuntime,
 ): Promise<Candidate> {
   const intent = testingIntentSchema.parse(operation.intent);
 
-  if (task.role === "atlassian") {
-    return requirementsCandidate(tx, task, intent, proposal);
+  if (completion.role === "atlassian") {
+    return requirementsCandidate(tx, task, intent, runtime);
   }
 
-  const requirements = await satisfiedPayload(tx, operation.id, "atlassian");
+  if (completion.role === "planner") {
+    const requirements = await satisfiedPayload(tx, operation.id, "atlassian");
 
-  if (task.role === "planner") {
-    return planCandidate(requirements, intent, proposal, runtime);
+    return planCandidate(requirements, intent, completion.proposal, runtime);
   }
 
-  return resultsCandidate(tx, operation, task, proposal);
-}
-
-async function sourceCaptures(
-  tx: Transaction,
-  task: TaskRow,
-  priorCaptures?: readonly SourceCapture[],
-): Promise<SourceCapture[]> {
-  const rows = await tx
-    .select()
-    .from(testingReceiptsTable)
-    .where(
-      and(
-        eq(testingReceiptsTable.task_id, task.id),
-        priorCaptures ? undefined : eq(testingReceiptsTable.attempt, task.attempt_nonce),
-        eq(testingReceiptsTable.native_name, SOURCE_CAPTURE_NATIVE),
-      ),
-    )
-    .orderBy(asc(testingReceiptsTable.slot), asc(testingReceiptsTable.native_name));
-  const selectedRows = selectSourceReceipts(rows, priorCaptures);
-  const captures: SourceCapture[] = [];
-
-  for (const row of selectedRows) {
-    const { capture, bindings } = trustedSourceReceipt(row, task.role);
-    await assertDerivedLink(tx, { ...task, attempt_nonce: row.attempt }, row.slot, bindings);
-    captures.push(capture);
-  }
-
-  return captures;
-}
-
-function selectSourceReceipts(
-  rows: ReceiptRow[],
-  priorCaptures?: readonly SourceCapture[],
-): ReceiptRow[] {
-  if (!priorCaptures) {
-    return rows;
-  }
-
-  return priorCaptures.map((capture) => {
-    const row = rows.find((item) => {
-      const parsed = sourceCaptureSchema.safeParse(item.output);
-
-      return parsed.success && isDeepStrictEqual(parsed.data, capture);
-    });
-
-    if (!row) {
-      throw new TestingPersistenceError(409, "Prior source capture has no trusted receipt");
-    }
-
-    return row;
-  });
-}
-
-function trustedSourceReceipt(row: ReceiptRow, role: TaskRow["role"]) {
-  const parsed = sourceCaptureSchema.safeParse(row.output);
-  const bindings = receiptBindingsSchema.safeParse(row.bindings);
-
-  if (
-    !parsed.success ||
-    !bindings.success ||
-    row.route !== "direct" ||
-    role !== "atlassian" ||
-    row.input_digest !== digestOf(row.input) ||
-    row.output_digest !== digestOf(row.output) ||
-    parsed.data.digest !== bindings.data.nativeOutputDigest
-  ) {
-    throw new TestingPersistenceError(409, "Source receipt is not a host capture");
-  }
-
-  return { capture: parsed.data, bindings: bindings.data };
-}
-
-async function artifactComplete(
-  tx: Transaction,
-  accepted: {
-    kind: ArtifactKind;
-    payload: Requirements | CanonicalPlan | Results;
-    dependencies: string[];
-  },
-): Promise<boolean> {
-  if (accepted.kind === "requirements") {
-    return (accepted.payload as Requirements).unresolved.length === 0;
-  }
-
-  if (accepted.kind !== "plan") {
-    return false;
-  }
-
-  const requirements = await artifactByRef(tx, accepted.dependencies[0] ?? "");
-  const payload = requirements.payload as Requirements;
-
-  return Array.isArray(payload.unresolved) && payload.unresolved.length === 0;
+  return resultsCandidate(tx, operation, task, completion.proposal);
 }
 
 async function satisfiedPayload(tx: Transaction, operationId: string, role: RoleId) {
@@ -3551,7 +3378,7 @@ export function testingFinishOutcome(code: string, succeeded: boolean): RootRunO
 }
 
 const roleFailureSchema = z.enum([
-  "requirements_not_extractable",
+  "source_reads_incomplete",
   "proposal_rejected",
   "child_failed",
   "cancelled",

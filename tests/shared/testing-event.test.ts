@@ -21,7 +21,9 @@ import {
 } from "../../shared/testing-event";
 
 import {
-  validateRequirements,
+  assembleRequirements,
+  canonicalizePlan,
+  digestOf,
   publicTaskArtifact,
   projectProgress,
   deriveReport,
@@ -104,18 +106,19 @@ const report: PublicTestReport = {
   runId,
   requirements: {
     goal: "驗證儀表板",
-    criteria: [
+    sources: [
       {
-        id: "criterion-1",
-        key: "AC-1",
-        statement: "按下送出後顯示成功",
-        sourceDigest: "digest-requirement-1",
-        anchor: "anchor-1",
+        reference: { kind: "jira", issueKey: "ABC-1" },
+        text: "ABC-1 儀表板\n\n## 驗收條件\n1. 按下送出後顯示成功",
+        links: [],
+        digest: "digest-requirement-1",
+        capturedAt: "2025-01-01T00:00:00Z",
       },
     ],
-    unresolved: ["AC-2"],
   },
   plan: {
+    criteria: [{ id: "criterion-1", statement: "按下送出後顯示成功" }],
+    unresolved: ["送出失敗時的提示文字未定義"],
     cases: [
       {
         id: "case-1",
@@ -191,26 +194,35 @@ function chunk(value: unknown) {
   return { type: EventType.CUSTOM, name: TESTING_PROJECTION_EVENT, value, timestamp: 1 };
 }
 
-test("legal repeated captures retain more than 100 source-bound links through projection and hydration", () => {
-  const source = { kind: "jira" as const, issueKey: "FETM-78" };
-  const captures = Array.from({ length: 6 }, (_, index) => ({
-    reference: source,
-    digest: `capture-${index}`,
-    anchors: ["AC-1"],
-    capturedAt: "2026-10-13T00:00:00Z",
-    links: Array.from({ length: 20 }, (_, node) => ({
+test("six authorized sources retain more than 100 source-bound links through projection and hydration", () => {
+  const sources = Array.from({ length: 6 }, (_, index) => ({
+    kind: "jira" as const,
+    issueKey: `FETM-${78 + index}`,
+  }));
+  const links = (index: number) =>
+    Array.from({ length: 20 }, (_, node) => ({
       url: `https://www.figma.com/design/File${index}?node-id=1-${node}`,
       fileKey: `File${index}`,
       nodeId: `1:${node}`,
-    })),
-  }));
-  const validated = validateRequirements(
-    {
-      criteria: [{ key: "AC-1", statement: "Product is visible", source, anchor: "AC-1" }],
-      unresolved: [],
-    },
-    { goal: "Plan linked sources", captures },
-  );
+    }));
+  const receipts = sources.map((source, index) => {
+    const output = {
+      result: JSON.stringify({
+        key: source.issueKey,
+        summary: `Linked page ${index}`,
+        remote_links: links(index).map((link, id) => ({ id, object: { url: link.url } })),
+      }),
+    };
+
+    return {
+      nativeName: "jira_get_issue",
+      input: { issue_key: source.issueKey },
+      output,
+      outputDigest: digestOf(output),
+      bindings: { capturedAt: "2026-10-13T00:00:00.000Z" },
+    };
+  });
+  const validated = assembleRequirements({ goal: "Plan linked sources", sources }, receipts);
   assert.equal(validated.kind, "accepted");
   if (validated.kind !== "accepted") return;
   const result = publicTaskArtifact({
@@ -220,8 +232,8 @@ test("legal repeated captures retain more than 100 source-bound links through pr
   });
   assert.equal(result.kind, "requirements");
   if (result.kind !== "requirements") return;
-  const expectedLinks = captures.flatMap((capture) =>
-    capture.links.map((link) => ({ source, ...link })),
+  const expectedLinks = sources.flatMap((source, index) =>
+    links(index).map((link) => ({ source, ...link })),
   );
   assert.equal(expectedLinks.length, 120);
   assert.deepEqual(result.payload.links, expectedLinks);
@@ -260,6 +272,96 @@ test("legal repeated captures retain more than 100 source-bound links through pr
     parsePublishedTasks({ publishedTasks: [reportView] })[0]?.report?.requirements?.links,
     expectedLinks,
   );
+});
+
+test("raw source text and plan unresolved notes survive hydration without private receipt metadata", () => {
+  const requirements = report.requirements!;
+  const view = {
+    ...finishedView,
+    report: {
+      ...report,
+      requirements: {
+        ...requirements,
+        sources: [{ ...requirements.sources[0]!, text: "  ABC-1 儀表板\n\n- 保留 Markdown  \n" }],
+      },
+    },
+  };
+  const parsed = parsePublishedTasks({ publishedTasks: [view] })[0];
+  assert.deepEqual(
+    parsed?.report?.requirements?.sources[0]?.text,
+    "  ABC-1 儀表板\n\n- 保留 Markdown  \n",
+  );
+  assert.deepEqual(parsed?.report?.plan?.unresolved, ["送出失敗時的提示文字未定義"]);
+  for (const privateSource of [
+    { ...requirements.sources[0]!, bindings: { capturedAt: "2025-01-01T00:00:00Z" } },
+    { ...requirements.sources[0]!, output: { result: "{}" } },
+  ]) {
+    assert.equal(
+      parseTestingProjectionEvent(
+        chunk({
+          ...finishedView,
+          report: { ...report, requirements: { ...requirements, sources: [privateSource] } },
+        }),
+      ),
+      null,
+    );
+  }
+});
+
+test("500 criteria with repeated checks round-trip every planned and uncovered coverage row", () => {
+  const criteria = Array.from({ length: 500 }, (_, index) => ({
+    id: `C-${index + 1}`,
+    statement: `Statement ${index + 1}`,
+  }));
+  const plan = canonicalizePlan(
+    {
+      criteria,
+      unresolved: [],
+      cases: Array.from({ length: 8 }, (_, caseIndex) => ({
+        id: `case-${caseIndex}`,
+        title: `Case ${caseIndex}`,
+        preconditions: [],
+        actions: [{ kind: "navigate", path: "/" }],
+        checks: Array.from({ length: 10 }, (_, checkIndex) => ({
+          id: `check-${caseIndex}-${checkIndex}`,
+          criterionId: "C-1",
+          kind: "functional",
+          expectedObservation: "Visible",
+        })),
+      })),
+    },
+    {
+      requirementsDigest: "requirements",
+      goal: "Plan",
+      targetUrl: null,
+      design: null,
+      bounds: { maxCases: 20, maxChecks: 80, maxChecksPerCase: 12 },
+    },
+  );
+  assert.equal(plan.kind, "accepted");
+  if (plan.kind !== "accepted") return;
+  const derived = deriveReport({
+    runId,
+    rootOutcome: "completed",
+    requirements: { goal: "Plan", sources: report.requirements!.sources },
+    plan: plan.value,
+    acResults: null,
+    uiResults: null,
+    unresolvedSources: [],
+    artifacts: [],
+    progressVersion: 1,
+    outcomes: {},
+  });
+  assert.equal(derived.coverage.length, 579);
+  assert.deepEqual(derived.coverage.at(-1), {
+    criterionId: "C-500",
+    caseId: null,
+    checkId: null,
+    state: "uncovered",
+  });
+  const view: TestView = { ...finishedView, report: derived };
+  assert.deepEqual(parseTestingProjectionEvent(testingProjectionEvent(view)), view);
+  assert.deepEqual(parsePublishedTasks({ publishedTasks: [view] }), [view]);
 });
 
 test("the factory round-trips a finished public view with all metadata preserved", () => {
@@ -334,14 +436,22 @@ test("private child fields never reach the parsed view or its report", () => {
 
 test("private fields nested in strict shared shapes reject the whole event", () => {
   const planCase = report.plan!.cases[0]!;
-  const withPrivateCase = {
-    ...finishedView,
-    report: {
-      ...report,
-      plan: { ...report.plan!, cases: [{ ...planCase, privateChildToken: "case-secret" }] },
+  for (const plan of [
+    { ...report.plan!, cases: [{ ...planCase, privateChildToken: "case-secret" }] },
+    {
+      ...report.plan!,
+      criteria: [{ id: "criterion-1", statement: "按下送出後顯示成功", sourceDigest: "digest" }],
     },
-  };
-  assert.equal(parseTestingProjectionEvent(chunk(withPrivateCase)), null);
+    {
+      ...report.plan!,
+      criteria: [{ id: "criterion-1", statement: "按下送出後顯示成功", anchor: "a" }],
+    },
+  ]) {
+    assert.equal(
+      parseTestingProjectionEvent(chunk({ ...finishedView, report: { ...report, plan } })),
+      null,
+    );
+  }
 });
 
 test("hydration retains every individual task and legacy view", () => {
@@ -438,11 +548,17 @@ function taskView(
   };
 }
 
-test("task plans round-trip deferred cases and requirements round-trip host Figma links", () => {
+test("task plans round-trip criteria, unresolved and deferred cases and requirements round-trip host Figma links", () => {
   const plan = taskView({
     ref: otherArtifact,
     kind: "plan",
-    payload: { cases: [], deferredCases: [deferredCase], assignments: { ac: [], ui: [] } },
+    payload: {
+      criteria: report.plan!.criteria,
+      unresolved: report.plan!.unresolved,
+      cases: [],
+      deferredCases: [deferredCase],
+      assignments: { ac: [], ui: [] },
+    },
   });
   assert.deepEqual(parseTestingProjectionEvent(testingProjectionEvent(plan)), plan);
   assert.deepEqual(parsePublishedTasks({ publishedTasks: [plan] }), [plan]);
@@ -455,13 +571,18 @@ test("task plans round-trip deferred cases and requirements round-trip host Figm
 });
 
 test("plans and requirements without the optional fields keep their exact shape", () => {
-  const legacy = taskView({
+  const executable = taskView({
     ref: otherArtifact,
     kind: "plan",
-    payload: { cases: report.plan!.cases, assignments: { ac: ["check-1"], ui: [] } },
+    payload: {
+      criteria: report.plan!.criteria,
+      unresolved: [],
+      cases: report.plan!.cases,
+      assignments: { ac: ["check-1"], ui: [] },
+    },
   });
-  const parsed = parseTestingProjectionEvent(testingProjectionEvent(legacy));
-  assert.deepEqual(parsed, legacy);
+  const parsed = parseTestingProjectionEvent(testingProjectionEvent(executable));
+  assert.deepEqual(parsed, executable);
   assert.equal(
     parsed?.task?.result?.kind === "plan" && "deferredCases" in parsed.task.result.payload,
     false,
@@ -470,21 +591,35 @@ test("plans and requirements without the optional fields keep their exact shape"
     ref: otherArtifact,
     kind: "plan",
     payload: {
+      criteria: report.plan!.criteria,
+      unresolved: [],
       cases: [],
       deferredCases: [{ ...deferredCase, steps: [] }],
       assignments: { ac: [], ui: [] },
     },
   });
   assert.equal(parseTestingProjectionEvent(chunk(hostile)), null);
+  const previousPlan = taskView({
+    ref: otherArtifact,
+    kind: "plan",
+    payload: { cases: report.plan!.cases, assignments: { ac: ["check-1"], ui: [] } },
+  } as unknown as NonNullable<TestView["task"]>["result"]);
+  assert.equal(parseTestingProjectionEvent(chunk(previousPlan)), null);
 });
 
 test("reports round-trip deferred coverage, not-required roles and bounded failure issues", () => {
-  const issues = ["criterion crit:UI-AC-2 has no executable check or deferred case"];
+  const issues = ["criteria[1].id: duplicate criterion id UI-AC-2"];
   const view: TestView = {
     ...finishedView,
     report: {
       ...report,
-      plan: { cases: [], deferredCases: [deferredCase], assignments: { ac: [], ui: [] } },
+      plan: {
+        criteria: report.plan!.criteria,
+        unresolved: [],
+        cases: [],
+        deferredCases: [deferredCase],
+        assignments: { ac: [], ui: [] },
+      },
       coverage: [
         { criterionId: "criterion-1", caseId: "deferred-ui-1", checkId: null, state: "deferred" },
       ],

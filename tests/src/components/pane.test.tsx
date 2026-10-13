@@ -203,18 +203,19 @@ function testingReport(): PublicTestReport {
     runId: testingRunId,
     requirements: {
       goal: "公開測試報告目標",
-      criteria: [
+      sources: [
         {
-          id: "criterion-1",
-          key: "AC-1",
-          statement: "訂單建立後顯示確認",
-          sourceDigest: "digest-1",
-          anchor: "anchor-1",
+          reference: { kind: "jira", issueKey: "CHUM-42" },
+          text: "CHUM-42 結帳\n\n1. AC-1 訂單建立後顯示確認",
+          links: [],
+          digest: "digest-1",
+          capturedAt: "2025-01-01T00:00:00Z",
         },
       ],
-      unresolved: [],
     },
     plan: {
+      criteria: [{ id: "criterion-1", statement: "訂單建立後顯示確認" }],
+      unresolved: [],
       cases: [
         {
           id: "case-1",

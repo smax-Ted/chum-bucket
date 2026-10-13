@@ -7,11 +7,10 @@ import {
   browserOutputSchema,
   deferredCaseSchema,
   designReferenceSchema,
-  figmaLinkSchema,
   planCaseSchema,
   planCheckSchema,
-  requirementCriterionSchema,
-  sourceSchema,
+  planCriteriaSchema,
+  requirementSourceSchema,
   testRunIdSchema,
   type Acceptance,
   type ArtifactOrigin,
@@ -26,6 +25,7 @@ import {
   type NonEmpty,
   type PlanCase,
   type PlanCheck,
+  type PlanCriterion,
   type ProgressCard,
   type ProgressRow,
   type PublicCheckResult,
@@ -35,8 +35,8 @@ import {
   type PublicTestReport,
   type PublicTaskArtifact,
   type RequirementLink,
+  type RequirementSource,
   type ArtifactKind,
-  type RequirementCriterion,
   type RoleId,
   type Source,
   type StyleCheck,
@@ -45,6 +45,7 @@ import {
   type Tolerance,
   type ToolActivityView,
 } from "../../shared/testing";
+import { figmaLinks, readSource, sourceText } from "./source-links";
 
 const isFunctionalCheck = (check: PlanCheck): check is FunctionalCheck =>
   check.kind === "functional";
@@ -99,15 +100,14 @@ export function digestOf(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
+function sourceKey(source: Source): string {
+  return source.kind === "jira" ? `jira:${source.issueKey}` : `confluence:${source.pageId}`;
+}
+
 export function requirementsScopeDigest(
   input: Readonly<{ goal: string; sources: readonly Source[] }>,
 ): string {
-  return digestOf({
-    goal: input.goal,
-    sources: input.sources.map((source) =>
-      source.kind === "jira" ? `jira:${source.issueKey}` : `confluence:${source.pageId}`,
-    ),
-  });
+  return digestOf({ goal: input.goal, sources: input.sources.map(sourceKey) });
 }
 
 export function planScopeDigest(
@@ -126,71 +126,18 @@ export function planScopeDigest(
   });
 }
 
-export const sourceCaptureSchema = z.strictObject({
-  reference: sourceSchema,
-  digest: z.string().trim().min(1).max(128),
-  anchors: z.array(z.string().trim().min(1).max(512)).min(1),
-  links: z.array(figmaLinkSchema).max(20).optional(),
-  capturedAt: z.string().trim().min(1).max(64),
-});
-export type SourceCapture = Readonly<z.infer<typeof sourceCaptureSchema>>;
-
-export function sourceCaptureView(capture: SourceCapture) {
-  return {
-    ...capture,
-    anchorRefs: capture.anchors.map((anchor) => ({
-      id: digestOf({
-        namespace: "requirements-anchor-v1",
-        reference: capture.reference,
-        digest: capture.digest,
-        anchor,
-      }),
-      text: anchor,
-    })),
-  };
-}
-
 export type Requirements = Readonly<{
   goal: string;
-  criteria: readonly RequirementCriterion[];
-  unresolved: readonly string[];
-  captures: readonly SourceCapture[];
+  sources: readonly RequirementSource[];
 }>;
 
-const requirementsProposalSchema = z.strictObject({
-  criteria: z
-    .array(
-      z
-        .strictObject({
-          key: z.string().trim().min(1).max(128),
-          statement: z.string().trim().min(1).max(2_000),
-          source: sourceSchema,
-          anchor: z.string().trim().min(1).max(512).optional(),
-          anchorId: z.string().trim().min(1).max(128).optional(),
-        })
-        .refine(
-          (criterion) => (criterion.anchor === undefined) !== (criterion.anchorId === undefined),
-          {
-            path: ["anchorId"],
-            message: "exactly one of anchorId or legacy anchor is required",
-          },
-        ),
-    )
-    .min(1),
-  unresolved: z.array(z.string().trim().min(1).max(512)).max(50),
-});
-
-const notExtractableSchema = z.strictObject({
-  kind: z.literal("not_extractable"),
-  unresolved: z.array(z.string().trim().min(1).max(512)).min(1).max(50),
-});
-
-export type RequirementsDecision =
-  | Validation<Requirements>
-  | Readonly<{
-      kind: "not_extractable";
-      unresolved: readonly string[];
-    }>;
+export type SourceReadReceipt = Readonly<{
+  nativeName: string;
+  input: unknown;
+  output: unknown;
+  outputDigest: string;
+  bindings: Readonly<{ capturedAt?: string }>;
+}>;
 
 export function schemaIssueMessages(error: z.ZodError, root = "proposal"): string[] {
   return error.issues.map((issue) => {
@@ -212,11 +159,6 @@ function schemaIssues(error: z.ZodError, fallback: string): Validation<never> {
   return rejected(issues[0] ?? fallback, ...issues.slice(1));
 }
 
-export type RequirementsContext = Readonly<{
-  goal: string;
-  captures: readonly SourceCapture[];
-}>;
-
 export function sameSource(left: Source, right: Source): boolean {
   if (left.kind === "jira" && right.kind === "jira") {
     return left.issueKey === right.issueKey;
@@ -229,116 +171,49 @@ export function sameSource(left: Source, right: Source): boolean {
   return false;
 }
 
-type RequirementProposal = z.infer<typeof requirementsProposalSchema>["criteria"][number];
+function sourceRead(reference: Source, receipt: SourceReadReceipt): RequirementSource | null {
+  const read = readSource(receipt.nativeName, receipt.input);
+  const text = read && sameSource(read, reference) ? sourceText(reference, receipt.output) : null;
+  const { capturedAt } = receipt.bindings;
 
-function resolveRequirementCriterion(
-  proposal: RequirementProposal,
-  captures: readonly SourceCapture[],
-  index: number,
-): Validation<RequirementCriterion> {
-  const capture = captures.find((item) => sameSource(item.reference, proposal.source));
-
-  if (!capture) {
-    return rejected(
-      `criteria[${index}].source: criterion ${proposal.key} references an uncaptured source`,
-    );
+  if (text === null || capturedAt === undefined) {
+    return null;
   }
 
-  const anchor =
-    proposal.anchorId === undefined
-      ? proposal.anchor
-      : sourceCaptureView(capture).anchorRefs.find((ref) => ref.id === proposal.anchorId)?.text;
-
-  if (anchor === undefined || !capture.anchors.includes(anchor)) {
-    return rejected(
-      proposal.anchorId === undefined
-        ? `criteria[${index}].anchor: criterion ${proposal.key} references an unknown anchor for this source capture`
-        : `criteria[${index}].anchorId: unknown anchor for host-selected capture ${capture.digest}; use anchorRefs ids ${sourceCaptureView(
-            capture,
-          )
-            .anchorRefs.slice(0, 3)
-            .map((ref) => ref.id)
-            .join(", ")}. Later reads do not replace this capture.`,
-    );
-  }
-
-  return accepted({
-    id: `crit:${proposal.key}`,
-    key: proposal.key,
-    statement: proposal.statement,
-    sourceDigest: capture.digest,
-    anchor,
-  });
+  return {
+    reference,
+    text,
+    links: reference.kind === "jira" ? [...figmaLinks(receipt.output)] : [],
+    digest: receipt.outputDigest,
+    capturedAt,
+  };
 }
 
-function extractRequirementCriteria(
-  proposals: readonly RequirementProposal[],
-  captures: readonly SourceCapture[],
-) {
+export function assembleRequirements(
+  context: Readonly<{ goal: string; sources: readonly Source[] }>,
+  receipts: readonly SourceReadReceipt[],
+): Validation<Requirements> {
+  const sources: RequirementSource[] = [];
   const issues: string[] = [];
-  const keys = new Set<string>();
-  const criteria: RequirementCriterion[] = [];
 
-  for (const [index, proposal] of proposals.entries()) {
-    const duplicate = keys.has(proposal.key);
+  for (const [index, reference] of context.sources.entries()) {
+    const read = receipts
+      .map((receipt) => sourceRead(reference, receipt))
+      .find((item) => item !== null);
 
-    if (duplicate) {
-      issues.push(`criteria[${index}].key: duplicate criterion key ${proposal.key}`);
-    }
-
-    keys.add(proposal.key);
-    const resolved = resolveRequirementCriterion(proposal, captures, index);
-
-    if (resolved.kind === "rejected") {
-      issues.push(...resolved.issues);
-    } else if (!duplicate) {
-      criteria.push(resolved.value);
+    if (read) {
+      sources.push(read);
+    } else {
+      issues.push(`task.sources[${index}]: ${sourceKey(reference)} has no successful read`);
     }
   }
 
-  return { criteria, issues };
-}
+  const failure = nonEmpty(issues);
 
-export function validateRequirements(
-  raw: unknown,
-  context: RequirementsContext,
-): RequirementsDecision {
-  if (context.captures.length === 0) {
-    return rejected("requirements need at least one source capture");
-  }
-
-  if (typeof raw === "object" && raw !== null && "kind" in raw && raw.kind === "not_extractable") {
-    const failure = notExtractableSchema.safeParse(raw);
-
-    return failure.success
-      ? { kind: "not_extractable", unresolved: failure.data.unresolved }
-      : schemaIssues(failure.error, "requirements rejected");
-  }
-
-  const parsed = requirementsProposalSchema.safeParse(raw);
-
-  if (!parsed.success) {
-    return schemaIssues(parsed.error, "requirements rejected");
-  }
-
-  const { criteria, issues } = extractRequirementCriteria(parsed.data.criteria, context.captures);
-
-  if (issues.length > 0) {
-    const [first, ...rest] = issues;
-
-    return first === undefined ? rejected("requirements rejected") : rejected(first, ...rest);
-  }
-
-  return accepted({
-    goal: context.goal,
-    criteria,
-    unresolved: parsed.data.unresolved,
-    captures: context.captures,
-  });
+  return failure ? rejected(...failure) : accepted({ goal: context.goal, sources });
 }
 
 export type PlanContext = Readonly<{
-  requirements: Requirements;
   requirementsDigest: string;
   goal: string;
   targetUrl: string | null;
@@ -351,6 +226,8 @@ export type CanonicalPlan = Readonly<{
   goal: string;
   targetUrl: string | null;
   design: DesignReference | null;
+  criteria: readonly PlanCriterion[];
+  unresolved: readonly string[];
   cases: readonly PlanCase[];
   deferredCases?: readonly DeferredCase[];
   assignments: Readonly<{ ac: readonly string[]; ui: readonly string[] }>;
@@ -359,6 +236,8 @@ export type CanonicalPlan = Readonly<{
 
 const planProposalSchema = z
   .strictObject({
+    criteria: planCriteriaSchema,
+    unresolved: z.array(z.string().trim().min(1).max(512)).max(50),
     cases: z.array(
       z.strictObject({
         id: z.string().trim().min(1).max(64),
@@ -386,12 +265,25 @@ type PlanScan = {
   issues: string[];
   caseIds: Set<string>;
   checkIds: Set<string>;
-  covered: Set<string>;
   totalChecks: number;
 };
 
 export function sameDesign(left: DesignReference, right: DesignReference | null): boolean {
   return right !== null && left.fileKey === right.fileKey && left.nodeId === right.nodeId;
+}
+
+function criterionIds(criteria: readonly PlanCriterion[], scan: PlanScan): ReadonlySet<string> {
+  const ids = new Set<string>();
+
+  for (const [index, criterion] of criteria.entries()) {
+    if (ids.has(criterion.id)) {
+      scan.issues.push(`criteria[${index}].id: duplicate criterion id ${criterion.id}`);
+    }
+
+    ids.add(criterion.id);
+  }
+
+  return ids;
 }
 
 function criterionIssue(subject: string, criterionId: string, scope: PlanScope): string | null {
@@ -433,7 +325,6 @@ function acceptedPlanChecks(
       continue;
     }
 
-    scan.covered.add(check.criterionId);
     checks.push(check);
   }
 
@@ -500,8 +391,6 @@ function canonicalDeferredCases(
 
       if (issue) {
         scan.issues.push(issue);
-      } else {
-        scan.covered.add(expectation.criterionId);
       }
     }
 
@@ -518,20 +407,11 @@ export function canonicalizePlan(raw: unknown, context: PlanContext): Validation
     return schemaIssues(parsed.error, "plan rejected");
   }
 
+  const { criteria, unresolved } = parsed.data;
   const proposedDeferred = parsed.data.deferredCases ?? [];
-
   const { maxCases, maxChecks, maxChecksPerCase } = context.bounds;
-  const scope: PlanScope = {
-    criterionIds: new Set(context.requirements.criteria.map((criterion) => criterion.id)),
-    design: context.design,
-  };
-  const scan: PlanScan = {
-    issues: [],
-    caseIds: new Set(),
-    checkIds: new Set(),
-    covered: new Set(),
-    totalChecks: 0,
-  };
+  const scan: PlanScan = { issues: [], caseIds: new Set(), checkIds: new Set(), totalChecks: 0 };
+  const scope: PlanScope = { criterionIds: criterionIds(criteria, scan), design: context.design };
 
   if (parsed.data.cases.length + proposedDeferred.length > maxCases) {
     scan.issues.push("plan exceeds the case bound");
@@ -542,12 +422,6 @@ export function canonicalizePlan(raw: unknown, context: PlanContext): Validation
 
   if (scan.totalChecks > maxChecks) {
     scan.issues.push("plan exceeds the check bound");
-  }
-
-  for (const criterion of context.requirements.criteria) {
-    if (!scan.covered.has(criterion.id)) {
-      scan.issues.push(`criterion ${criterion.id} has no executable check or deferred case`);
-    }
   }
 
   const failure = nonEmpty(scan.issues);
@@ -564,6 +438,8 @@ export function canonicalizePlan(raw: unknown, context: PlanContext): Validation
     goal: context.goal,
     targetUrl: context.targetUrl,
     design: context.design,
+    criteria,
+    unresolved,
     cases,
     ...(deferredCases.length > 0 ? { deferredCases } : {}),
     assignments: { ac: functional.map((check) => check.id), ui: styles.map((check) => check.id) },
@@ -976,9 +852,7 @@ export type ReuseContext =
 
 export const requirementsPayloadSchema = z.strictObject({
   goal: z.string().min(1).max(2_000),
-  criteria: z.array(requirementCriterionSchema).min(1),
-  unresolved: z.array(z.string().min(1)),
-  captures: z.array(sourceCaptureSchema).min(1),
+  sources: z.array(requirementSourceSchema).min(1),
 });
 
 export const planPayloadSchema = z.strictObject({
@@ -986,6 +860,8 @@ export const planPayloadSchema = z.strictObject({
   goal: z.string().min(1).max(2_000),
   targetUrl: z.string().min(1).max(2_048).nullable(),
   design: designReferenceSchema.nullable(),
+  criteria: planCriteriaSchema,
+  unresolved: z.array(z.string().min(1)),
   cases: z.array(planCaseSchema),
   deferredCases: z.array(deferredCaseSchema).optional(),
   assignments: z.strictObject({
@@ -1100,7 +976,7 @@ function reuseRequirements(artifact: StoredArtifact): Validation<BoundArtifact> 
 
   const scope = requirementsScopeDigest({
     goal: payload.data.goal,
-    sources: payload.data.captures.map((capture) => capture.reference),
+    sources: payload.data.sources.map((source) => source.reference),
   });
 
   if (scope !== artifact.scopeDigest) {
@@ -1114,7 +990,6 @@ type PlanPayload = z.infer<typeof planPayloadSchema>;
 
 function planDependenciesMatch(payload: PlanPayload, planContext: PlanContext): boolean {
   return (
-    digestOf(planContext.requirements) === planContext.requirementsDigest &&
     payload.requirementsDigest === planContext.requirementsDigest &&
     payload.goal === planContext.goal &&
     payload.targetUrl === planContext.targetUrl &&
@@ -1154,6 +1029,8 @@ function reusePlan(artifact: StoredArtifact, context: ReuseContext): Validation<
 
   const canonical = canonicalizePlan(
     {
+      criteria: payload.data.criteria,
+      unresolved: payload.data.unresolved,
       cases: payload.data.cases,
       ...(payload.data.deferredCases ? { deferredCases: payload.data.deferredCases } : {}),
     },
@@ -1308,6 +1185,8 @@ export type ReportInput = Readonly<{
 function publicPlan(plan: CanonicalPlan | null): PublicPlan | null {
   return plan
     ? {
+        criteria: plan.criteria,
+        unresolved: plan.unresolved,
         cases: plan.cases,
         ...(plan.deferredCases ? { deferredCases: plan.deferredCases } : {}),
         assignments: { ac: plan.assignments.ac, ui: plan.assignments.ui },
@@ -1333,15 +1212,8 @@ function judgmentsByCheck(input: ReportInput): ReadonlyMap<string, Judgment> {
   );
 }
 
-function uncoveredCriteria(
-  requirements: Requirements | null,
-  covered: ReadonlySet<string>,
-): Coverage[] {
-  if (!requirements) {
-    return [];
-  }
-
-  return requirements.criteria
+function uncoveredCriteria(plan: PublicPlan | null, covered: ReadonlySet<string>): Coverage[] {
+  return (plan?.criteria ?? [])
     .filter((criterion) => !covered.has(criterion.id))
     .map((criterion): Coverage => ({
       criterionId: criterion.id,
@@ -1371,7 +1243,7 @@ function reportCoverage(input: ReportInput, plan: PublicPlan | null): Coverage[]
   );
   const covered = new Set([...planned, ...deferred].map((row) => row.criterionId));
 
-  return [...planned, ...deferred, ...uncoveredCriteria(input.requirements, covered)];
+  return [...planned, ...deferred, ...uncoveredCriteria(plan, covered)];
 }
 
 function resultsMissing(assigned: readonly string[] | undefined, results: Results | null): boolean {
@@ -1388,7 +1260,7 @@ function reportIssues(
     [!plan, "plan_missing"],
     [resultsMissing(plan?.assignments.ac, input.acResults), "ac_results_missing"],
     [resultsMissing(plan?.assignments.ui, input.uiResults), "ui_results_missing"],
-    [(input.requirements?.unresolved.length ?? 0) > 0, "requirements_unresolved"],
+    [(plan?.unresolved.length ?? 0) > 0, "requirements_unresolved"],
     [input.unresolvedSources.length > 0, "sources_unresolved"],
     [coverage.some((row) => row.state === "uncovered"), "coverage_incomplete"],
     [
@@ -1434,8 +1306,8 @@ function roleIssues(input: ReportInput, plan: PublicPlan | null): string[] {
 }
 
 function requirementLinks(requirements: Requirements): RequirementLink[] {
-  return requirements.captures.flatMap((capture) =>
-    (capture.links ?? []).map((link) => ({ source: capture.reference, ...link })),
+  return requirements.sources.flatMap((source) =>
+    source.links.map((link) => ({ source: source.reference, ...link })),
   );
 }
 
@@ -1448,8 +1320,7 @@ function publicRequirements(requirements: Requirements | null): PublicTestReport
 
   return {
     goal: requirements.goal,
-    criteria: requirements.criteria,
-    unresolved: requirements.unresolved,
+    sources: requirements.sources,
     ...(links.length > 0 ? { links } : {}),
   };
 }

@@ -7,28 +7,26 @@ import type { UIMessage } from "@tanstack/ai";
 import { z } from "zod";
 import {
   DESIGN_CAPTURE_NATIVE,
-  SOURCE_CAPTURE_NATIVE,
   TESTING_WORKFLOW_VERSION,
   ackDelivery,
   appendTrustedObservation,
   appendTrustedReceipt,
   claimActualTask,
   readStartCancelDeliveries,
+  type RoleCompletion,
   type TestingExecution,
 } from "./testing-store";
 import { guardActualIO, readTestingExecution } from "./run-store";
 import {
+  assembleRequirements,
   digestOf,
   canonicalizePlan,
   checksForRole,
   publicIssues,
   sameDesign,
-  sameSource,
-  validateRequirements,
   validateResults,
   type CanonicalPlan,
   type Requirements,
-  type SourceCapture,
   type TrustedToolReceipt,
   type Validation,
 } from "./testing-domain";
@@ -43,8 +41,7 @@ import {
 } from "./testing-tools";
 import { runAgentLoop, type AgentCheckpoint, type AgentSession } from "./agent-loop";
 import { roleRegistry, roleSystemPrompt } from "./agents";
-import { finalTurnPrompt, roleFeedbackPrompt, roleTaskPrompt } from "./prompts";
-import { figmaLinks, jiraIssue } from "./source-links";
+import { roleFeedbackPrompt, roleFinalTurnPrompt, roleTaskPrompt } from "./prompts";
 import type { ConversationState } from "./conversation";
 import {
   browserOutputSchema,
@@ -52,7 +49,6 @@ import {
   type DesignReference,
   type PlanCheck,
   type RoleId,
-  type Source,
 } from "../../shared/testing";
 import type { AdapterYieldChunk } from "@tanstack/ai";
 import type { RunTools } from "./tools";
@@ -67,7 +63,7 @@ export type TestingChildInput = Readonly<{
 }>;
 
 export type TestingChildResult =
-  | Readonly<{ state: "proposed"; proposal: unknown }>
+  | Readonly<{ state: "ready"; completion: RoleCompletion }>
   | Readonly<{ state: "denied"; reason: string }>
   | Readonly<{ state: "failed"; reason: string; issues?: readonly string[] }>;
 
@@ -190,82 +186,8 @@ async function settleTransport(workflowId: string, transport: Transport): Promis
   }
 }
 
-export function sourceAnchors(raw: unknown, limit = 24, nativeName?: string): readonly string[] {
-  if (nativeName === "jira_get_issue" && isRecord(raw) && typeof raw.result === "string") {
-    const issue = jiraIssue(raw);
-
-    if (!issue) {
-      return [];
-    }
-
-    raw = [issue.description, issue.key, issue.summary, issue];
-  }
-
-  const found = new Set<string>();
-
-  const visit = (value: unknown) => {
-    if (found.size >= limit) {
-      return;
-    }
-
-    if (typeof value === "string") {
-      const text = value.trim();
-
-      if (text.length > 0 && text.length <= 512) {
-        found.add(text);
-      }
-
-      return;
-    }
-
-    if (Array.isArray(value)) {
-      value.forEach(visit);
-
-      return;
-    }
-
-    if (value && typeof value === "object") {
-      for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-        visit((value as Record<string, unknown>)[key]);
-      }
-    }
-  };
-
-  visit(raw);
-
-  return [...found];
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function jiraSource(issueKey: unknown, sources: readonly Source[]): Source | null {
-  return typeof issueKey === "string"
-    ? (sources.find((source) => source.kind === "jira" && source.issueKey === issueKey) ?? null)
-    : null;
-}
-
-function confluenceSource(pageId: unknown, sources: readonly Source[]): Source | null {
-  return typeof pageId === "string"
-    ? (sources.find((source) => source.kind === "confluence" && source.pageId === pageId) ?? null)
-    : null;
-}
-
-function authorizedSource(
-  nativeName: string,
-  input: unknown,
-  sources: readonly Source[],
-): Source | null {
-  if (!isRecord(input)) {
-    return null;
-  }
-
-  if (nativeName === "jira_get_issue") {
-    return jiraSource(input.issue_key, sources);
-  }
-
-  return nativeName === "confluence_get_page" ? confluenceSource(input.page_id, sources) : null;
 }
 
 function normalizeJson(value: unknown): unknown {
@@ -432,43 +354,12 @@ function validationIssues(validation: Validation<unknown>): string[] {
   return validation.kind === "rejected" ? [...validation.issues] : [];
 }
 
-function requirementsReview(
-  execution: TestingExecution,
-  proposal: unknown,
-): Pick<ProposalReview, "issues" | "failureReason"> {
-  const captures =
-    execution.tasks
-      .find((task) => task.frame.role === "atlassian")
-      ?.receipts.filter((receipt) => receipt.nativeName === SOURCE_CAPTURE_NATIVE)
-      .map((receipt) => receipt.output as SourceCapture) ?? [];
-
-  const decision = validateRequirements(proposal, {
-    goal: execution.intent.goal,
-    captures,
-  });
-
-  if (decision.kind !== "not_extractable") {
-    return { issues: validationIssues(decision) };
-  }
-
-  const uncoveredSource = execution.intent.sources.some(
-    (source) => !captures.some((capture) => sameSource(capture.reference, source)),
-  );
-
-  if (uncoveredSource) {
-    return { issues: ["task.sources: source captures do not cover the request"] };
-  }
-
-  return { issues: [], failureReason: "requirements_not_extractable" };
-}
-
 function planIssues(
   execution: TestingExecution,
   requirements: Requirements,
   proposal: unknown,
 ): string[] {
   const validation = canonicalizePlan(proposal, {
-    requirements,
     requirementsDigest: digestOf(requirements),
     goal: execution.intent.goal,
     targetUrl: execution.intent.targetUrl,
@@ -543,7 +434,11 @@ function resultIssues(
   );
 }
 
-function proposalIssues(role: RoleId, execution: TestingExecution, proposal: unknown): string[] {
+function proposalIssues(
+  role: Exclude<RoleId, "atlassian">,
+  execution: TestingExecution,
+  proposal: unknown,
+): string[] {
   const requirements = pinnedRequirements(execution);
 
   if (!requirements) {
@@ -1026,53 +921,6 @@ type CaptureRequest<R> = Readonly<{
   nativeReceipt: TestingNativeReceiptReference;
 }>;
 
-async function captureSourceReceipt(
-  run: ChildRun,
-  capture: CaptureRequest<Source>,
-): Promise<SourceCapture> {
-  const { input } = run;
-  const output = normalizeJson(capture.raw);
-  const native = nativeReceiptFor(run.nativeReceipts, capture.nativeReceipt, input, output, [
-    "jira_get_issue",
-    "confluence_get_page",
-  ]);
-  const authorized = authorizedSource(
-    native.nativeName,
-    native.input,
-    run.execution.intent.sources,
-  );
-  const anchors = sourceAnchors(output, 24, native.nativeName);
-  const links = native.nativeName === "jira_get_issue" ? figmaLinks(output) : [];
-
-  if (!authorized || !sameSource(authorized, capture.reference) || anchors.length === 0) {
-    throw new Error("Source capture is not linked to the requested source");
-  }
-
-  const body: SourceCapture = {
-    reference: capture.reference,
-    digest: native.outputDigest,
-    anchors: [...anchors],
-    ...(links.length > 0 ? { links: [...links] } : {}),
-    capturedAt: new Date().toISOString(),
-  };
-  await appendTrustedReceipt({
-    id: `capture-${native.slot}`,
-    taskId: input.taskId,
-    attemptNonce: input.attemptNonce,
-    slot: native.slot,
-    nativeName: SOURCE_CAPTURE_NATIVE,
-    route: "direct",
-    input: { reference: capture.reference },
-    output: body,
-    bindings: {
-      nativeName: native.nativeName,
-      nativeOutputDigest: native.outputDigest,
-    },
-  });
-
-  return body;
-}
-
 async function captureDesignReceipt(
   run: ChildRun,
   capture: CaptureRequest<DesignReference>,
@@ -1132,7 +980,6 @@ function childHost(run: ChildRun): TestingNativeHost {
 
   return {
     invoke: (invocation, work) => invokeNative(run, invocation, work),
-    captureSource: (capture) => captureSourceReceipt(run, capture),
     captureDesign: (capture) => captureDesignReceipt(run, capture),
     restoredDesign: restoredDesignFor(run),
     browserFixture:
@@ -1148,33 +995,46 @@ function childHost(run: ChildRun): TestingNativeHost {
   };
 }
 
-type ProposalReview = {
-  proposal: unknown;
-  issues: string[];
-  failureReason?: "requirements_not_extractable";
-};
+type Review = Readonly<{ completion: RoleCompletion; issues: readonly string[] }>;
 
-function reviewProposal(
+function sourceReview(execution: TestingExecution): Review {
+  const task = execution.tasks.find((item) => item.frame.role === "atlassian");
+
+  return {
+    completion: { role: "atlassian" },
+    issues: validationIssues(assembleRequirements(execution.intent, task?.receipts ?? [])),
+  };
+}
+
+function proposalReview(
+  role: Exclude<RoleId, "atlassian">,
+  execution: TestingExecution,
+  conversation: ConversationState,
+): Review {
+  try {
+    const proposal = extractJson(assistantText(conversation));
+
+    return { completion: { role, proposal }, issues: proposalIssues(role, execution, proposal) };
+  } catch (error) {
+    return {
+      completion: { role, proposal: null },
+      issues: [error instanceof Error ? error.message : "invalid json"],
+    };
+  }
+}
+
+function reviewCompletion(
   input: TestingChildInput,
   conversation: ConversationState,
   name: string,
-): Promise<ProposalReview> {
+): Promise<Review> {
   return DBOS.runStep(
-    async (): Promise<ProposalReview> => {
+    async (): Promise<Review> => {
       const latest = await readTestingExecution(input.parentRunId, input.operationId);
 
-      try {
-        const proposal = extractJson(assistantText(conversation));
-
-        return input.role === "atlassian"
-          ? { proposal, ...requirementsReview(latest, proposal) }
-          : { proposal, issues: proposalIssues(input.role, latest, proposal) };
-      } catch (error) {
-        return {
-          proposal: null,
-          issues: [error instanceof Error ? error.message : "invalid json"],
-        };
-      }
+      return input.role === "atlassian"
+        ? sourceReview(latest)
+        : proposalReview(input.role, latest, conversation);
     },
     { name },
   );
@@ -1221,32 +1081,30 @@ async function runRoleLoops(run: ChildRun, tools: RunTools): Promise<TestingChil
       model: roleRegistry[input.role].model,
       prompt: run.systemPrompt,
       compaction: { kind: "bounded", maxTurn },
-      finalTurn: finalTurnPrompt,
+      finalTurn: roleFinalTurnPrompt(input.role),
       checkpoint: prefixed(checkpoint, prefix),
       orchestration: (call) => orchestrateComment(run, call),
       signal,
     });
   const first = await loop(initial, Math.min(6, execution.runtime.limits.turns), "a");
-  const decision = await reviewProposal(input, first.conversation, "proposal");
-
-  if (decision.failureReason) {
-    return { state: "failed", reason: decision.failureReason };
-  }
+  const decision = await reviewCompletion(input, first.conversation, "proposal");
 
   if (decision.issues.length === 0) {
-    return { state: "proposed", proposal: decision.proposal };
+    return { state: "ready", completion: decision.completion };
   }
 
   const second = await loop(feedbackConversation(first.conversation, decision.issues), 2, "b");
-  const again = await reviewProposal(input, second.conversation, "proposal-2");
+  const again = await reviewCompletion(input, second.conversation, "proposal-2");
 
-  if (again.failureReason) {
-    return { state: "failed", reason: again.failureReason };
+  if (again.issues.length === 0) {
+    return { state: "ready", completion: again.completion };
   }
 
-  return again.issues.length === 0
-    ? { state: "proposed", proposal: again.proposal }
-    : { state: "failed", reason: "proposal_rejected", issues: publicIssues(again.issues) };
+  return {
+    state: "failed",
+    reason: input.role === "atlassian" ? "source_reads_incomplete" : "proposal_rejected",
+    issues: publicIssues(again.issues),
+  };
 }
 
 async function runClaimedChild(

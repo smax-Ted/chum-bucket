@@ -9,11 +9,16 @@
       "threadId": "thread-live-sanitized",
       "kind": "requirements",
       "scopeDigest": "ecda5cee694ddb22ff86dce8246273808722ae2d4a2346055b632b7ac62c74d4",
-      "payloadDigest": "f31e22343b3e43199180ce65d5049d222d30b3831c3b92c78fb730befa77ef78",
+      "payloadDigest": "793b916f65e740d24feccda3a71bb7394d04084da5a0d328fbd143d3913ed13b",
       "payload": {
         "goal": "Read Jira issue FETM-78 and capture its full requirements, acceptance criteria, and any linked design references (including Figma links) needed for QA test planning. Return the requirements artifact reference. Do not post any comment.",
-        "captures": [
+        "sources": [
           {
+            "reference": {
+              "kind": "jira",
+              "issueKey": "FETM-78"
+            },
+            "text": "FETM-78 司康小舖：商品與購物車\n\n## 驗收條件\n\n1. AC-1：The page displays a single product named 「原味司康」(Original Scone) with unit price NT$100.\n2. AC-2：On first load of the page, the cart quantity is 0 and the product subtotal is NT$0.\n3. AC-3：Clicking 「加入購物車」(Add to cart) increases the quantity by 1 each time; when the product is already in the cart, the current quantity is accumulated.\n4. AC-4：The cart provides increase and decrease quantity controls, each adjusting the quantity by 1. Quantity must be an integer from 0 to 5 inclusive (0 and 5 allowed).\n5. AC-5：When quantity is 0, quantity cannot be decreased further; when quantity is 5, neither 「加入購物車」 nor the increase control can raise the quantity above 5.\n6. AC-6：After every quantity change, the screen immediately updates the displayed quantity and product subtotal. The product subtotal equals NT$100 multiplied by quantity.\n7. AC-7：When quantity is reduced to 0, the screen shows the cart as empty and the product subtotal as NT$0.\n8. UI-1：Home page, product page, and cart page conform to the shared color palette and font hierarchy; product cards, general panels, and primary buttons conform to the specified borders, corner radii, and sizes (background #F7F5EF, main text #273B32, product card/general panel background #FFFDFA, illustration area background #E9EDDF; primary button background and border #284D3B with #FFFFFF text; product card 1px #E2DFD6 border and 16px radius; general panel 1px #E0E3D8 border and 14px radius; keyboard focus ring 3px #997548 with 5px offset; fonts PingFang TC, Microsoft JhengHei, system-ui, sans-serif).\n9. UI-2：Check the cart at quantities 0, 1, and 5: the empty-cart message, increment/decrement controls, and disabled states conform to the UI spec. An enabled primary button shows the specified hover color (#173C29) while a disabled button does not show that effect and keeps its original color at 45% overall opacity; the keyboard focus ring is clearly visible when focus moves to an operable button or link.\n10. UI-3：At viewport widths 375px and 1280px, check the home page, product page, and cart page: product name, unit price, quantity, and primary actions are all fully readable and operable, with no overlap, clipping, or horizontal page scrolling.",
             "links": [
               {
                 "url": "https://www.figma.com/design/DiPISvcpFmaPsK9QonpeDf",
@@ -46,117 +51,8 @@
               }
             ],
             "digest": "ddc92aceb072a94311ede5c0e67d367c165fb9adcce8541ad615d852c143893e",
-            "anchors": [
-              "FETM-78",
-              "司康小舖：商品與購物車",
-              "customfield_10009",
-              "customfield_10008",
-              "customfield_11310",
-              "customfield_11304",
-              "customfield_12699",
-              "customfield_10737",
-              "customfield_11306",
-              "customfield_10003",
-              "customfield_12462",
-              "customfield_12629",
-              "customfield_12628",
-              "customfield_12978",
-              "customfield_12989",
-              "customfield_12980",
-              "customfield_12988",
-              "customfield_10007",
-              "customfield_10006",
-              "customfield_10005",
-              "customfield_12633",
-              "customfield_12635",
-              "customfield_12636",
-              "customfield_10031"
-            ],
-            "reference": {
-              "kind": "jira",
-              "issueKey": "FETM-78"
-            },
             "capturedAt": "2026-10-13T03:16:04.227Z"
           }
-        ],
-        "criteria": [
-          {
-            "id": "crit:AC-1",
-            "key": "AC-1",
-            "anchor": "司康小舖：商品與購物車",
-            "statement": "The page displays a single product named 「原味司康」(Original Scone) with unit price NT$100.",
-            "sourceDigest": "ddc92aceb072a94311ede5c0e67d367c165fb9adcce8541ad615d852c143893e"
-          },
-          {
-            "id": "crit:AC-2",
-            "key": "AC-2",
-            "anchor": "司康小舖：商品與購物車",
-            "statement": "On first load of the page, the cart quantity is 0 and the product subtotal is NT$0.",
-            "sourceDigest": "ddc92aceb072a94311ede5c0e67d367c165fb9adcce8541ad615d852c143893e"
-          },
-          {
-            "id": "crit:AC-3",
-            "key": "AC-3",
-            "anchor": "司康小舖：商品與購物車",
-            "statement": "Clicking 「加入購物車」(Add to cart) increases the quantity by 1 each time; when the product is already in the cart, the current quantity is accumulated.",
-            "sourceDigest": "ddc92aceb072a94311ede5c0e67d367c165fb9adcce8541ad615d852c143893e"
-          },
-          {
-            "id": "crit:AC-4",
-            "key": "AC-4",
-            "anchor": "司康小舖：商品與購物車",
-            "statement": "The cart provides increase and decrease quantity controls, each adjusting the quantity by 1. Quantity must be an integer from 0 to 5 inclusive (0 and 5 allowed).",
-            "sourceDigest": "ddc92aceb072a94311ede5c0e67d367c165fb9adcce8541ad615d852c143893e"
-          },
-          {
-            "id": "crit:AC-5",
-            "key": "AC-5",
-            "anchor": "司康小舖：商品與購物車",
-            "statement": "When quantity is 0, quantity cannot be decreased further; when quantity is 5, neither 「加入購物車」 nor the increase control can raise the quantity above 5.",
-            "sourceDigest": "ddc92aceb072a94311ede5c0e67d367c165fb9adcce8541ad615d852c143893e"
-          },
-          {
-            "id": "crit:AC-6",
-            "key": "AC-6",
-            "anchor": "司康小舖：商品與購物車",
-            "statement": "After every quantity change, the screen immediately updates the displayed quantity and product subtotal. The product subtotal equals NT$100 multiplied by quantity.",
-            "sourceDigest": "ddc92aceb072a94311ede5c0e67d367c165fb9adcce8541ad615d852c143893e"
-          },
-          {
-            "id": "crit:AC-7",
-            "key": "AC-7",
-            "anchor": "司康小舖：商品與購物車",
-            "statement": "When quantity is reduced to 0, the screen shows the cart as empty and the product subtotal as NT$0.",
-            "sourceDigest": "ddc92aceb072a94311ede5c0e67d367c165fb9adcce8541ad615d852c143893e"
-          },
-          {
-            "id": "crit:UI-1",
-            "key": "UI-1",
-            "anchor": "司康小舖：商品與購物車",
-            "statement": "Home page, product page, and cart page conform to the shared color palette and font hierarchy; product cards, general panels, and primary buttons conform to the specified borders, corner radii, and sizes (background #F7F5EF, main text #273B32, product card/general panel background #FFFDFA, illustration area background #E9EDDF; primary button background and border #284D3B with #FFFFFF text; product card 1px #E2DFD6 border and 16px radius; general panel 1px #E0E3D8 border and 14px radius; keyboard focus ring 3px #997548 with 5px offset; fonts PingFang TC, Microsoft JhengHei, system-ui, sans-serif).",
-            "sourceDigest": "ddc92aceb072a94311ede5c0e67d367c165fb9adcce8541ad615d852c143893e"
-          },
-          {
-            "id": "crit:UI-2",
-            "key": "UI-2",
-            "anchor": "司康小舖：商品與購物車",
-            "statement": "Check the cart at quantities 0, 1, and 5: the empty-cart message, increment/decrement controls, and disabled states conform to the UI spec. An enabled primary button shows the specified hover color (#173C29) while a disabled button does not show that effect and keeps its original color at 45% overall opacity; the keyboard focus ring is clearly visible when focus moves to an operable button or link.",
-            "sourceDigest": "ddc92aceb072a94311ede5c0e67d367c165fb9adcce8541ad615d852c143893e"
-          },
-          {
-            "id": "crit:UI-3",
-            "key": "UI-3",
-            "anchor": "司康小舖：商品與購物車",
-            "statement": "At viewport widths 375px and 1280px, check the home page, product page, and cart page: product name, unit price, quantity, and primary actions are all fully readable and operable, with no overlap, clipping, or horizontal page scrolling.",
-            "sourceDigest": "ddc92aceb072a94311ede5c0e67d367c165fb9adcce8541ad615d852c143893e"
-          }
-        ],
-        "unresolved": [
-          "The full UI 驗收條件 do not separately enumerate every numeric UI rule (e.g., 1160px max content width, 36px desktop / 20px mobile horizontal padding, 8px button radius, ≥50px button height, ≥44x44px quantity control hit area, add-to-cart button disabled state at quantity 5, nav cart count sync, add-success text feedback) as individually labelled acceptance criteria; each is folded into broader UI-1/UI-2/UI-3 statements rather than given its own stable key.",
-          "The issue references FETM-79 for shipping cost and order submission scope, but FETM-79 was not read and its requirements cannot be grounded here.",
-          "Figma design links (fileKey DiPISvcpFmaPsK9QonpeDf; nodes 1:81 product desktop, 1:82 cart desktop, 1:86 product mobile, 1:87 cart mobile) are recorded as linked design references only; the design content was not read, so no visual criterion is grounded in the Figma source.",
-          "The exact text of the add-to-cart success feedback and the nav cart count are specified qualitatively ('文字回饋', '同步更新導覽列的購物車數量') without metrics for timing or wording.",
-          "The UI spec states the shared specs also apply to FETM-79 checkout and order-completion pages, which are outside this issue's scope and not grounded here."
         ]
       },
       "metadata": {
@@ -170,12 +66,12 @@
           "id": "playwright-chromium",
           "version": "v1"
         },
-        "complete": false,
+        "complete": true,
         "profiles": {
+          "atlassian": "requirements-v4",
+          "planner": "planning-v3",
           "ac": "functional-v2",
-          "ui": "style-v2",
-          "planner": "planning-v2",
-          "atlassian": "requirements-v3"
+          "ui": "style-v2"
         },
         "versions": {
           "loop": "agent-loop-v1",
@@ -193,12 +89,12 @@
         "inputDigest": "sanitized-input",
         "parentRunId": "run-parent",
         "dependencies": [],
-        "outputDigest": "f31e22343b3e43199180ce65d5049d222d30b3831c3b92c78fb730befa77ef78",
+        "outputDigest": "793b916f65e740d24feccda3a71bb7394d04084da5a0d328fbd143d3913ed13b",
         "registration": {
+          "atlassian": "requirements:requirements-v4:enabled:atlassian_read",
+          "planner": "plan:planning-v3:enabled:none",
           "ac": "ac-result:functional-v2:enabled:browser_ac",
-          "ui": "ui-result:style-v2:enabled:browser_ui+figma_read",
-          "planner": "plan:planning-v2:enabled:none",
-          "atlassian": "requirements:requirements-v3:enabled:atlassian_read"
+          "ui": "ui-result:style-v2:enabled:browser_ui+figma_read"
         },
         "producerTaskId": "task-atlassian"
       },
@@ -214,8 +110,8 @@
       "ref": "artifact-live-plan",
       "threadId": "thread-live-sanitized",
       "kind": "plan",
-      "scopeDigest": "0ec24bdffd2d15dcc4e4e210942f99713fe2d2b275611fc1be5af6067a01f59d",
-      "payloadDigest": "9fc9aa2d3b2a32cec4a60a3ab15e4ad221695a5054963a773b04d320388c3ae0",
+      "scopeDigest": "19879099a4446f7d301b57c71307c205e75e62317bace69d91fe3ef8fa795953",
+      "payloadDigest": "135c56ab8f6d93b62f8a631cfff9a00c7289fb7663ff9a1e9c9830c0d713310e",
       "payload": {
         "goal": "Read Jira issue FETM-78 and capture its full requirements, acceptance criteria, and any linked design references (including Figma links) needed for QA test planning. Return the requirements artifact reference. Do not post any comment.",
         "cases": [
@@ -226,7 +122,7 @@
               {
                 "id": "chk-smoke-product-name",
                 "kind": "functional",
-                "criterionId": "crit:AC-1",
+                "criterionId": "AC-1",
                 "observation": {
                   "kind": "text",
                   "target": "product name heading of the single product card in the product list area",
@@ -237,7 +133,7 @@
               {
                 "id": "chk-smoke-unit-price",
                 "kind": "functional",
-                "criterionId": "crit:AC-1",
+                "criterionId": "AC-1",
                 "observation": {
                   "kind": "text",
                   "target": "unit price text within the 原味司康 product card",
@@ -248,7 +144,7 @@
               {
                 "id": "chk-smoke-initial-qty",
                 "kind": "functional",
-                "criterionId": "crit:AC-2",
+                "criterionId": "AC-2",
                 "observation": {
                   "kind": "text",
                   "target": "cart quantity display in the cart panel on first load",
@@ -259,7 +155,7 @@
               {
                 "id": "chk-smoke-initial-subtotal",
                 "kind": "functional",
-                "criterionId": "crit:AC-2",
+                "criterionId": "AC-2",
                 "observation": {
                   "kind": "text",
                   "target": "product subtotal display in the cart panel on first load",
@@ -283,7 +179,7 @@
               {
                 "id": "chk-add-twice-qty",
                 "kind": "functional",
-                "criterionId": "crit:AC-3",
+                "criterionId": "AC-3",
                 "observation": {
                   "kind": "text",
                   "target": "cart quantity display in the cart panel after two add-to-cart clicks",
@@ -294,7 +190,7 @@
               {
                 "id": "chk-add-twice-subtotal",
                 "kind": "functional",
-                "criterionId": "crit:AC-3",
+                "criterionId": "AC-3",
                 "observation": {
                   "kind": "text",
                   "target": "product subtotal display in the cart panel after two add-to-cart clicks",
@@ -326,7 +222,7 @@
               {
                 "id": "chk-increase-qty",
                 "kind": "functional",
-                "criterionId": "crit:AC-4",
+                "criterionId": "AC-4",
                 "observation": {
                   "kind": "text",
                   "target": "cart quantity display in the cart panel after using the increase control",
@@ -337,7 +233,7 @@
               {
                 "id": "chk-increase-subtotal",
                 "kind": "functional",
-                "criterionId": "crit:AC-6",
+                "criterionId": "AC-6",
                 "observation": {
                   "kind": "text",
                   "target": "product subtotal display in the cart panel after using the increase control",
@@ -369,7 +265,7 @@
               {
                 "id": "chk-decrease-qty",
                 "kind": "functional",
-                "criterionId": "crit:AC-4",
+                "criterionId": "AC-4",
                 "observation": {
                   "kind": "text",
                   "target": "cart quantity display in the cart panel after using the decrease control",
@@ -380,7 +276,7 @@
               {
                 "id": "chk-decrease-subtotal",
                 "kind": "functional",
-                "criterionId": "crit:AC-6",
+                "criterionId": "AC-6",
                 "observation": {
                   "kind": "text",
                   "target": "product subtotal display in the cart panel after using the decrease control",
@@ -416,7 +312,7 @@
               {
                 "id": "chk-zero-decrease-qty",
                 "kind": "functional",
-                "criterionId": "crit:AC-5",
+                "criterionId": "AC-5",
                 "observation": {
                   "kind": "text",
                   "target": "cart quantity display in the cart panel after attempting to decrease from 0",
@@ -427,7 +323,7 @@
               {
                 "id": "chk-zero-decrease-subtotal",
                 "kind": "functional",
-                "criterionId": "crit:AC-5",
+                "criterionId": "AC-5",
                 "observation": {
                   "kind": "text",
                   "target": "product subtotal display in the cart panel after attempting to decrease from 0",
@@ -455,7 +351,7 @@
               {
                 "id": "chk-five-increase-qty",
                 "kind": "functional",
-                "criterionId": "crit:AC-5",
+                "criterionId": "AC-5",
                 "observation": {
                   "kind": "text",
                   "target": "cart quantity display in the cart panel after attempting to increase beyond 5",
@@ -466,7 +362,7 @@
               {
                 "id": "chk-five-increase-subtotal",
                 "kind": "functional",
-                "criterionId": "crit:AC-5",
+                "criterionId": "AC-5",
                 "observation": {
                   "kind": "text",
                   "target": "product subtotal display in the cart panel after attempting to increase beyond 5",
@@ -518,7 +414,7 @@
               {
                 "id": "chk-five-add-qty",
                 "kind": "functional",
-                "criterionId": "crit:AC-5",
+                "criterionId": "AC-5",
                 "observation": {
                   "kind": "text",
                   "target": "cart quantity display in the cart panel after extra add-to-cart clicks at quantity 5",
@@ -529,7 +425,7 @@
               {
                 "id": "chk-five-add-subtotal",
                 "kind": "functional",
-                "criterionId": "crit:AC-5",
+                "criterionId": "AC-5",
                 "observation": {
                   "kind": "text",
                   "target": "product subtotal display in the cart panel after extra add-to-cart clicks at quantity 5",
@@ -581,7 +477,7 @@
               {
                 "id": "chk-subtotal-five",
                 "kind": "functional",
-                "criterionId": "crit:AC-6",
+                "criterionId": "AC-6",
                 "observation": {
                   "kind": "text",
                   "target": "product subtotal display in the cart panel at quantity 5",
@@ -592,7 +488,7 @@
               {
                 "id": "chk-qty-five",
                 "kind": "functional",
-                "criterionId": "crit:AC-6",
+                "criterionId": "AC-6",
                 "observation": {
                   "kind": "text",
                   "target": "cart quantity display in the cart panel at quantity 5",
@@ -636,7 +532,7 @@
               {
                 "id": "chk-empty-qty",
                 "kind": "functional",
-                "criterionId": "crit:AC-7",
+                "criterionId": "AC-7",
                 "observation": {
                   "kind": "text",
                   "target": "cart quantity display in the cart panel after reducing quantity to 0",
@@ -647,7 +543,7 @@
               {
                 "id": "chk-empty-subtotal",
                 "kind": "functional",
-                "criterionId": "crit:AC-7",
+                "criterionId": "AC-7",
                 "observation": {
                   "kind": "text",
                   "target": "product subtotal display in the cart panel after reducing quantity to 0",
@@ -696,7 +592,7 @@
                 "tolerance": {
                   "kind": "exact"
                 },
-                "criterionId": "crit:UI-1"
+                "criterionId": "UI-1"
               },
               {
                 "id": "chk-style-card-radius",
@@ -710,7 +606,7 @@
                 "tolerance": {
                   "kind": "exact"
                 },
-                "criterionId": "crit:UI-1"
+                "criterionId": "UI-1"
               },
               {
                 "id": "chk-style-card-width",
@@ -724,7 +620,7 @@
                 "tolerance": {
                   "kind": "exact"
                 },
-                "criterionId": "crit:UI-1"
+                "criterionId": "UI-1"
               },
               {
                 "id": "chk-style-card-height",
@@ -738,7 +634,7 @@
                 "tolerance": {
                   "kind": "exact"
                 },
-                "criterionId": "crit:UI-1"
+                "criterionId": "UI-1"
               }
             ],
             "actions": [
@@ -765,7 +661,7 @@
                 "tolerance": {
                   "kind": "exact"
                 },
-                "criterionId": "crit:UI-1"
+                "criterionId": "UI-1"
               },
               {
                 "id": "chk-style-btn-radius",
@@ -779,7 +675,7 @@
                 "tolerance": {
                   "kind": "exact"
                 },
-                "criterionId": "crit:UI-1"
+                "criterionId": "UI-1"
               },
               {
                 "id": "chk-style-btn-height",
@@ -793,7 +689,7 @@
                 "tolerance": {
                   "kind": "exact"
                 },
-                "criterionId": "crit:UI-1"
+                "criterionId": "UI-1"
               }
             ],
             "actions": [
@@ -862,7 +758,7 @@
             "reason": "Border shorthand thickness/style/color, focus-ring behavior, and font-family resolution are properties the runner does not support for style checks, and focus states cannot be established by navigation-only UI actions.",
             "expectations": [
               {
-                "criterionId": "crit:UI-1",
+                "criterionId": "UI-1",
                 "expectedObservation": "General panel shows background #FFFDFA with 1px #E0E3D8 border and 14px radius; illustration area background is #E9EDDF; page background is #F7F5EF with main text #273B32; focus ring is 3px #997548 at 5px offset; fonts render as PingFang TC, Microsoft JhengHei, system-ui, sans-serif"
               }
             ]
@@ -879,7 +775,7 @@
             "reason": "Hover and disabled-interaction states cannot be captured through navigation-only UI actions, and both hover-triggered color and multi-state comparison need interactive setup the plan cannot establish.",
             "expectations": [
               {
-                "criterionId": "crit:UI-2",
+                "criterionId": "UI-2",
                 "expectedObservation": "Enabled primary button hover background is #173C29; disabled button keeps its original color with 45% overall opacity; empty-cart message and increment/decrement disabled states conform to the UI spec"
               }
             ]
@@ -895,7 +791,7 @@
             "reason": "Keyboard focus movement is an unsupported interaction that navigation-only UI cases cannot establish.",
             "expectations": [
               {
-                "criterionId": "crit:UI-2",
+                "criterionId": "UI-2",
                 "expectedObservation": "A 3px #997548 focus ring with 5px offset is clearly visible on the focused operable button and link"
               }
             ]
@@ -911,7 +807,7 @@
             "reason": "The design content was not read and the source gives no concrete font-size/weight values, so a measurable typography hierarchy cannot be grounded without inventing values.",
             "expectations": [
               {
-                "criterionId": "crit:UI-1",
+                "criterionId": "UI-1",
                 "expectedObservation": "All three pages share background #F7F5EF, main text #273B32, and a consistent font hierarchy; the Figma source does not expose concrete typography metrics here"
               }
             ]
@@ -928,7 +824,7 @@
             "reason": "Responsive breakpoint behavior at 375px is not supported by the runner's style checks and requires a viewport condition the plan cannot assert.",
             "expectations": [
               {
-                "criterionId": "crit:UI-3",
+                "criterionId": "UI-3",
                 "expectedObservation": "At 375px all product name, unit price, quantity, and primary actions are fully readable and operable with no overlap, clipping, or horizontal page scrolling"
               }
             ]
@@ -945,7 +841,7 @@
             "reason": "Viewport-width layout inspection at 1280px requires a breakpoint condition and overlap/clipping judgment the runner does not support.",
             "expectations": [
               {
-                "criterionId": "crit:UI-3",
+                "criterionId": "UI-3",
                 "expectedObservation": "At 1280px all product name, unit price, quantity, and primary actions are fully readable and operable with no overlap, clipping, or horizontal page scrolling"
               }
             ]
@@ -961,7 +857,7 @@
             "reason": "These numeric layout rules are folded into UI-3 without individually labelled keys and require layout/breakpoint measurement the plan cannot ground precisely.",
             "expectations": [
               {
-                "criterionId": "crit:UI-3",
+                "criterionId": "UI-3",
                 "expectedObservation": "Max content width is 1160px with 36px horizontal padding at desktop and 20px horizontal padding at mobile, per the UI spec"
               }
             ]
@@ -977,7 +873,7 @@
             "reason": "The ≥44x44px hit-area rule is not a stable labelled criterion and requires interactive cart setup plus a non-supported property measurement.",
             "expectations": [
               {
-                "criterionId": "crit:UI-1",
+                "criterionId": "UI-1",
                 "expectedObservation": "The increment and decrement quantity controls each expose a hit area of at least 44x44px, per the UI spec"
               }
             ]
@@ -993,13 +889,62 @@
             "reason": "The exact feedback wording and the nav cart count text are specified only qualitatively with no metrics, so no literal expected string can be grounded.",
             "expectations": [
               {
-                "criterionId": "crit:UI-2",
+                "criterionId": "UI-2",
                 "expectedObservation": "A success text feedback appears per the UI spec ('文字回饋') and the nav cart count synchronizes with the cart quantity"
               }
             ]
           }
         ],
-        "requirementsDigest": "f31e22343b3e43199180ce65d5049d222d30b3831c3b92c78fb730befa77ef78"
+        "requirementsDigest": "793b916f65e740d24feccda3a71bb7394d04084da5a0d328fbd143d3913ed13b",
+        "criteria": [
+          {
+            "id": "AC-1",
+            "statement": "The page displays a single product named 「原味司康」(Original Scone) with unit price NT$100."
+          },
+          {
+            "id": "AC-2",
+            "statement": "On first load of the page, the cart quantity is 0 and the product subtotal is NT$0."
+          },
+          {
+            "id": "AC-3",
+            "statement": "Clicking 「加入購物車」(Add to cart) increases the quantity by 1 each time; when the product is already in the cart, the current quantity is accumulated."
+          },
+          {
+            "id": "AC-4",
+            "statement": "The cart provides increase and decrease quantity controls, each adjusting the quantity by 1. Quantity must be an integer from 0 to 5 inclusive (0 and 5 allowed)."
+          },
+          {
+            "id": "AC-5",
+            "statement": "When quantity is 0, quantity cannot be decreased further; when quantity is 5, neither 「加入購物車」 nor the increase control can raise the quantity above 5."
+          },
+          {
+            "id": "AC-6",
+            "statement": "After every quantity change, the screen immediately updates the displayed quantity and product subtotal. The product subtotal equals NT$100 multiplied by quantity."
+          },
+          {
+            "id": "AC-7",
+            "statement": "When quantity is reduced to 0, the screen shows the cart as empty and the product subtotal as NT$0."
+          },
+          {
+            "id": "UI-1",
+            "statement": "Home page, product page, and cart page conform to the shared color palette and font hierarchy; product cards, general panels, and primary buttons conform to the specified borders, corner radii, and sizes (background #F7F5EF, main text #273B32, product card/general panel background #FFFDFA, illustration area background #E9EDDF; primary button background and border #284D3B with #FFFFFF text; product card 1px #E2DFD6 border and 16px radius; general panel 1px #E0E3D8 border and 14px radius; keyboard focus ring 3px #997548 with 5px offset; fonts PingFang TC, Microsoft JhengHei, system-ui, sans-serif)."
+          },
+          {
+            "id": "UI-2",
+            "statement": "Check the cart at quantities 0, 1, and 5: the empty-cart message, increment/decrement controls, and disabled states conform to the UI spec. An enabled primary button shows the specified hover color (#173C29) while a disabled button does not show that effect and keeps its original color at 45% overall opacity; the keyboard focus ring is clearly visible when focus moves to an operable button or link."
+          },
+          {
+            "id": "UI-3",
+            "statement": "At viewport widths 375px and 1280px, check the home page, product page, and cart page: product name, unit price, quantity, and primary actions are all fully readable and operable, with no overlap, clipping, or horizontal page scrolling."
+          }
+        ],
+        "unresolved": [
+          "The full UI 驗收條件 do not separately enumerate every numeric UI rule (e.g., 1160px max content width, 36px desktop / 20px mobile horizontal padding, 8px button radius, ≥50px button height, ≥44x44px quantity control hit area, add-to-cart button disabled state at quantity 5, nav cart count sync, add-success text feedback) as individually labelled acceptance criteria; each is folded into broader UI-1/UI-2/UI-3 statements rather than given its own stable key.",
+          "The issue references FETM-79 for shipping cost and order submission scope, but FETM-79 was not read and its requirements cannot be grounded here.",
+          "Figma design links (fileKey DiPISvcpFmaPsK9QonpeDf; nodes 1:81 product desktop, 1:82 cart desktop, 1:86 product mobile, 1:87 cart mobile) are recorded as linked design references only; the design content was not read, so no visual criterion is grounded in the Figma source.",
+          "The exact text of the add-to-cart success feedback and the nav cart count are specified qualitatively ('文字回饋', '同步更新導覽列的購物車數量') without metrics for timing or wording.",
+          "The UI spec states the shared specs also apply to FETM-79 checkout and order-completion pages, which are outside this issue's scope and not grounded here."
+        ]
       },
       "metadata": {
         "bounds": {
@@ -1012,12 +957,12 @@
           "id": "playwright-chromium",
           "version": "v1"
         },
-        "complete": false,
+        "complete": true,
         "profiles": {
+          "atlassian": "requirements-v4",
+          "planner": "planning-v3",
           "ac": "functional-v2",
-          "ui": "style-v2",
-          "planner": "planning-v2",
-          "atlassian": "requirements-v3"
+          "ui": "style-v2"
         },
         "versions": {
           "loop": "agent-loop-v1",
@@ -1035,12 +980,12 @@
         "inputDigest": "sanitized-input",
         "parentRunId": "run-parent",
         "dependencies": ["artifact-live-requirements"],
-        "outputDigest": "9fc9aa2d3b2a32cec4a60a3ab15e4ad221695a5054963a773b04d320388c3ae0",
+        "outputDigest": "135c56ab8f6d93b62f8a631cfff9a00c7289fb7663ff9a1e9c9830c0d713310e",
         "registration": {
+          "atlassian": "requirements:requirements-v4:enabled:atlassian_read",
+          "planner": "plan:planning-v3:enabled:none",
           "ac": "ac-result:functional-v2:enabled:browser_ac",
-          "ui": "ui-result:style-v2:enabled:browser_ui+figma_read",
-          "planner": "plan:planning-v2:enabled:none",
-          "atlassian": "requirements:requirements-v3:enabled:atlassian_read"
+          "ui": "ui-result:style-v2:enabled:browser_ui+figma_read"
         },
         "producerTaskId": "task-planner"
       },
@@ -1069,8 +1014,13 @@
   ],
   "expandedRequirements": {
     "goal": "Read Jira issue FETM-78 in full and capture a complete requirements artifact: every functional requirement and acceptance criterion (product 「原味司康」 at NT$100, initial cart quantity 0 and subtotal NT$0, add-to-cart accumulation, increase/decrease controls with integer quantity 0-5 inclusive, boundary blocking at 0 and 5, immediate quantity and subtotal updates where subtotal = 100 x quantity, empty cart at quantity 0) plus the UI acceptance criteria (palette, borders, radii, sizes, hover/disabled/focus states, 375px and 1280px responsive readability) and all linked Figma design references. Also list any unresolved gaps explicitly. This is a fresh capture intended to be complete and self-contained — do not omit criteria that appear folded into broader UI statements. Do not post any comment.",
-    "captures": [
+    "sources": [
       {
+        "reference": {
+          "kind": "jira",
+          "issueKey": "FETM-78"
+        },
+        "text": "FETM-78 司康小舖：商品與購物車\n\n## 驗收條件\n\n1. AC-1：頁面顯示唯一商品「原味司康」及單價 NT$100。\n2. AC-2：初次開啟頁面時，購物車數量為 0，商品小計為 NT$0。\n3. AC-3：點擊「加入購物車」時，數量每次增加 1；已有商品時也以目前數量累加。\n4. AC-4：購物車提供增加與減少數量的操作，每次調整 1；數量只能是 0 至 5 的整數，包含 0 與 5。\n5. AC-5：數量為 0 時不能再減少；數量為 5 時，「加入購物車」及增加操作均不能使數量超過 5。\n6. AC-6：每次數量改變後，畫面立即更新數量與商品小計；商品小計等於 NT$100 乘以數量。\n7. AC-7：數量減至 0 時，畫面顯示購物車為空，商品小計為 NT$0。\n8. UI-COLOR-BG-TEXT：頁面背景為 #F7F5EF，主要文字為 #273B32；商品卡片與一般面板背景為 #FFFDFA，插畫區背景為 #E9EDDF。\n9. UI-BTN-PRIMARY：主按鈕背景與邊框為 #284D3B，文字為 #FFFFFF；可用按鈕的滑鼠懸停背景為 #173C29。\n10. UI-BTN-DISABLED：停用按鈕保留原色，整體不透明度為 45%，且不呈現可用按鈕的懸停效果。\n11. UI-CARD-BORDER-RADIUS：商品卡片使用 1px、#E2DFD6 邊框及 16px 圓角；一般面板使用 1px、#E0E3D8 邊框及 14px 圓角。\n12. UI-FOCUS-RING：按鈕與連結的鍵盤焦點框為 3px、#997548，外距為 5px。\n13. UI-FONTS：字體依序使用 PingFang TC、Microsoft JhengHei、system-ui、sans-serif。\n14. UI-TYPE-SCALE：一般頁面主標題為 26–40px，首頁主視覺標題為 36–58px，區塊標題為 19–25px；商品說明為 14px，操作提示為 12px，內文行高為 1.6。\n15. UI-PRODUCT-CARD-CONTENT：商品頁卡片依序呈現司康插畫、商品名稱、NT$100 單價、商品說明與「加入購物車」按鈕。\n16. UI-PRIMARY-BTN-SIZE：主按鈕填滿所在內容區的寬度，高度至少 50px，圓角為 8px。\n17. UI-CART-ROW：購物車商品區清楚呈現商品名稱、單價與數量；「−」、數量與「＋」由左至右排列，加減按鈕的操作區至少為 44 × 44px。\n18. UI-QTY-BTN-STYLE：加減按鈕背景為 #F7F8F3、文字為 #284D3B；可用時的懸停背景為 #E6ECDF；數量控制區邊框為 #CBD5C8。\n19. UI-DISABLED-AT-5：數量為 5 時，「加入購物車」與「＋」顯示停用狀態。\n20. UI-EMPTY-CART：數量為 0 時顯示「購物車還是空的」與加入商品入口；若仍顯示「−」，該按鈕須停用。\n21. UI-ADD-FEEDBACK：成功加入商品後，在按鈕附近顯示文字回饋，並同步更新導覽列的購物車數量。\n22. UI-LAYOUT-WIDTH：內容區最大寬度為 1160px，桌面左右留白各 36px。\n23. UI-RESPONSIVE-760：畫面寬度不超過 760px 時改為單欄、左右留白各 20px，購物車商品區置於金額摘要上方。\n24. UI-NO-OVERLAP-SCROLL：商品圖片等比例縮放，文字、數量控制與按鈕不得重疊或造成頁面橫向捲動。\n25. UI-AC-1：首頁、商品頁與購物車頁符合共用色票及字體層級；商品卡片、一般面板與主按鈕符合指定的邊框、圓角與尺寸。\n26. UI-AC-2：在數量為 0、1、5 時檢查購物車，空車提示、加減控制與停用狀態均符合 UI 規格。可用主按鈕呈現指定懸停色，停用按鈕不呈現該效果；鍵盤移至可操作按鈕或連結時，焦點框清楚可見。\n27. UI-AC-3：以 375px 與 1280px 畫面寬度檢查首頁、商品頁與購物車頁；商品名稱、單價、數量與主要操作均可完整閱讀及操作，沒有重疊、裁切或頁面橫向捲動。",
         "links": [
           {
             "url": "https://www.figma.com/design/DiPISvcpFmaPsK9QonpeDf",
@@ -1103,228 +1053,119 @@
           }
         ],
         "digest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544",
-        "anchors": [
-          "FETM-78",
-          "司康小舖：商品與購物車",
-          "customfield_10009",
-          "customfield_10008",
-          "customfield_11310",
-          "customfield_11304",
-          "customfield_12699",
-          "customfield_10737",
-          "customfield_11306",
-          "customfield_10003",
-          "customfield_12462",
-          "customfield_12629",
-          "customfield_12628",
-          "customfield_12978",
-          "customfield_12989",
-          "customfield_12980",
-          "customfield_12988",
-          "customfield_10007",
-          "customfield_10006",
-          "customfield_10005",
-          "customfield_12633",
-          "customfield_12635",
-          "customfield_12636",
-          "customfield_10031"
-        ],
-        "reference": {
-          "kind": "jira",
-          "issueKey": "FETM-78"
-        },
         "capturedAt": "2026-10-13T03:20:15.841Z"
       }
-    ],
+    ]
+  },
+  "expandedPlanning": {
     "criteria": [
       {
-        "id": "crit:AC-1",
-        "key": "AC-1",
-        "anchor": "FETM-78",
-        "statement": "頁面顯示唯一商品「原味司康」及單價 NT$100。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "AC-1",
+        "statement": "頁面顯示唯一商品「原味司康」及單價 NT$100。"
       },
       {
-        "id": "crit:AC-2",
-        "key": "AC-2",
-        "anchor": "FETM-78",
-        "statement": "初次開啟頁面時，購物車數量為 0，商品小計為 NT$0。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "AC-2",
+        "statement": "初次開啟頁面時，購物車數量為 0，商品小計為 NT$0。"
       },
       {
-        "id": "crit:AC-3",
-        "key": "AC-3",
-        "anchor": "FETM-78",
-        "statement": "點擊「加入購物車」時，數量每次增加 1；已有商品時也以目前數量累加。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "AC-3",
+        "statement": "點擊「加入購物車」時，數量每次增加 1；已有商品時也以目前數量累加。"
       },
       {
-        "id": "crit:AC-4",
-        "key": "AC-4",
-        "anchor": "FETM-78",
-        "statement": "購物車提供增加與減少數量的操作，每次調整 1；數量只能是 0 至 5 的整數，包含 0 與 5。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "AC-4",
+        "statement": "購物車提供增加與減少數量的操作，每次調整 1；數量只能是 0 至 5 的整數，包含 0 與 5。"
       },
       {
-        "id": "crit:AC-5",
-        "key": "AC-5",
-        "anchor": "FETM-78",
-        "statement": "數量為 0 時不能再減少；數量為 5 時，「加入購物車」及增加操作均不能使數量超過 5。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "AC-5",
+        "statement": "數量為 0 時不能再減少；數量為 5 時，「加入購物車」及增加操作均不能使數量超過 5。"
       },
       {
-        "id": "crit:AC-6",
-        "key": "AC-6",
-        "anchor": "FETM-78",
-        "statement": "每次數量改變後，畫面立即更新數量與商品小計；商品小計等於 NT$100 乘以數量。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "AC-6",
+        "statement": "每次數量改變後，畫面立即更新數量與商品小計；商品小計等於 NT$100 乘以數量。"
       },
       {
-        "id": "crit:AC-7",
-        "key": "AC-7",
-        "anchor": "FETM-78",
-        "statement": "數量減至 0 時，畫面顯示購物車為空，商品小計為 NT$0。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "AC-7",
+        "statement": "數量減至 0 時，畫面顯示購物車為空，商品小計為 NT$0。"
       },
       {
-        "id": "crit:UI-COLOR-BG-TEXT",
-        "key": "UI-COLOR-BG-TEXT",
-        "anchor": "FETM-78",
-        "statement": "頁面背景為 #F7F5EF，主要文字為 #273B32；商品卡片與一般面板背景為 #FFFDFA，插畫區背景為 #E9EDDF。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-COLOR-BG-TEXT",
+        "statement": "頁面背景為 #F7F5EF，主要文字為 #273B32；商品卡片與一般面板背景為 #FFFDFA，插畫區背景為 #E9EDDF。"
       },
       {
-        "id": "crit:UI-BTN-PRIMARY",
-        "key": "UI-BTN-PRIMARY",
-        "anchor": "FETM-78",
-        "statement": "主按鈕背景與邊框為 #284D3B，文字為 #FFFFFF；可用按鈕的滑鼠懸停背景為 #173C29。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-BTN-PRIMARY",
+        "statement": "主按鈕背景與邊框為 #284D3B，文字為 #FFFFFF；可用按鈕的滑鼠懸停背景為 #173C29。"
       },
       {
-        "id": "crit:UI-BTN-DISABLED",
-        "key": "UI-BTN-DISABLED",
-        "anchor": "FETM-78",
-        "statement": "停用按鈕保留原色，整體不透明度為 45%，且不呈現可用按鈕的懸停效果。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-BTN-DISABLED",
+        "statement": "停用按鈕保留原色，整體不透明度為 45%，且不呈現可用按鈕的懸停效果。"
       },
       {
-        "id": "crit:UI-CARD-BORDER-RADIUS",
-        "key": "UI-CARD-BORDER-RADIUS",
-        "anchor": "FETM-78",
-        "statement": "商品卡片使用 1px、#E2DFD6 邊框及 16px 圓角；一般面板使用 1px、#E0E3D8 邊框及 14px 圓角。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-CARD-BORDER-RADIUS",
+        "statement": "商品卡片使用 1px、#E2DFD6 邊框及 16px 圓角；一般面板使用 1px、#E0E3D8 邊框及 14px 圓角。"
       },
       {
-        "id": "crit:UI-FOCUS-RING",
-        "key": "UI-FOCUS-RING",
-        "anchor": "FETM-78",
-        "statement": "按鈕與連結的鍵盤焦點框為 3px、#997548，外距為 5px。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-FOCUS-RING",
+        "statement": "按鈕與連結的鍵盤焦點框為 3px、#997548，外距為 5px。"
       },
       {
-        "id": "crit:UI-FONTS",
-        "key": "UI-FONTS",
-        "anchor": "FETM-78",
-        "statement": "字體依序使用 PingFang TC、Microsoft JhengHei、system-ui、sans-serif。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-FONTS",
+        "statement": "字體依序使用 PingFang TC、Microsoft JhengHei、system-ui、sans-serif。"
       },
       {
-        "id": "crit:UI-TYPE-SCALE",
-        "key": "UI-TYPE-SCALE",
-        "anchor": "FETM-78",
-        "statement": "一般頁面主標題為 26–40px，首頁主視覺標題為 36–58px，區塊標題為 19–25px；商品說明為 14px，操作提示為 12px，內文行高為 1.6。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-TYPE-SCALE",
+        "statement": "一般頁面主標題為 26–40px，首頁主視覺標題為 36–58px，區塊標題為 19–25px；商品說明為 14px，操作提示為 12px，內文行高為 1.6。"
       },
       {
-        "id": "crit:UI-PRODUCT-CARD-CONTENT",
-        "key": "UI-PRODUCT-CARD-CONTENT",
-        "anchor": "FETM-78",
-        "statement": "商品頁卡片依序呈現司康插畫、商品名稱、NT$100 單價、商品說明與「加入購物車」按鈕。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-PRODUCT-CARD-CONTENT",
+        "statement": "商品頁卡片依序呈現司康插畫、商品名稱、NT$100 單價、商品說明與「加入購物車」按鈕。"
       },
       {
-        "id": "crit:UI-PRIMARY-BTN-SIZE",
-        "key": "UI-PRIMARY-BTN-SIZE",
-        "anchor": "FETM-78",
-        "statement": "主按鈕填滿所在內容區的寬度，高度至少 50px，圓角為 8px。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-PRIMARY-BTN-SIZE",
+        "statement": "主按鈕填滿所在內容區的寬度，高度至少 50px，圓角為 8px。"
       },
       {
-        "id": "crit:UI-CART-ROW",
-        "key": "UI-CART-ROW",
-        "anchor": "FETM-78",
-        "statement": "購物車商品區清楚呈現商品名稱、單價與數量；「−」、數量與「＋」由左至右排列，加減按鈕的操作區至少為 44 × 44px。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-CART-ROW",
+        "statement": "購物車商品區清楚呈現商品名稱、單價與數量；「−」、數量與「＋」由左至右排列，加減按鈕的操作區至少為 44 × 44px。"
       },
       {
-        "id": "crit:UI-QTY-BTN-STYLE",
-        "key": "UI-QTY-BTN-STYLE",
-        "anchor": "FETM-78",
-        "statement": "加減按鈕背景為 #F7F8F3、文字為 #284D3B；可用時的懸停背景為 #E6ECDF；數量控制區邊框為 #CBD5C8。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-QTY-BTN-STYLE",
+        "statement": "加減按鈕背景為 #F7F8F3、文字為 #284D3B；可用時的懸停背景為 #E6ECDF；數量控制區邊框為 #CBD5C8。"
       },
       {
-        "id": "crit:UI-DISABLED-AT-5",
-        "key": "UI-DISABLED-AT-5",
-        "anchor": "FETM-78",
-        "statement": "數量為 5 時，「加入購物車」與「＋」顯示停用狀態。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-DISABLED-AT-5",
+        "statement": "數量為 5 時，「加入購物車」與「＋」顯示停用狀態。"
       },
       {
-        "id": "crit:UI-EMPTY-CART",
-        "key": "UI-EMPTY-CART",
-        "anchor": "FETM-78",
-        "statement": "數量為 0 時顯示「購物車還是空的」與加入商品入口；若仍顯示「−」，該按鈕須停用。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-EMPTY-CART",
+        "statement": "數量為 0 時顯示「購物車還是空的」與加入商品入口；若仍顯示「−」，該按鈕須停用。"
       },
       {
-        "id": "crit:UI-ADD-FEEDBACK",
-        "key": "UI-ADD-FEEDBACK",
-        "anchor": "FETM-78",
-        "statement": "成功加入商品後，在按鈕附近顯示文字回饋，並同步更新導覽列的購物車數量。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-ADD-FEEDBACK",
+        "statement": "成功加入商品後，在按鈕附近顯示文字回饋，並同步更新導覽列的購物車數量。"
       },
       {
-        "id": "crit:UI-LAYOUT-WIDTH",
-        "key": "UI-LAYOUT-WIDTH",
-        "anchor": "FETM-78",
-        "statement": "內容區最大寬度為 1160px，桌面左右留白各 36px。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-LAYOUT-WIDTH",
+        "statement": "內容區最大寬度為 1160px，桌面左右留白各 36px。"
       },
       {
-        "id": "crit:UI-RESPONSIVE-760",
-        "key": "UI-RESPONSIVE-760",
-        "anchor": "FETM-78",
-        "statement": "畫面寬度不超過 760px 時改為單欄、左右留白各 20px，購物車商品區置於金額摘要上方。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-RESPONSIVE-760",
+        "statement": "畫面寬度不超過 760px 時改為單欄、左右留白各 20px，購物車商品區置於金額摘要上方。"
       },
       {
-        "id": "crit:UI-NO-OVERLAP-SCROLL",
-        "key": "UI-NO-OVERLAP-SCROLL",
-        "anchor": "FETM-78",
-        "statement": "商品圖片等比例縮放，文字、數量控制與按鈕不得重疊或造成頁面橫向捲動。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-NO-OVERLAP-SCROLL",
+        "statement": "商品圖片等比例縮放，文字、數量控制與按鈕不得重疊或造成頁面橫向捲動。"
       },
       {
-        "id": "crit:UI-AC-1",
-        "key": "UI-AC-1",
-        "anchor": "FETM-78",
-        "statement": "首頁、商品頁與購物車頁符合共用色票及字體層級；商品卡片、一般面板與主按鈕符合指定的邊框、圓角與尺寸。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-AC-1",
+        "statement": "首頁、商品頁與購物車頁符合共用色票及字體層級；商品卡片、一般面板與主按鈕符合指定的邊框、圓角與尺寸。"
       },
       {
-        "id": "crit:UI-AC-2",
-        "key": "UI-AC-2",
-        "anchor": "FETM-78",
-        "statement": "在數量為 0、1、5 時檢查購物車，空車提示、加減控制與停用狀態均符合 UI 規格。可用主按鈕呈現指定懸停色，停用按鈕不呈現該效果；鍵盤移至可操作按鈕或連結時，焦點框清楚可見。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-AC-2",
+        "statement": "在數量為 0、1、5 時檢查購物車，空車提示、加減控制與停用狀態均符合 UI 規格。可用主按鈕呈現指定懸停色，停用按鈕不呈現該效果；鍵盤移至可操作按鈕或連結時，焦點框清楚可見。"
       },
       {
-        "id": "crit:UI-AC-3",
-        "key": "UI-AC-3",
-        "anchor": "FETM-78",
-        "statement": "以 375px 與 1280px 畫面寬度檢查首頁、商品頁與購物車頁；商品名稱、單價、數量與主要操作均可完整閱讀及操作，沒有重疊、裁切或頁面橫向捲動。",
-        "sourceDigest": "54f0354523856e69cd53b6251ad705b791b3c1d16c5ba0199390061f86010544"
+        "id": "UI-AC-3",
+        "statement": "以 375px 與 1280px 畫面寬度檢查首頁、商品頁與購物車頁；商品名稱、單價、數量與主要操作均可完整閱讀及操作，沒有重疊、裁切或頁面橫向捲動。"
       }
     ],
     "unresolved": [
