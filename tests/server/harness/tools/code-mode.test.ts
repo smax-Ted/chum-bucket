@@ -173,6 +173,8 @@ test("the model turn documents exactly the bindings the sandbox exposes", async 
     );
     assert.match(turn.systemPrompt, /interface External_readOutput \{\n {2}content: Array</);
     assert.match(turn.systemPrompt, /Promise<unknown>;/);
+    assert.match(turn.systemPrompt, /Every file, network, or service operation goes through/);
+    assert.doesNotMatch(turn.systemPrompt, /isolated with no network or filesystem access/);
   });
 });
 
@@ -202,6 +204,8 @@ test("codemode executes TypeScript with genuinely empty bindings and projects it
   const turn = composeEmpty({ timeoutMs: 5000 });
   assert.match(turn.definition.description, /No external functions are available/);
   assert.match(turn.systemPrompt, /No external functions are available/);
+  assert.match(turn.systemPrompt, /- The sandbox has no network or filesystem access\./);
+  assert.doesNotMatch(turn.systemPrompt, /Promise\.all/);
   assert.doesNotMatch(turn.definition.description, /external_/);
   assert.doesNotMatch(turn.systemPrompt, /external_/);
 
@@ -393,7 +397,7 @@ test("code mode events stay metadata-only and arrive in execution order", async 
   await withRunTools(async (tools) => {
     const events: { name: string; value: Record<string, unknown> }[] = [];
     const code = `
-      console.log("guest-message");
+      console.log("guest-message 中文");
       const file = await external_read({ path: ${JSON.stringify(relativePath)} });
       return file.content.map((part) => part.text).join("");
     `;
@@ -415,6 +419,7 @@ test("code mode events stay metadata-only and arrive in execution order", async 
     assert.equal(events[0]!.value.codeLength, code.length);
     assert.equal(events[1]!.value.function, "external_read");
     assert.equal(typeof events[1]!.value.argumentBytes, "number");
+    assert.deepEqual(events[3]!.value, { level: "log", byteLength: 20 });
     assert.equal(events[4]!.value.success, true);
     const serialized = JSON.stringify(events);
     assert.equal(serialized.includes("file-payload"), false);

@@ -161,8 +161,14 @@ export function codeModeSystemPrompt(input: CodeModePromptInput): string {
     functions.length > 0
       ? `Inside the code, these async functions are available:\n\n${catalog}\n\n### Type Definitions\n\n\`\`\`typescript\n${typeDefinitions}\n\`\`\``
       : "No external functions are available in this execution.";
-  const asyncNote =
-    functions.length > 0 ? "- All `external_*` calls are async and must be awaited.\n" : "";
+  const callNotes =
+    functions.length > 0
+      ? "- All `external_*` calls are async and must be awaited.\n- Await calls that depend on each other in order. Use `Promise.all` only for independent reads.\n"
+      : "";
+  const accessNote =
+    functions.length > 0
+      ? "The sandbox has no direct network or filesystem access. Every file, network, or service operation goes through an `external_*` function."
+      : "The sandbox has no network or filesystem access.";
 
   return `## Code Execution Tool
 
@@ -172,8 +178,8 @@ ${apiDocumentation}
 
 ### Notes
 
-${asyncNote}- Return a value to pass results back.
+${callNotes}- Return a value to pass results back.
 - \`console.log()\` output is captured.
-- The sandbox is isolated with no network or filesystem access.
+- ${accessNote}
 - Each execution is independent.`;
 }

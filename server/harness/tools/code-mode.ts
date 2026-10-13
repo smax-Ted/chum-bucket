@@ -327,7 +327,7 @@ const eventProjectors = new Map<string, EventProjector>([
     "code_mode:console",
     (payload) => ({
       level: payload.level ?? "log",
-      byteLength: typeof payload.message === "string" ? payload.message.length : 0,
+      byteLength: typeof payload.message === "string" ? Buffer.byteLength(payload.message) : 0,
     }),
   ],
   [
