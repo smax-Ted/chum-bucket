@@ -30,6 +30,34 @@
 > 你的電腦應該要安裝 Docker & node >= 22  
 > 預期你了解部分 TypeScript 以及前後端
 
+### 參考解答
+
+每一節都有一個參考解答的 branch，每個 branch 都以前一節為基礎：
+
+| 節 | Branch |
+| --- | --- |
+| 起點 | `workshop/00-start` |
+| 1. Tool | `workshop/01-tools` |
+| 2. Durable Execution | `workshop/02-durable` |
+| 3. Code Mode | `workshop/03-code-mode` |
+| 4. Compact | `workshop/04-compact` |
+| 5. Agent Routing / Subagent | `workshop/05-subagents` |
+| 6. User Approve | `workshop/06-approval` |
+
+從 `workshop/00-start` 開始開發：
+
+```bash
+git switch -c my-harness origin/workshop/00-start
+```
+
+實作指引只放在 `main` 的 `docs/`，workshop branch 上沒有。開發時另外開著 GitHub 上 `main` 的 README。
+
+卡住時，看那一節完整的變更：
+
+```bash
+git diff origin/workshop/04-compact origin/workshop/05-subagents
+```
+
 ## 0. Intro
 
 Agent = Model + Harness
@@ -312,7 +340,7 @@ Prompt caching 透過重用相同的輸入前綴，減少重複處理的成本�
 
 ## 5. Agent Routing / Subagent
 
-每個 Agent 有各自的任務，各自可以使用的 Task。
+每個 Agent 有各自的任務，各自可以使用的 Tool。
 
 目的：
 
@@ -320,16 +348,57 @@ Prompt caching 透過重用相同的輸入前綴，減少重複處理的成本�
 2. 有特殊的 Tool 權限要進行設定
 3. 要各 Agent 使用不同的模型
 
+### 主 Agent 只負責分派
+
+主 Agent 呼叫 `delegate_task`，一次交給一個角色。角色在自己的 DBOS workflow 裡執行，只看得到自己的任務和工具，看不到主對話。
+
+```mermaid
+flowchart LR
+    M[主 Agent] -->|delegate_task| A[atlassian<br/>讀 Jira、Confluence]
+    A -->|requirementsRef| P[planner<br/>寫測試計畫]
+    P -->|planRef| AC[ac<br/>功能檢查]
+    P -->|planRef| UI[ui<br/>Figma 樣式檢查]
+```
+
+角色之間不直接對話。前一個角色的產出由 host 驗證後存成 artifact，主 Agent 把它的 ref 交給下一個角色。
+
+### Host 驗證，不是模型自己說了算
+
+角色的模型只「提出」結果。host 用自己記下的工具紀錄（receipt）檢查：
+
+- `atlassian` 不寫需求整理，host 直接從它讀到的原文組出需求。
+- `planner` 的計畫要通過 ID 與引用檢查，哪些檢查分給 `ac`、哪些分給 `ui` 由 host 決定。
+- `ac` 與 `ui` 的判定必須引用瀏覽器結果的 receipt，host 用 receipt 重新推出判定，和模型寫的不同就拒絕。
+
+不通過時，host 把問題回饋給角色，再給 2 回合。仍不通過，主 Agent 收到失敗原因。
+
+### 瀏覽器由 Jev 選元素
+
+計畫裡的目標是「結帳按鈕」這類描述，不是 CSS selector。Playwright 列出頁面上的候選元素，[Jev](https://typesafe.ai) 選出最符合描述的那一個。Jev 不夠確定時，瀏覽器暫停，把標好編號的截圖交給 `ac` 或 `ui` 選。
+
 ### Target
 
-1. [ ] Test Planner Agent
-2. [ ] Test AC Agent
-3. [ ] Test UI Agent
-4. [ ] Atlassian Agent
-5. [ ] Browser use tool & jev
+讓主 Agent 把讀需求、寫計畫和瀏覽器驗證交給四個角色，每個角色只拿到自己需要的工具和輸入。
 
+- [ ] 建立 Agent registry，用 `allowsTool` 統一判斷每個 Agent 能用哪些工具。
+- [ ] 建立 `delegate_task`，為每次委派建立一個可恢復的 DBOS 子 workflow，用 artifact ref 串起角色。
+- [ ] 建立 `atlassian`、`planner`、`ac`、`ui` 四個角色，由 host 驗證產出並給一次回饋。
+- [ ] 建立 `verify_ac` 與 `verify_ui`，用 Playwright 執行計畫、Jev 選元素，選不出來時交給角色。
+- [ ] 在 `delegate_task` 呼叫下方顯示角色進度，支援取消。
+
+依序閱讀以下文件：
+
+1. [子 Agent 的委派架構](docs/subagents/architecture.md)：角色分工、資料流、artifact 與不重跑的保證。
+2. [建立委派](docs/subagents/implement-delegation.md)：registry、工具權限、`delegate_task`、主 workflow 的七個 steps 與子 workflow。
+3. [建立四個角色](docs/subagents/role-agents.md)：角色的 prompt、工具限制、receipt、產出驗證與回饋。
+4. [建立瀏覽器驗證](docs/subagents/browser-verification.md)：Playwright、Jev、handoff 與重跑保護。
+5. [驗證子 Agent](docs/subagents/verify-subagents.md)：權限與產出測試、中斷恢復與 demo 商店驗收。
 
 ## 6. User Approve
+
+**Agent 要在 Jira 留言，使用者還沒看過內容，該不該送出？**
+
+會改變外部系統的工具，要先停下來等使用者決定。決定由 host 執行，不能只靠 prompt 叫模型「先問一下」。
 
 ```mermaid
 flowchart TD
@@ -344,9 +413,30 @@ flowchart TD
     G --> H
 ```
 
+### 等待要撐過重啟
+
+使用者可能幾分鐘後才回來按按鈕。用記憶體裡的 Promise 等待，程序重啟後就沒有人接收。這裡用 DBOS 的 `DBOS.recv` 讓 workflow 在資料庫裡等待，按鈕的 HTTP handler 用 `DBOS.send` 把決定送過去。
+
+### 批准的是一段確切的文字
+
+批准卡片顯示 host 存下的留言原文，送出決定時帶上這段文字的 digest。使用者只能回答是或否，送出時 host 用存下的參數呼叫 Jira，不是用模型下一輪重新產生的內容。
+
+這不代表留言只會出現一次。Jira 收到留言、DBOS 還沒記下結果時程序中斷，恢復後會再送一次。這是第 2 節「Checkpoint 與副作用之間的空窗」的同一個問題。
+
 ### Target
 
-1. [ ] jira 留言 tool
+讓 `atlassian` 角色提出的 Jira 留言先停在批准卡片，使用者核准後才送出。
+
+- [ ] `jira_add_comment` 只能直接呼叫，由 orchestration hook 攔下，Code Mode 與一般執行路徑都送不出去。
+- [ ] 用 `DBOS.recv` 等待使用者決定，決定綁定留言內容的 digest，程序重啟後仍能接續。
+- [ ] 在主對話顯示批准卡片，用 `DBOS.send` 送出決定，拒絕後同一個任務不能再提出。
+- [ ] 把留言結果放進 `delegate_task` 的回傳值，讓主 Agent 正確回報。
+
+依序閱讀以下文件：
+
+1. [使用者批准的架構](docs/approval/architecture.md)：為什麼不能只靠 prompt、`DBOS.recv` 與 `DBOS.send`、digest 與保證範圍。
+2. [建立留言批准](docs/approval/implement-approval.md)：參數與事件、攔截、等待、送出、HTTP、取消與介面。
+3. [驗證留言批准](docs/approval/verify-approval.md)：權限、事件、HTTP、重啟與真實 Jira 驗收。
 
 ## 7. Eval
 
