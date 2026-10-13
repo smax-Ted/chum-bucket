@@ -181,3 +181,20 @@ for (const isStreaming of [false, true]) {
     }
   });
 }
+
+test("prose segments render Markdown with GFM tables", () => {
+  const content = ["**重點**", "", "| 欄位 | 值 |", "| --- | --- |", "| key | SDRS-1 |"].join("\n");
+  const html = renderToStaticMarkup(
+    <MessageScroller.Provider>
+      <MessageList
+        messages={[{ id: "markdown", role: "assistant", parts: [{ type: "text", content }] }]}
+        agent="main"
+        onSend={async () => "succeeded"}
+      />
+    </MessageScroller.Provider>,
+  );
+  assert.ok(html.includes("<strong>重點</strong>"), html);
+  assert.ok(html.includes("<table"), html);
+  assert.ok(html.includes("SDRS-1"), html);
+  assert.equal(html.includes("**重點**"), false);
+});

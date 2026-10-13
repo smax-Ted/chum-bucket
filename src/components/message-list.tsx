@@ -1,6 +1,8 @@
 import { Renderer, type ActionEvent } from "@openuidev/react-lang";
+import { MarkDownRenderer } from "@openuidev/react-ui";
 import { openuiLibrary } from "@openuidev/react-ui/genui-lib";
 import { useMemo, useRef, useState } from "react";
+import remarkGfm from "remark-gfm";
 
 import type { SendResult } from "../hooks/use-threads";
 import type { TestRunId, TestView } from "../../shared/testing";
@@ -17,6 +19,7 @@ import { ToolCall } from "./tool-call";
 import { TestingPanel } from "./testing-panel";
 
 const EMPTY_TESTING_VIEWS: readonly TestView[] = [];
+const markdownOptions = { remarkPlugins: [remarkGfm] };
 
 const MESSAGE_ALIGN = {
   system: "start",
@@ -96,11 +99,11 @@ function AssistantMessage({
       {segments.map((segment) =>
         segment.kind === "text" ? (
           <Bubble key={segment.start} variant="muted" align="start">
-            <BubbleContent className="whitespace-pre-wrap">
+            <BubbleContent>
               {segment.warning ? (
                 <p className="text-xs text-destructive">{segment.warning}</p>
               ) : null}
-              {segment.source}
+              <MarkDownRenderer textMarkdown={segment.source} options={markdownOptions} />
             </BubbleContent>
           </Bubble>
         ) : (
