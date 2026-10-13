@@ -1764,7 +1764,6 @@ test(
         },
       ],
       assignments: { ac: ["check-1"], ui: [] },
-      bounds: { maxCases: 20, maxChecks: 80, maxChecksPerCase: 12 },
     });
     const execute = await admitAttachedTesting(parent, "execute", {
       role: "ac",

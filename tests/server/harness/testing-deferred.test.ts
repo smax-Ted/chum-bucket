@@ -65,7 +65,6 @@ const context: PlanContext = {
   goal: "Plan FETM-78",
   targetUrl: null,
   design: null,
-  bounds: { maxCases: 20, maxChecks: 80, maxChecksPerCase: 12 },
 };
 
 function functionalCase(key: string) {
@@ -252,15 +251,7 @@ test("deferred cases reject unknown and duplicate identities", () => {
   });
 });
 
-test("deferred cases count against the case and check bounds and cannot hide an empty plan", () => {
-  const tight = canonicalizePlan(fetmProposal, {
-    ...context,
-    bounds: { maxCases: 9, maxChecks: 9, maxChecksPerCase: 12 },
-  });
-  assert.deepEqual(tight, {
-    kind: "rejected",
-    issues: ["plan exceeds the case bound", "plan exceeds the check bound"],
-  });
+test("deferred cases cannot hide an empty plan", () => {
   const empty = canonicalizePlan({ criteria: fetmCriteria, unresolved: [], cases: [] }, context);
   assert.equal(empty.kind, "rejected");
 });
@@ -473,7 +464,7 @@ test("host-captured Figma links persist in the requirements artifact and its pub
   assert.deepEqual(requirements.sources[0]?.links, []);
 });
 
-test("grouped expectations each consume the total and per-scenario check budgets", () => {
+test("grouped expectations and steps beyond the removed budgets still canonicalize", () => {
   const keys = [...functionalKeys, ...uiKeys];
   const scenarios = (count: number, perCase: number) =>
     Array.from({ length: Math.ceil(count / perCase) }, (_, index) => ({
@@ -487,35 +478,40 @@ test("grouped expectations each consume the total and per-scenario check budgets
         }),
       ),
     }));
-  const atLimit = accept(
-    canonicalizePlan(
-      { criteria: fetmCriteria, unresolved: [], cases: [], deferredCases: scenarios(80, 12) },
-      context,
-    ),
-  );
-  assert.equal(atLimit.deferredCases?.length, 7);
-  assert.equal(atLimit.deferredCases?.flatMap((item) => item.expectations).length, 80);
-  assert.deepEqual(atLimit.assignments, { ac: [], ui: [] });
-  assert.deepEqual(
+  const plan = accept(
     canonicalizePlan(
       { criteria: fetmCriteria, unresolved: [], cases: [], deferredCases: scenarios(81, 12) },
       context,
     ),
-    {
-      kind: "rejected",
-      issues: ["plan exceeds the check bound"],
-    },
   );
-  assert.deepEqual(
+  assert.equal(plan.deferredCases?.length, 7);
+  assert.equal(plan.deferredCases?.flatMap((item) => item.expectations).length, 81);
+  assert.deepEqual(plan.assignments, { ac: [], ui: [] });
+  const wide = accept(
     canonicalizePlan(
       { criteria: fetmCriteria, unresolved: [], cases: [], deferredCases: scenarios(13, 13) },
       context,
     ),
-    {
-      kind: "rejected",
-      issues: ["case group-0 exceeds the check bound"],
-    },
   );
+  assert.equal(wide.deferredCases?.length, 1);
+  assert.equal(wide.deferredCases?.[0]?.expectations.length, 13);
+  const longSteps = accept(
+    canonicalizePlan(
+      {
+        criteria: fetmCriteria,
+        unresolved: [],
+        cases: [],
+        deferredCases: [
+          {
+            ...deferredCase("AC-1"),
+            steps: Array.from({ length: 25 }, (_, index) => `Manual step ${index + 1}`),
+          },
+        ],
+      },
+      context,
+    ),
+  );
+  assert.equal(longSteps.deferredCases?.[0]?.steps.length, 25);
 });
 
 test("every grouped expectation is validated and empty expectation lists are rejected", () => {

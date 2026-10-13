@@ -202,7 +202,7 @@ export type PlanCase = Readonly<z.infer<typeof planCaseSchema>>;
 export const deferredCaseSchema = z.strictObject({
   id: z.string().trim().min(1).max(64),
   title: z.string().trim().min(1).max(200),
-  steps: z.array(z.string().trim().min(1).max(500)).min(1).max(20),
+  steps: z.array(z.string().trim().min(1).max(500)).min(1),
   reason: z.string().trim().min(1).max(500),
   expectations: z
     .array(
@@ -241,7 +241,7 @@ const planCriterionSchema = z.strictObject({
 });
 export type PlanCriterion = Readonly<z.infer<typeof planCriterionSchema>>;
 
-export const planCriteriaSchema = z.array(planCriterionSchema).min(1).max(500);
+export const planCriteriaSchema = z.array(planCriterionSchema).min(1);
 
 export const MAX_CASE_HANDOFFS = 3;
 export const MAX_JEV_CANDIDATES = 254;

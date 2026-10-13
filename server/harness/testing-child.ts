@@ -368,7 +368,6 @@ function planIssues(
     goal: execution.intent.goal,
     targetUrl: execution.intent.targetUrl,
     design: execution.intent.design ?? null,
-    bounds: execution.runtime.bounds,
   });
 
   if (validation.kind !== "accepted") {
@@ -1130,7 +1129,6 @@ async function runRoleLoops(run: ChildRun, tools: RunTools): Promise<TestingChil
     intent: execution.intent,
     requirements: pinnedRequirements(execution),
     plan: pinnedPlan(execution),
-    bounds: execution.runtime.bounds,
   });
   const initial: ConversationState = {
     display: [{ id: "task", role: "user", parts: [{ type: "text", content: prompt }] }],

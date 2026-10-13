@@ -69,9 +69,8 @@ import { readProjection } from "./conversation";
 import { readSource } from "./source-links";
 
 export const TESTING_WORKFLOW_VERSION = "testing-child-v1";
-const TESTING_SCHEMA_VERSION = "supervised-testing-schema-v1";
+const TESTING_SCHEMA_VERSION = "supervised-testing-schema-v2";
 export const DESIGN_CAPTURE_NATIVE = "design_capture";
-const TESTING_BOUNDS = { maxCases: 20, maxChecks: 80, maxChecksPerCase: 12 } as const;
 const TESTING_LIMITS = {
   turns: 8,
   tools: 24,
@@ -93,7 +92,7 @@ const TESTING_FIXTURE = { id: "playwright-chromium", version: "v1" } as const;
 const VERSIONS = {
   runtime: "host-testing-runtime-v1",
   schema: TESTING_SCHEMA_VERSION,
-  validator: "testing-domain-v1",
+  validator: "testing-domain-v2",
   policy: "role-registry-v1",
   catalog: "catalog-v1",
   adapter: "playwright-jev-v1",
@@ -132,7 +131,6 @@ function registrationVersion(role: RoleId): string {
 
 export type HostTestingRuntime = Readonly<{
   absoluteDeadline: string;
-  bounds: typeof TESTING_BOUNDS;
   limits: typeof TESTING_LIMITS;
   roleLimits: typeof ROLE_LIMITS;
   versions: typeof VERSIONS & TestingSnapshot;
@@ -293,11 +291,6 @@ const metadataSchema = z.strictObject({
     ac: z.string().min(1),
     ui: z.string().min(1),
   }),
-  bounds: z.strictObject({
-    maxCases: z.number(),
-    maxChecks: z.number(),
-    maxChecksPerCase: z.number(),
-  }),
   fixture: z.strictObject({ id: z.string(), version: z.string() }),
   parentRunId: z.string().min(1),
   producerTaskId: z.string().min(1),
@@ -403,7 +396,6 @@ export function hostTestingRuntime(
 
   return {
     absoluteDeadline: new Date(now.getTime() + TESTING_LIMITS.operationMs).toISOString(),
-    bounds: TESTING_BOUNDS,
     limits: TESTING_LIMITS,
     roleLimits: ROLE_LIMITS,
     versions: { ...VERSIONS, model: snapshot.model, build: snapshot.build },
@@ -478,7 +470,7 @@ type ClassifyInput = Readonly<{
   host: HostTestingRuntime;
 }>;
 
-const SNAPSHOT_KEYS = ["versions", "profiles", "registration", "bounds", "fixture"] as const;
+const SNAPSHOT_KEYS = ["versions", "profiles", "registration", "fixture"] as const;
 const PRODUCER_KEYS = ["versions", "profiles", "registration"] as const;
 
 function snapshotMatches(
@@ -568,7 +560,7 @@ function classifyRef(ref: string, input: ClassifyInput): ReuseDecision {
     return reuseRequirements(parsedRef.data, row, input.threadId, input.intent);
   }
 
-  return reusePlan(parsedRef.data, row, input.threadId, input.intent, input.rows, input.host);
+  return reusePlan(parsedRef.data, row, input.threadId, input.intent, input.rows);
 }
 
 function reuseRequirements(
@@ -592,7 +584,6 @@ function reusePlan(
   threadId: string,
   intent: TestingRequestInput,
   rows: ReadonlyMap<string, StoredArtifactRow>,
-  host: HostTestingRuntime,
 ): ReuseDecision {
   const requirementsRef = row.dependencies[0];
   const requirements = requirementsRef ? rows.get(requirementsRef) : undefined;
@@ -630,7 +621,6 @@ function reusePlan(
       goal: intent.goal,
       targetUrl,
       design: intent.design ?? null,
-      bounds: host.bounds,
     },
   });
 
@@ -2122,7 +2112,6 @@ async function storeCandidate(
     versions: runtime.versions,
     profiles: runtime.profiles,
     registration: runtime.registration,
-    bounds: runtime.bounds,
     fixture: runtime.fixture,
     parentRunId: operation.parent_run_id,
     producerTaskId: task.id,
@@ -2247,7 +2236,6 @@ function planCandidate(
   requirements: ArtifactRow | undefined,
   intent: TestingRequestInput,
   proposal: unknown,
-  runtime: HostTestingRuntime,
 ): Candidate {
   if (!requirements) {
     throw new TestingPersistenceError(409, "Plan candidate needs requirements");
@@ -2260,7 +2248,6 @@ function planCandidate(
       goal: intent.goal,
       targetUrl: intent.targetUrl,
       design,
-      bounds: runtime.bounds,
     }),
   );
 
@@ -2332,7 +2319,7 @@ async function validateCandidate(
   if (completion.role === "planner") {
     const requirements = await satisfiedPayload(tx, operation.id, "atlassian");
 
-    return planCandidate(requirements, intent, completion.proposal, runtime);
+    return planCandidate(requirements, intent, completion.proposal);
   }
 
   return resultsCandidate(tx, operation, task, completion.proposal);

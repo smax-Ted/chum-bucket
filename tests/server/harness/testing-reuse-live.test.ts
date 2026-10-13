@@ -72,7 +72,6 @@ const planContext = {
   goal: requirements.goal,
   targetUrl: plan.targetUrl,
   design: plan.design,
-  bounds: host.bounds,
 };
 
 test("stored live-shaped artifacts pass digest, scope and canonical reuse before URL execution", () => {
@@ -141,35 +140,30 @@ test("URL follow-up accepts explicit assigned checks despite planner unresolved 
   assert.ok(report.coverage.some((row) => row.state === "deferred"));
 });
 
-test("artifacts stored under the planning-v2, functional-v2 and style-v2 profiles must be produced again", () => {
-  const previous = (row: StoredArtifactRow): StoredArtifactRow => ({
-    ...row,
+test("a plan artifact stored under the planning-v3 profile must be produced again", () => {
+  const metadata = planRow.metadata as {
+    profiles: Record<string, string>;
+    registration: Record<string, string>;
+  };
+  const previousPlan: StoredArtifactRow = {
+    ...planRow,
     metadata: {
-      ...(row.metadata as Record<string, unknown>),
-      profiles: {
-        ac: "functional-v2",
-        ui: "style-v2",
-        planner: "planning-v2",
-        atlassian: "requirements-v3",
-      },
-      registration: {
-        ac: "ac-result:functional-v2:enabled:browser_ac",
-        ui: "ui-result:style-v2:enabled:browser_ui+figma_read",
-        planner: "plan:planning-v2:enabled:none",
-        atlassian: "requirements:requirements-v3:enabled:atlassian_read",
-      },
+      ...metadata,
+      profiles: { ...metadata.profiles, planner: "planning-v3" },
+      registration: { ...metadata.registration, planner: "plan:planning-v3:enabled:none" },
     },
-  });
+  };
 
-  for (const input of fixture.inputs) {
-    assert.deepEqual(
-      decide(intentFor(input), rows.map(previous)).map((decision) => [
-        decision.ref,
-        decision.kind === "rejected" ? decision.reason : decision.kind,
-      ]),
-      rows.map((row) => [row.ref, "incompatible_snapshot"]),
-    );
-  }
+  assert.deepEqual(
+    decide(intentFor(fixture.inputs[0]), [requirementsRow, previousPlan]).map((decision) => [
+      decision.ref,
+      decision.kind === "rejected" ? decision.reason : decision.kind,
+    ]),
+    [
+      ["artifact-live-requirements", "accepted"],
+      ["artifact-live-plan", "incompatible_snapshot"],
+    ],
+  );
 });
 
 test("assigned-check reuse still rejects altered snapshots, source scope, digests and provenance", () => {
@@ -220,7 +214,7 @@ test("assigned-check reuse still rejects altered snapshots, source scope, digest
   );
 });
 
-test("27 real-shaped requirements fit grouped deferred scenarios within 20 cases and 80 checks", () => {
+test("27 real-shaped requirements plan as grouped deferred scenarios", () => {
   const expanded = requirementsPayloadSchema.parse(fixture.expandedRequirements);
   const { criteria, unresolved } = fixture.expandedPlanning as {
     criteria: { id: string; statement: string }[];

@@ -335,7 +335,6 @@ test("500 criteria with repeated checks round-trip every planned and uncovered c
       goal: "Plan",
       targetUrl: null,
       design: null,
-      bounds: { maxCases: 20, maxChecks: 80, maxChecksPerCase: 12 },
     },
   );
   assert.equal(plan.kind, "accepted");
@@ -362,6 +361,103 @@ test("500 criteria with repeated checks round-trip every planned and uncovered c
   const view: TestView = { ...finishedView, report: derived };
   assert.deepEqual(parseTestingProjectionEvent(testingProjectionEvent(view)), view);
   assert.deepEqual(parsePublishedTasks({ publishedTasks: [view] }), [view]);
+});
+
+test("public plan and result projections round-trip beyond the removed count caps", () => {
+  const criteria = Array.from({ length: 25 }, (_, index) => ({
+    id: `C-${index + 1}`,
+    statement: `Requirement ${index + 1}`,
+  }));
+  const plan = canonicalizePlan(
+    {
+      criteria,
+      unresolved: Array.from({ length: 60 }, (_, index) => `Open question ${index + 1}`),
+      cases: Array.from({ length: 25 }, (_, caseIndex) => ({
+        id: `case-${caseIndex + 1}`,
+        title: `Case ${caseIndex + 1}`,
+        preconditions: [],
+        actions: [{ kind: "navigate", path: "/" }],
+        checks: Array.from({ length: 4 }, (_, checkIndex) => ({
+          id: `check-${caseIndex + 1}-${checkIndex + 1}`,
+          criterionId: criteria[caseIndex]!.id,
+          kind: "functional",
+          expectedObservation: "Visible",
+        })),
+      })),
+      deferredCases: Array.from({ length: 25 }, (_, index) => ({
+        id: `deferred-${index + 1}`,
+        title: `Deferred ${index + 1}`,
+        steps: ["Inspect the outcome"],
+        reason: "Requires manual verification",
+        expectations: [
+          { criterionId: criteria[index]!.id, expectedObservation: "Expected outcome" },
+        ],
+      })),
+    },
+    {
+      requirementsDigest: "requirements",
+      goal: "Plan",
+      targetUrl: null,
+      design: null,
+    },
+  );
+  assert.equal(plan.kind, "accepted");
+  if (plan.kind !== "accepted") return;
+  assert.equal(plan.value.assignments.ac.length, 100);
+  const planArtifact = publicTaskArtifact({ ref: artifact, kind: "plan", payload: plan.value });
+  const planView: TestView = {
+    runId,
+    state: "finished",
+    report: null,
+    reuse: [],
+    availableArtifacts: [],
+    progress: { version: 1, rows: rows() },
+    task: { version: 2, role: "planner", summary: "Plan", result: planArtifact },
+  };
+  assert.deepEqual(parseTestView(planView), planView);
+  assert.deepEqual(parseTestingProjectionEvent(testingProjectionEvent(planView)), planView);
+  assert.deepEqual(parsePublishedTasks({ publishedTasks: [planView] }), [planView]);
+
+  const results = {
+    role: "ac" as const,
+    checks: Array.from({ length: 81 }, (_, index) => ({
+      ...acResult,
+      checkId: `check-${index + 1}`,
+      evidence: [acResult.evidence[0]!] as const,
+    })),
+  };
+  const resultArtifact = publicTaskArtifact({
+    ref: otherArtifact,
+    kind: "ac-result",
+    payload: results,
+  });
+  const resultView: TestView = {
+    runId,
+    state: "finished",
+    report: null,
+    reuse: [],
+    availableArtifacts: [],
+    progress: { version: 1, rows: rows() },
+    task: { version: 2, role: "ac", summary: "Run checks", result: resultArtifact },
+  };
+  assert.deepEqual(parseTestView(resultView), resultView);
+  assert.deepEqual(parseTestingProjectionEvent(testingProjectionEvent(resultView)), resultView);
+
+  const derived = deriveReport({
+    runId,
+    rootOutcome: "completed",
+    requirements: { goal: "Plan", sources: report.requirements!.sources },
+    plan: plan.value,
+    acResults: results,
+    uiResults: null,
+    unresolvedSources: [],
+    artifacts: [],
+    progressVersion: 1,
+    outcomes: {},
+  });
+  assert.equal(derived.results.ac.length, 81);
+  const reportView: TestView = { ...finishedView, report: derived };
+  assert.deepEqual(parseTestingProjectionEvent(testingProjectionEvent(reportView)), reportView);
 });
 
 test("the factory round-trips a finished public view with all metadata preserved", () => {

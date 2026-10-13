@@ -2,13 +2,11 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   ROLE_IDS,
-  actionSchema,
   artifactRefSchema,
   browserOutputSchema,
   deferredCaseSchema,
   designReferenceSchema,
   planCaseSchema,
-  planCheckSchema,
   planCriteriaSchema,
   requirementSourceSchema,
   testRunIdSchema,
@@ -218,7 +216,6 @@ export type PlanContext = Readonly<{
   goal: string;
   targetUrl: string | null;
   design: DesignReference | null;
-  bounds: Readonly<{ maxCases: number; maxChecks: number; maxChecksPerCase: number }>;
 }>;
 
 export type CanonicalPlan = Readonly<{
@@ -231,30 +228,19 @@ export type CanonicalPlan = Readonly<{
   cases: readonly PlanCase[];
   deferredCases?: readonly DeferredCase[];
   assignments: Readonly<{ ac: readonly string[]; ui: readonly string[] }>;
-  bounds: PlanContext["bounds"];
 }>;
 
 const planProposalSchema = z
   .strictObject({
     criteria: planCriteriaSchema,
-    unresolved: z.array(z.string().trim().min(1).max(512)).max(50),
-    cases: z.array(
-      z.strictObject({
-        id: z.string().trim().min(1).max(64),
-        title: z.string().trim().min(1).max(200),
-        preconditions: z.array(z.string().trim().max(500)).max(20),
-        actions: z.array(actionSchema).min(1).max(50),
-        checks: z.array(planCheckSchema).min(1).max(50),
-      }),
-    ),
+    unresolved: z.array(z.string().trim().min(1).max(512)),
+    cases: z.array(planCaseSchema),
     deferredCases: z.array(deferredCaseSchema).optional(),
   })
   .refine((plan) => plan.cases.length + (plan.deferredCases?.length ?? 0) > 0, {
     path: ["cases"],
     message: "a plan needs at least one executable or deferred case",
   });
-
-type PlanProposal = z.infer<typeof planProposalSchema>;
 
 type PlanScope = Readonly<{
   criterionIds: ReadonlySet<string>;
@@ -265,7 +251,6 @@ type PlanScan = {
   issues: string[];
   caseIds: Set<string>;
   checkIds: Set<string>;
-  totalChecks: number;
 };
 
 export function sameDesign(left: DesignReference, right: DesignReference | null): boolean {
@@ -332,9 +317,8 @@ function acceptedPlanChecks(
 }
 
 function canonicalCases(
-  proposals: PlanProposal["cases"],
+  proposals: readonly PlanCase[],
   scope: PlanScope,
-  maxChecksPerCase: number,
   scan: PlanScan,
 ): PlanCase[] {
   const cases: PlanCase[] = [];
@@ -346,19 +330,7 @@ function canonicalCases(
     }
 
     scan.caseIds.add(proposed.id);
-
-    if (proposed.checks.length > maxChecksPerCase) {
-      scan.issues.push(`case ${proposed.id} exceeds the check bound`);
-    }
-
-    scan.totalChecks += proposed.checks.length;
-    cases.push({
-      id: proposed.id,
-      title: proposed.title,
-      preconditions: proposed.preconditions,
-      actions: proposed.actions,
-      checks: acceptedPlanChecks(proposed.checks, scope, scan),
-    });
+    cases.push({ ...proposed, checks: acceptedPlanChecks(proposed.checks, scope, scan) });
   }
 
   return cases;
@@ -367,18 +339,11 @@ function canonicalCases(
 function canonicalDeferredCases(
   proposals: readonly DeferredCase[],
   scope: PlanScope,
-  maxChecksPerCase: number,
   scan: PlanScan,
 ): DeferredCase[] {
   const deferred: DeferredCase[] = [];
 
   for (const proposed of proposals) {
-    scan.totalChecks += proposed.expectations.length;
-
-    if (proposed.expectations.length > maxChecksPerCase) {
-      scan.issues.push(`case ${proposed.id} exceeds the check bound`);
-    }
-
     if (scan.caseIds.has(proposed.id)) {
       scan.issues.push(`duplicate case id ${proposed.id}`);
       continue;
@@ -409,20 +374,11 @@ export function canonicalizePlan(raw: unknown, context: PlanContext): Validation
 
   const { criteria, unresolved } = parsed.data;
   const proposedDeferred = parsed.data.deferredCases ?? [];
-  const { maxCases, maxChecks, maxChecksPerCase } = context.bounds;
-  const scan: PlanScan = { issues: [], caseIds: new Set(), checkIds: new Set(), totalChecks: 0 };
+  const scan: PlanScan = { issues: [], caseIds: new Set(), checkIds: new Set() };
   const scope: PlanScope = { criterionIds: criterionIds(criteria, scan), design: context.design };
 
-  if (parsed.data.cases.length + proposedDeferred.length > maxCases) {
-    scan.issues.push("plan exceeds the case bound");
-  }
-
-  const cases = canonicalCases(parsed.data.cases, scope, maxChecksPerCase, scan);
-  const deferredCases = canonicalDeferredCases(proposedDeferred, scope, maxChecksPerCase, scan);
-
-  if (scan.totalChecks > maxChecks) {
-    scan.issues.push("plan exceeds the check bound");
-  }
+  const cases = canonicalCases(parsed.data.cases, scope, scan);
+  const deferredCases = canonicalDeferredCases(proposedDeferred, scope, scan);
 
   const failure = nonEmpty(scan.issues);
 
@@ -443,7 +399,6 @@ export function canonicalizePlan(raw: unknown, context: PlanContext): Validation
     cases,
     ...(deferredCases.length > 0 ? { deferredCases } : {}),
     assignments: { ac: functional.map((check) => check.id), ui: styles.map((check) => check.id) },
-    bounds: context.bounds,
   });
 }
 
@@ -489,7 +444,7 @@ const resultClaimSchema = z.strictObject({
 });
 
 const resultsProposalSchema = z.strictObject({
-  checks: z.array(resultClaimSchema).min(1).max(200),
+  checks: z.array(resultClaimSchema).min(1),
 });
 
 export type ResultsContext = Readonly<{
@@ -867,11 +822,6 @@ export const planPayloadSchema = z.strictObject({
   assignments: z.strictObject({
     ac: z.array(z.string().min(1)),
     ui: z.array(z.string().min(1)),
-  }),
-  bounds: z.strictObject({
-    maxCases: z.number().int().positive(),
-    maxChecks: z.number().int().positive(),
-    maxChecksPerCase: z.number().int().positive(),
   }),
 });
 

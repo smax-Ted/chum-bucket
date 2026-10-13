@@ -896,6 +896,32 @@ test("a Jev miss on an action pauses the case with the browser open and returns 
   );
 });
 
+test("a case with more than 20 actions reaches the browser instead of blocking", async (t) => {
+  freezeClock(t);
+  mockJev(t, choosing(rules));
+  const { fixture, site } = liveFixture(t, shop(false).pages);
+  const longCase: PlanCase = {
+    id: "long",
+    title: "Long case",
+    preconditions: [],
+    actions: Array.from({ length: 21 }, () => ({ kind: "navigate" as const, path: "/" })),
+    checks: [headingCheck],
+  };
+  const result = await fixture.run(longCase, headingCheck);
+
+  assert.deepEqual(stable(result), {
+    state: "observed",
+    observed: "Welcome",
+    browser: {
+      selections: [
+        { model: "jev-transport-mock", choice: "c0", confidence: 0.99, candidateDigest: "sha256" },
+      ],
+      screenshot: { path: "uuid.png", digest: sha256("shot-1") },
+    },
+  });
+  assert.equal(site.launches, 1);
+});
+
 test("a Jev miss on an observation pauses at that check with the browser open", async (t) => {
   freezeClock(t);
   mockJev(t, choosing(rules));

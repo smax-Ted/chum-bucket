@@ -81,7 +81,7 @@ export const agentRegistry = {
     tools: [],
     registration: "none",
     codeMode: "enabled",
-    profile: "planning-v3",
+    profile: "planning-v4",
     systemPrompt: qaSystemPrompts.planner,
   },
   ac: {

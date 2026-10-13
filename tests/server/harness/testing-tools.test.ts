@@ -90,7 +90,6 @@ function testPlan(): CanonicalPlan {
     unresolved: [],
     cases: [planCase],
     assignments: { ac: ["check-f"], ui: ["check-s"] },
-    bounds: { maxCases: 4, maxChecks: 8, maxChecksPerCase: 4 },
   };
 }
 

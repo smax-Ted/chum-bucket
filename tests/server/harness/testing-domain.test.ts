@@ -277,7 +277,6 @@ const planContext: PlanContext = {
   goal: "Verify checkout",
   targetUrl: "https://preview.example.test/checkout",
   design: { fileKey: "CheckoutDemo", nodeId: "12:34" },
-  bounds: { maxCases: 10, maxChecks: 50, maxChecksPerCase: 20 },
 };
 
 const checkoutCase = {
@@ -933,19 +932,7 @@ test("plan reuse requires the current typed plan context and preserves provenanc
   assert.deepEqual(wrongDependency, { kind: "rejected", issues: ["dependency_rejected"] });
 });
 
-test("plan reuse rejects plans outside current bounds and noncanonical assignments", () => {
-  const currentBounds = validateReuse(planArtifact, {
-    requested: "plan",
-    threadId: "thread-1",
-    expectedScopeDigest: planScope,
-    planContext: {
-      ...planContext,
-      bounds: { maxCases: 1, maxChecks: 2, maxChecksPerCase: 3 },
-    },
-  });
-  assert.equal(currentBounds.kind, "rejected");
-  assert.ok(currentBounds.issues.includes("plan exceeds the check bound"));
-
+test("plan reuse rejects noncanonical assignments", () => {
   const tamperedPayload = {
     ...planArtifact.payload,
     assignments: { ac: ["check-1"], ui: ["check-2"] },
@@ -960,6 +947,76 @@ test("plan reuse rejects plans outside current bounds and noncanonical assignmen
     },
   );
   assert.deepEqual(tampered, { kind: "rejected", issues: ["invalid_evidence"] });
+});
+
+test("plans are canonicalized at their real size without count caps", () => {
+  const criteria = Array.from({ length: 60 }, (_, index) => ({
+    id: `AC-${index + 1}`,
+    statement: `Requirement ${index + 1}`,
+  }));
+  const checks = (caseId: string, count: number, offset: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      id: `${caseId}-check-${index + 1}`,
+      criterionId: criteria[(offset + index) % criteria.length]!.id,
+      kind: "functional" as const,
+      expectedObservation: `Outcome ${index + 1}`,
+    }));
+  const cases = Array.from({ length: 25 }, (_, index) => ({
+    id: `case-${index + 1}`,
+    title: `Case ${index + 1}`,
+    preconditions: [],
+    actions: Array.from({ length: index === 24 ? 30 : 1 }, () => ({
+      kind: "navigate" as const,
+      path: "/",
+    })),
+    checks: checks(`case-${index + 1}`, index === 24 ? 60 : 4, index),
+  }));
+  const result = canonicalizePlan({ criteria, unresolved: [], cases }, planContext);
+
+  assert.equal(result.kind, "accepted");
+  if (result.kind !== "accepted") return;
+  assert.equal(result.value.cases.length, 25);
+  assert.equal(result.value.cases[24]?.checks.length, 60);
+  assert.equal(result.value.cases[24]?.actions.length, 30);
+  assert.equal(result.value.cases.flatMap((planCase) => planCase.checks).length, 24 * 4 + 60);
+  assert.equal("bounds" in result.value, false);
+});
+
+test("the planner proposal accepts 600 criteria, 60 unresolved notes and 21 preconditions", () => {
+  const criteria = Array.from({ length: 600 }, (_, index) => ({
+    id: `C-${index + 1}`,
+    statement: `Statement ${index + 1}`,
+  }));
+  const unresolved = Array.from({ length: 60 }, (_, index) => `Open question ${index + 1}`);
+  const result = canonicalizePlan(
+    {
+      criteria,
+      unresolved,
+      cases: [
+        {
+          id: "case-1",
+          title: "Case",
+          preconditions: Array.from({ length: 21 }, (_, index) => `Precondition ${index + 1}`),
+          actions: [{ kind: "navigate", path: "/" }],
+          checks: [
+            {
+              id: "check-1",
+              criterionId: "C-1",
+              kind: "functional",
+              expectedObservation: "Visible",
+            },
+          ],
+        },
+      ],
+    },
+    planContext,
+  );
+
+  assert.equal(result.kind, "accepted");
+  if (result.kind !== "accepted") return;
+  assert.equal(result.value.criteria.length, 600);
+  assert.equal(result.value.unresolved.length, 60);
+  assert.equal(result.value.cases[0]?.preconditions.length, 21);
 });
 
 test("plan reuse canonicalization rejects duplicate checks and keeps uncovered criteria", () => {

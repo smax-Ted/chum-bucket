@@ -780,10 +780,6 @@ function prepareCase(targetUrl: string, planCase: PlanCase): URL {
     throw new BrowserBlocked("JEV_API_KEY is required");
   }
 
-  if (planCase.actions.length > 20) {
-    throw new BrowserBlocked("Case exceeds the 20-action limit");
-  }
-
   if (planCase.preconditions.length) {
     throw new BrowserBlocked(
       "External preconditions cannot be verified; encode setup as actions and use preconditions []",

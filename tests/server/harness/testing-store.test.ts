@@ -133,7 +133,7 @@ test("owner snapshot versions are passed in and are not a second model constant"
   assert.notEqual(host.registration.atlassian, host.profiles.atlassian);
   assert.deepEqual(host.registration, {
     atlassian: "requirements:requirements-v4:enabled:atlassian_read",
-    planner: "plan:planning-v3:enabled:none",
+    planner: "plan:planning-v4:enabled:none",
     ac: "ac-result:functional-v3:enabled:browser_ac",
     ui: "ui-result:style-v3:enabled:browser_ui+figma_read",
   });
@@ -201,7 +201,6 @@ test("planner reuses raw requirements while retaining snapshot guards", () => {
     versions: host.versions,
     profiles: host.profiles,
     registration: host.registration,
-    bounds: host.bounds,
     fixture: host.fixture,
     parentRunId: "run-1",
     producerTaskId: "task-1",
@@ -305,7 +304,6 @@ test("a plan bound to no target with unresolved notes stays reusable for an expl
       goal,
       targetUrl: null,
       design: null,
-      bounds: host.bounds,
     },
   );
   assert.equal(plan.kind, "accepted");
@@ -319,7 +317,6 @@ test("a plan bound to no target with unresolved notes stays reusable for an expl
     versions: host.versions,
     profiles: host.profiles,
     registration: host.registration,
-    bounds: host.bounds,
     fixture: host.fixture,
     parentRunId: "run-1",
     producerTaskId: "task-1",
@@ -388,7 +385,6 @@ test("execution binds an unbound plan to the explicit URL and rejects any other 
     criteria: [{ id: "AC-1", statement: "Receipt appears" }],
     unresolved: [],
     cases: [],
-    bounds: host.bounds,
   };
   const input = {
     role: "ac" as const,

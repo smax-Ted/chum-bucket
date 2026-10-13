@@ -921,7 +921,7 @@ test(
             );
             const task = JSON.parse(userTaskText(call).split("testing-task:\n")[1]!);
             assert.equal(task.goal, "Verify checkout");
-            assert.deepEqual(task.bounds, { maxCases: 20, maxChecks: 80, maxChecksPerCase: 12 });
+            assert.equal("bounds" in task, false);
             if (role === "planner") assert.equal(task.targetUrl, null);
             if (role === "ac" || role === "ui") assert.equal(task.targetUrl, intent.targetUrl);
           }

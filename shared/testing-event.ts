@@ -145,12 +145,12 @@ const publicRequirementsSchema = z.object({
 
 const publicPlanSchema = z.object({
   criteria: planCriteriaSchema,
-  unresolved: z.array(boundedText(512)).max(500),
-  cases: z.array(planCaseSchema).max(20),
-  deferredCases: z.array(deferredCaseSchema).max(20).optional(),
+  unresolved: z.array(boundedText(512)),
+  cases: z.array(planCaseSchema),
+  deferredCases: z.array(deferredCaseSchema).optional(),
   assignments: z.object({
-    ac: z.array(boundedText(64)).max(80),
-    ui: z.array(boundedText(64)).max(80),
+    ac: z.array(boundedText(64)),
+    ui: z.array(boundedText(64)),
   }),
 });
 
@@ -158,7 +158,7 @@ const publicCheckResultSchema = z.object({
   caseId: boundedText(64),
   checkId: boundedText(64),
   judgment: judgmentSchema,
-  evidence: z.array(evidenceSchema).max(80),
+  evidence: z.array(evidenceSchema),
 });
 
 const coverageSchema = z.object({
@@ -186,8 +186,8 @@ const publicTestReportSchema = z.object({
   requirements: publicRequirementsSchema.nullable(),
   plan: publicPlanSchema.nullable(),
   results: z.object({
-    ac: z.array(publicCheckResultSchema).max(80),
-    ui: z.array(publicCheckResultSchema).max(80),
+    ac: z.array(publicCheckResultSchema),
+    ui: z.array(publicCheckResultSchema),
   }),
   coverage: z.array(coverageSchema),
   unresolvedSources: z.array(sourceSchema).max(20),
@@ -232,12 +232,12 @@ const taskArtifactSchema = z.discriminatedUnion("kind", [
   z.object({
     ref: artifactRefSchema,
     kind: z.literal("ac-result"),
-    payload: z.array(publicCheckResultSchema).max(80),
+    payload: z.array(publicCheckResultSchema),
   }),
   z.object({
     ref: artifactRefSchema,
     kind: z.literal("ui-result"),
-    payload: z.array(publicCheckResultSchema).max(80),
+    payload: z.array(publicCheckResultSchema),
   }),
 ]);
 
