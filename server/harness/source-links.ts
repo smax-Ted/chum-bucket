@@ -1,4 +1,4 @@
-import { figmaLinkSchema, type FigmaLink } from "../../shared/testing";
+import { figmaLinkSchema, type FigmaLink, type Source } from "../../shared/testing";
 const MAX_LINKS = 20;
 
 const FIGMA_HOSTS = new Set(["figma.com", "www.figma.com"]);
@@ -24,6 +24,22 @@ export function figmaUrlTarget(target: string): { fileKey: string; nodeId: strin
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function readSource(nativeName: string, input: unknown): Source | null {
+  if (!isRecord(input)) {
+    return null;
+  }
+
+  if (nativeName === "jira_get_issue" && typeof input.issue_key === "string") {
+    return { kind: "jira", issueKey: input.issue_key };
+  }
+
+  if (nativeName === "confluence_get_page" && typeof input.page_id === "string") {
+    return { kind: "confluence", pageId: input.page_id };
+  }
+
+  return null;
 }
 
 export function jiraIssue(raw: unknown): Record<string, unknown> | null {

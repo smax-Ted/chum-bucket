@@ -25,6 +25,7 @@ import { allowsTool, roleRegistry, toolNamesFor } from "./agents";
 import {
   checksForRole,
   digestOf,
+  sameSource,
   sourceCaptureView,
   type CanonicalPlan,
   type Requirements,
@@ -36,7 +37,7 @@ import {
   type AtlassianScope,
   type ModelTool,
 } from "./tools/atlassian";
-import { figmaUrlTarget, withRemoteLinks } from "./source-links";
+import { figmaUrlTarget, readSource, withRemoteLinks } from "./source-links";
 import { codeModeToolName, composeCodeModeTurn, type CodeModeTurn } from "./tools/code-mode";
 import { createUseBrowserTool, type BrowserAdapter } from "./tools/use-browser";
 import type { RunTools } from "./tools";
@@ -256,50 +257,12 @@ function requireRequestedDiscovery(input: unknown, allowed: ReadonlySet<string>)
   }
 }
 
-function sourceValue(raw: unknown, key: string): string {
-  if (!raw || typeof raw !== "object") {
-    return "";
-  }
-
-  const value = (raw as Record<string, unknown>)[key];
-
-  return typeof value === "string" ? value : "";
-}
-
-function requestedJiraSource(raw: unknown, intent: TestingRequestInput): Source | null {
-  const issueKey = sourceValue(raw, "issue_key");
-
-  if (issueKey.length === 0) {
-    return null;
-  }
-
-  return intent.sources.some((source) => source.kind === "jira" && source.issueKey === issueKey)
-    ? { kind: "jira", issueKey }
-    : null;
-}
-
-function requestedConfluenceSource(raw: unknown, intent: TestingRequestInput): Source | null {
-  const pageId = sourceValue(raw, "page_id");
-
-  if (pageId.length === 0) {
-    return null;
-  }
-
-  return intent.sources.some((source) => source.kind === "confluence" && source.pageId === pageId)
-    ? { kind: "confluence", pageId }
-    : null;
-}
-
 function requestedSource(name: string, raw: unknown, intent: TestingRequestInput): Source | null {
-  if (name === "jira_get_issue") {
-    return requestedJiraSource(raw, intent);
-  }
+  const reference = readSource(name, raw);
 
-  if (name === "confluence_get_page") {
-    return requestedConfluenceSource(raw, intent);
-  }
-
-  return null;
+  return reference && intent.sources.some((source) => sameSource(source, reference))
+    ? reference
+    : null;
 }
 
 async function atlassianRoleTools(

@@ -688,6 +688,67 @@ test(
 );
 
 test(
+  "native source reads are stamped with host time once and keep it on duplicate append",
+  { skip: !enabled },
+  async () => {
+    await ensureDatabase();
+    const thread = await createThread();
+    const admission = await admitSource(thread.id);
+    const task = (await reserveRoleTask(
+      admission.parentRunId,
+      admission.operationId,
+      "atlassian",
+      sourceInput,
+    ))!;
+    const read = {
+      id: `jira-${task.taskId}`,
+      taskId: task.taskId,
+      attemptNonce: task.attemptNonce,
+      slot: "io-1",
+      nativeName: "jira_get_issue",
+      route: "direct" as const,
+      input: { issue_key: source.issueKey },
+      output: { result: JSON.stringify({ key: "CHUM-42", summary: "Checkout" }) },
+      bindings: {},
+    };
+    const discovery = {
+      ...read,
+      id: `discovery-${task.taskId}`,
+      slot: "io-2",
+      nativeName: "discover_atlassian_tools",
+      input: { toolNames: ["jira_get_issue"] },
+      output: { tools: [] },
+    };
+    const before = Date.now();
+    assert.equal((await appendTrustedReceipt(read)).duplicate, false);
+    const after = Date.now();
+    await appendTrustedReceipt(discovery);
+    const db = await database();
+    const stored = async () =>
+      db
+        .select({ id: testingReceiptsTable.id, bindings: testingReceiptsTable.bindings })
+        .from(testingReceiptsTable)
+        .where(eq(testingReceiptsTable.task_id, task.taskId))
+        .orderBy(testingReceiptsTable.slot);
+    const [first, other] = await stored();
+    const capturedAt = (first?.bindings as { capturedAt: string }).capturedAt;
+    assert.match(capturedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    assert.ok(Date.parse(capturedAt) >= before && Date.parse(capturedAt) <= after);
+    assert.deepEqual(other, { id: discovery.id, bindings: {} });
+    assert.equal((await appendTrustedReceipt(read)).duplicate, true);
+    assert.deepEqual(await stored(), [
+      { id: read.id, bindings: { capturedAt } },
+      { id: discovery.id, bindings: {} },
+    ]);
+    const execution = await readTestingExecution(admission.parentRunId, admission.operationId);
+    assert.deepEqual(
+      execution.tasks[0]?.receipts.map((receipt) => receipt.bindings),
+      [{ capturedAt }, {}],
+    );
+  },
+);
+
+test(
   "child-selected current-attempt lexical capture IDs pass store and replay the same ref",
   { skip: !enabled },
   async () => {

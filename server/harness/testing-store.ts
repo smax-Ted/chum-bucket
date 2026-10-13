@@ -69,6 +69,7 @@ import {
 } from "./testing-domain";
 import { roleRegistry } from "./agents";
 import { readProjection } from "./conversation";
+import { readSource } from "./source-links";
 
 export const TESTING_WORKFLOW_VERSION = "testing-child-v1";
 const TESTING_SCHEMA_VERSION = "supervised-testing-schema-v1";
@@ -346,6 +347,7 @@ const receiptBindingsSchema = z.strictObject({
   checkId: z.string().min(1).max(64).optional(),
   nativeName: z.string().min(1).max(64).optional(),
   nativeOutputDigest: z.string().min(1).max(128).optional(),
+  capturedAt: z.string().min(1).max(64).optional(),
 });
 
 type DecisionBody =
@@ -2101,7 +2103,9 @@ export async function appendTrustedReceipt(input: {
       output_digest: outputDigest,
       input: storedInput,
       output: storedOutput,
-      bindings: bindings.data,
+      bindings: readSource(input.nativeName, storedInput)
+        ? { ...bindings.data, capturedAt: new Date().toISOString() }
+        : bindings.data,
     });
 
     return { outputDigest, duplicate: false };
