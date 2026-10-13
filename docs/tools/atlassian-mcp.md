@@ -2,6 +2,8 @@
 
 將本機唯讀 MCP 工具加入聊天，設定 lazy discovery，並在串流結束後清理 client。以下工具檔案放在 `server/harness/tools/`。
 
+apply token: https://id.atlassian.com/manage-profile/security/api-tokens
+
 ## 1. 定義共用連線政策
 
 在 `atlassian-policy.ts` 定義 launcher 與 client 共用的設定：
@@ -46,7 +48,7 @@ launcher 固定在 `http://127.0.0.1:8000/mcp` 啟動服務，與 `ATLASSIAN_MCP
 - 對初始化、取得目錄與工具呼叫設定有限逾時及取消訊號。初始化失敗時也要關閉 client，不無限重試，也不自動改連其他 endpoint。
 - 用安全訊息取代原始錯誤 body。以假 token 及其 Basic 編碼值測試定義、結果與錯誤，避免已知憑證外洩。
 
-新增 `mcp-fixture.ts` 與 `atlassian.test.ts`。`mcp-fixture.ts` 在隨機 port 啟動本機 HTTP MCP server，並把 `ATLASSIAN_MCP_URL` 指向它。用 fixture 模擬初始化、`tools/list`、`tools/call` 與關閉，驗證白名單、`lazy: true`、原生 schema、`update_history: false`、錯誤、取消與 client 關閉。
+新增 `tests/fixtures/mcp-fixture.ts` 與 `tests/server/harness/tools/atlassian.test.ts`。`mcp-fixture.ts` 在隨機 port 啟動本機 HTTP MCP server，並把 `ATLASSIAN_MCP_URL` 指向它。用 fixture 模擬初始化、`tools/list`、`tools/call` 與關閉，驗證白名單、`lazy: true`、原生 schema、`update_history: false`、錯誤、取消與 client 關閉。
 
 ## 4. 將 client 生命週期綁定聊天串流
 
@@ -60,7 +62,7 @@ launcher 固定在 `http://127.0.0.1:8000/mcp` 啟動服務，與 `ATLASSIAN_MCP
 
 ## 5. 驗證 lazy discovery
 
-新增 `lazy-chat.test.ts`。以假模型 adapter 配合真正的 `chat()`，驗證 TanStack 的 `__lazy__tool__discovery__` 流程：
+新增 `tests/server/harness/lazy-chat.test.ts`。以假模型 adapter 配合真正的 `chat()`，驗證 TanStack 的 `__lazy__tool__discovery__` 流程：
 
 1. 在乾淨對話的第一輪，只提供本機工具與 discovery。確認 discovery 目錄列出允許的 MCP 工具名稱，不包含完整 schema。
 2. 讓模型呼叫 discovery，輸入 `{ "toolNames": ["jira_get_issue"] }`。確認下一輪才加入該工具的原生 schema。
@@ -75,7 +77,7 @@ launcher 固定在 `http://127.0.0.1:8000/mcp` 啟動服務，與 `ATLASSIAN_MCP
 
 完成以下檢查：
 
-1. 用 `node --import tsx --test server/harness/lazy-chat.test.ts server/harness/tools/*.test.ts` 執行離線測試，並通過 `pnpm typecheck`、`pnpm exec oxlint` 與 `pnpm build`。
+1. 通過 `pnpm test`、`pnpm typecheck`、`pnpm exec oxlint` 與 `pnpm build`。
 2. 啟動 `pnpm mcp:atlassian` 與聊天服務，在新對話提供可讀的 Jira issue key、Confluence page ID 與 Figma frame。
 3. 要求 Agent 探索工具、讀取來源、整理 test cases，寫入 `tool-playground/test-cases.md` 後讀回確認。確認結果標明來源與缺少的資訊。
 4. 確認回答使用工具結果、對話能儲存、Atlassian 沒有被修改，且正常結束與取消都會清理 MCP client。

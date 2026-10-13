@@ -4,7 +4,7 @@
 
 ## 1. 建立資料庫與 run 契約
 
-使用 `@dbos-inc/dbos-sdk@5.0.2` 與專案的 Postgres、Drizzle。保留 lockfile，新增依賴時確認實際安裝版本。以下使用 `registerWorkflow`、`runStep` 與 `startWorkflow`，不需要 decorator。
+使用起點已預裝的 `@dbos-inc/dbos-sdk@5.0.2`，以及專案的 Postgres 與 Drizzle。以下使用 `registerWorkflow`、`runStep` 與 `startWorkflow`，不需要 decorator。
 
 將 `DATABASE_URL` 放在後端環境設定。DBOS 使用 `systemDatabaseUrl`，Drizzle 使用同一個連線設定建立應用資料表。讓 DBOS 管理自己的 system schema，不把它複製進 Drizzle schema。
 
@@ -115,6 +115,13 @@ pnpm db:migrate
 - `POST /api/chat` 驗證新訊息，呼叫 `acceptRun`，回傳該 run 的事件串流。
 - `GET /api/chat?threadId=...` 回傳 messages、revision 與 `activeRun`，供前端載入對話。
 - `GET /api/chat?runId=...` 接續該 run 的事件，不建立新工作。
+
+`POST /api/chat` 沿用 AG-UI 的請求格式，依下列規則讀取：
+
+- 前端呼叫 `chat.sendMessage(text, { body: { baseRevision } })`。TanStack client 把 `body` 放進 `forwardedProps`，伺服器從 `forwardedProps.baseRevision` 讀取 revision。
+- TanStack client 會送出 `X-Run-Id` header。header 存在時，必須與 body 的 `runId` 相同，否則回傳 409。
+- 伺服器只取 `messages` 的最後一則作為新訊息。這則訊息必須是使用者的文字訊息，前面的歷史一律不採用。
+- 請求不接受前端工具或 context。`tools` 與 `context` 只能省略或是空陣列。
 
 在 `observeRun` 按 sequence 讀取 cursor 之後的事件。SSE 使用 `id: sequence`，重連優先讀取 `Last-Event-ID`，沒有此 header 才讀取 `offset`。Cursor 只接受非負整數，且不得超過已保存的最後序號。唯一例外是沒有 `Last-Event-ID` 時，可用 `offset=-1` 表示從頭讀取；`Last-Event-ID` 本身不接受 `-1`。
 

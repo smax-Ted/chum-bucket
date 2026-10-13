@@ -22,11 +22,13 @@
 
 - `server/harness/tools/code-mode.ts`：定義 `codemode` 輸入、建立 QuickJS 執行、轉接 bindings、限制資源，並整理結果與事件。
 - `server/harness/tools/index.ts`：依當輪訊息組合可用工具，提供共同 dispatcher，再加入 `codemode` 定義。
-- `server/harness/tools/atlassian.ts`：重建 discovery 狀態，檢查目錄與白名單，管理 MCP client，以及檢查已設定的 Atlassian 憑證。
+- `server/harness/tools/atlassian.ts`：重建 discovery 狀態，檢查目錄與白名單，管理 MCP client，以及檢查已設定的 Atlassian 憑證。展開 mcp-atlassian 包在 `result` 字串裡的 JSON。
+- `server/harness/tools/atlassian-output.ts`：用 zod 定義白名單工具的回傳格式，讓型別宣告帶有回傳欄位。
 - `server/harness/tools/fs.ts` 與 `get-figma.ts`：驗證工具參數並執行操作。直接呼叫與 Code Mode 共用相同 handler。
-- `server/harness/prompts.ts`：根據真正的 bindings 產生函式說明與 TypeScript 宣告。
+- `server/harness/prompts.ts`：把 `code-mode.ts` 交來的函式清單與 TypeScript 宣告組成 tool description 與 system prompt。
 - `server/harness/agent-loop.ts`：把工具定義與 Code Mode prompt 送給模型，執行外層 tool step，將結果加入下一輪訊息。
 - `server/harness/tool-events.ts`：限制自訂事件的數量與大小，依序交給既有事件儲存流程。
+- `src/components/tool-call.tsx`：把含換行的字串參數顯示成程式碼區塊，讓 `codemode` 的 `code` 保留原本的換行。
 
 `code-mode.ts` 不建立新的聊天 run，也不直接寫入 `chat_events`。它接收 `definitions`、`dispatch`、`guard` 與執行政策，回傳工具定義、system prompt 和 execute 函式。
 

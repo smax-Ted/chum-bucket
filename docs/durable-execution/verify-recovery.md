@@ -25,7 +25,13 @@ Mock 通過不代表真正重啟測試通過。不要在正式 Jira 新增留言
 - 重送同一個 run ID 與相同請求，只取得原 run。換掉輸入但沿用 ID 則得到 409。
 - 同一 thread 的兩個新 run 同時送出，只有一個取得執行權。
 
-以 `model-turn.test.ts` 驗證串流邊界，以 `run-store.test.ts` 驗證資料與終態契約，並在 `run.test.ts` 驗證跨 step 的訊息傳遞。測試放在 `tests/server/harness/`，不要只斷言內部函式被呼叫。
+測試放在 `tests/server/harness/`，依責任分成三個檔案：
+
+- `model-turn.test.ts` 驗證串流邊界。
+- `agent-loop.test.ts` 用假的 checkpoint 快取驗證 step 名稱順序，以及重跑時只執行未完成的 step。
+- `run.test.ts` 驗證 run 的資料與終態契約，以及跨 step 的訊息傳遞。
+
+斷言可觀察的結果，不要只斷言內部函式被呼叫。
 
 ## 3. 在各個提交空窗中斷程序
 
@@ -59,7 +65,7 @@ Mock 通過不代表真正重啟測試通過。不要在正式 Jira 新增留言
 
 ## 5. 交付可重現的驗收結果
 
-執行新增測試，以及 `pnpm typecheck`、`pnpm exec oxlint` 與 `pnpm build`。依專案的 `AGENTS.md` 執行提交前檢查。
+執行 `pnpm test`、`pnpm typecheck`、`pnpm exec oxlint` 與 `pnpm build`。依專案的 `AGENTS.md` 執行提交前檢查。
 
 交付時記錄每個中斷點的 run ID、前後呼叫次數、最後狀態與畫面結果。分開列出已通過、失敗與未執行的檢查。資料庫、模型金鑰或 MCP 服務受阻時，指出缺少的條件，不以離線 fixture 代替真實串接結果。
 

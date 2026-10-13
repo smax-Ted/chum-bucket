@@ -54,6 +54,9 @@ curl -X POST "https://api.deepinfra.com/v1/scoped-jwt" \
 
 ```
 
+### 暖身
+
+1. 處理 openui 點擊訊息給 llm
 
 ## 1. Tool
 

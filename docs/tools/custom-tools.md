@@ -2,6 +2,18 @@
 
 建立 `get_figma` 與 Pi 的 `read`、`write`、`edit`，再把工具接入聊天。以下工具檔案放在 `server/harness/tools/`。
 
+## 0. 集中測試目錄
+
+後續每一章都會新增測試。先把測試集中到 `tests/`，讓所有章節使用同一個指令。
+
+- 把既有的 `server/**/*.test.ts` 與 `src/**/*.test.ts(x)` 搬到 `tests/`，路徑對應原始碼。例如 `server/harness/tools/get-figma.ts` 的測試放在 `tests/server/harness/tools/get-figma.test.ts`。
+- 把多個測試共用的替身放在 `tests/fixtures/`。
+- 新增 `tests/tsconfig.json`，繼承根目錄的 `tsconfig.json`，並包含 `tests/` 與原始碼目錄。
+- 新增 `tests/runner.mjs`。沒有參數時，它找出 `tests/` 底下所有 `*.test.*`；有參數時只執行指定檔案。它用 `node --import tsx --test` 執行，並設定 `TSX_TSCONFIG_PATH=tests/tsconfig.json`。
+- 在 `package.json` 加入 `"test": "node tests/runner.mjs"`，並把 `typecheck` 改成 `tsc -p tsconfig.json && tsc -p tests/tsconfig.json`。
+
+執行 `pnpm test` 與 `pnpm typecheck`，確認搬移後的既有測試都通過。
+
 ## 1. 實作 get_figma
 
 在 `get-figma.ts` 建立 `getFigma`。用 `toolDefinition` 宣告名稱、description 與 input schema，再用 `.server()` 綁定 handler。
@@ -19,7 +31,7 @@
 - 用 `depthLimited` 標記子節點可能不完整，用 `truncated` 標記結果是否改成摘要。
 - 遇到缺少金鑰、無效的 URL、file key 或 node ID、HTTP 錯誤、非 JSON 回應、找不到節點時，丟出簡短的 `Error`。錯誤訊息只帶 HTTP status，不帶金鑰或回應 body。
 
-新增 `get-figma.test.ts`，使用 `node:test`。在測試中替換 `globalThis.fetch` 與 `process.env.FIGMA_API_KEY`，結束後還原。驗證以下行為：
+新增 `tests/server/harness/tools/get-figma.test.ts`，使用 `node:test`。在測試中替換 `globalThis.fetch` 與 `process.env.FIGMA_API_KEY`，結束後還原。驗證以下行為：
 
 - URL 解析與指定節點。
 - 移除隱藏節點。
@@ -43,7 +55,7 @@
 - `write` 接受 `{ path, content }`，會建立父目錄並覆寫檔案。
 - `edit` 接受 `{ path, edits: [{ oldText, newText }] }`，依原始文字做精確替換。找不到文字、匹配到多處，或修改範圍重疊時，Pi 拒絕修改並保留原檔。
 
-新增 `fs.test.ts`，只在 `mkdtemp` 建立的暫存目錄操作，並把路徑轉成相對於 `process.cwd()` 的路徑。驗證以下行為：
+新增 `tests/server/harness/tools/fs.test.ts`，只在 `mkdtemp` 建立的暫存目錄操作，並把路徑轉成相對於 `process.cwd()` 的路徑。驗證以下行為：
 
 - write、read、edit、再 read 的內容相符。
 - 錯誤的 edit 不改檔。
