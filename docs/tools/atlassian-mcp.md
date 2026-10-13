@@ -46,15 +46,17 @@ launcher 固定在 `http://127.0.0.1:8000/mcp` 啟動服務，與 `ATLASSIAN_MCP
 - 對初始化、取得目錄與工具呼叫設定有限逾時及取消訊號。初始化失敗時也要關閉 client，不無限重試，也不自動改連其他 endpoint。
 - 用安全訊息取代原始錯誤 body。以假 token 及其 Basic 編碼值測試定義、結果與錯誤，避免已知憑證外洩。
 
-新增 `mcp-fixture.ts` 與 `atlassian.test.ts`。以假 fetch 模擬初始化、`tools/list`、`tools/call` 與關閉，驗證白名單、原生 schema、`update_history: false`、錯誤、逾時與取消。
+新增 `mcp-fixture.ts` 與 `atlassian.test.ts`。`mcp-fixture.ts` 在隨機 port 啟動本機 HTTP MCP server，並把 `ATLASSIAN_MCP_URL` 指向它。用 fixture 模擬初始化、`tools/list`、`tools/call` 與關閉，驗證白名單、`lazy: true`、原生 schema、`update_history: false`、錯誤、取消與 client 關閉。
 
 ## 4. 將 client 生命週期綁定聊天串流
 
 在 `server/chat.ts` 為每次聊天建立獨立的 client。將 `tools: [...localTools, ...remote.tools]` 傳入 `chat()`，並設定 `agentLoopStrategy: maxIterations(8)` 限制工具迴圈輪數。
 
-用 async generator 包住初始化與 `yield* chat(...)`。在 `finally` 取消剩餘工作並 `await remote?.close()`。讓 client 活到串流結束，不能在 route 回傳 Response 時就關閉。
+用 async generator 包住初始化與 `yield* chat(...)`，在 `finally` 執行 `await remote?.close()`。`close()` 中止 MCP session 的進行中請求，再關閉 client。讓 client 活到串流結束，不能在 route 回傳 Response 時就關閉。
 
-讓 request、`chat()`、`toServerSentEventsResponse` 與 MCP fetch 共用取消訊號。清理時使用獨立的有限逾時，避免取消請求後跳過關閉。正常完成、錯誤與使用者取消時，都要釋放連線及監聽器。
+建立一個 `AbortController`，傳給 `chat()`、`toServerSentEventsResponse` 與 `openAtlassianTools`，並在 request 的 `signal` 中止時呼叫 `abort()`。不要在 `finally` 呼叫 `abort()`。controller 已中止時，`toServerSentEventsResponse` 不送出錯誤 chunk，前端就看不到 MCP 初始化失敗的原因。
+
+關閉 client 時使用獨立的有限逾時，避免取消請求後跳過關閉。正常完成、錯誤與使用者取消時，都要釋放連線及監聽器。
 
 ## 5. 驗證 lazy discovery
 
@@ -63,7 +65,9 @@ launcher 固定在 `http://127.0.0.1:8000/mcp` 啟動服務，與 `ATLASSIAN_MCP
 1. 在乾淨對話的第一輪，只提供本機工具與 discovery。確認 discovery 目錄列出允許的 MCP 工具名稱，不包含完整 schema。
 2. 讓模型呼叫 discovery，輸入 `{ "toolNames": ["jira_get_issue"] }`。確認下一輪才加入該工具的原生 schema。
 3. 讓模型呼叫 `jira_get_issue`。確認 fixture 收到 `tools/call`，工具結果回到模型後，模型才產生回答。
-4. 驗證未 discovery 的工具呼叫遭到拒絕。確認不同聊天 run 不共用 client 或 discovery 狀態，串流結束後 client 關閉。
+4. 讓模型直接呼叫未 discovery 的工具。確認工具結果是 TanStack 的 `must be discovered first` 錯誤，fixture 沒有收到 `tools/call`。
+5. 連續執行兩次聊天 run。確認每次都建立新的 MCP session，第二次的 run 沒有沿用第一次 discovery 的工具。
+6. 把含有 discovery 呼叫與結果的訊息放進 history，再執行下一輪。確認第一次模型請求就包含該工具。TanStack 會掃描訊息歷史，還原已 discovery 的工具，所以同一個 thread 的下一則訊息不必重新 discovery。
 
 ## 6. 驗收兩組工具
 
@@ -71,7 +75,7 @@ launcher 固定在 `http://127.0.0.1:8000/mcp` 啟動服務，與 `ATLASSIAN_MCP
 
 完成以下檢查：
 
-1. 通過新增的離線測試，以及 `pnpm typecheck`、`pnpm exec oxlint` 與 `pnpm build`。
+1. 用 `node --import tsx --test server/harness/lazy-chat.test.ts server/harness/tools/*.test.ts` 執行離線測試，並通過 `pnpm typecheck`、`pnpm exec oxlint` 與 `pnpm build`。
 2. 啟動 `pnpm mcp:atlassian` 與聊天服務，在新對話提供可讀的 Jira issue key、Confluence page ID 與 Figma frame。
 3. 要求 Agent 探索工具、讀取來源、整理 test cases，寫入 `tool-playground/test-cases.md` 後讀回確認。確認結果標明來源與缺少的資訊。
 4. 確認回答使用工具結果、對話能儲存、Atlassian 沒有被修改，且正常結束與取消都會清理 MCP client。
