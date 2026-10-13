@@ -81,6 +81,13 @@ const TESTING_LIMITS = {
   modelAttempts: 3,
   operationMs: 15 * 60 * 1000,
 } as const;
+const BROWSER_ROLE_LIMITS = {
+  turns: 20,
+  tools: 60,
+  observationEntries: 240,
+  observationBytes: 65_536,
+} as const;
+const ROLE_LIMITS = { ac: BROWSER_ROLE_LIMITS, ui: BROWSER_ROLE_LIMITS } as const;
 const TESTING_FIXTURE = { id: "playwright-chromium", version: "v1" } as const;
 
 const VERSIONS = {
@@ -127,6 +134,7 @@ export type HostTestingRuntime = Readonly<{
   absoluteDeadline: string;
   bounds: typeof TESTING_BOUNDS;
   limits: typeof TESTING_LIMITS;
+  roleLimits: typeof ROLE_LIMITS;
   versions: typeof VERSIONS & TestingSnapshot;
   profiles: ProfileVersions;
   registration: ProfileVersions;
@@ -397,6 +405,7 @@ export function hostTestingRuntime(
     absoluteDeadline: new Date(now.getTime() + TESTING_LIMITS.operationMs).toISOString(),
     bounds: TESTING_BOUNDS,
     limits: TESTING_LIMITS,
+    roleLimits: ROLE_LIMITS,
     versions: { ...VERSIONS, model: snapshot.model, build: snapshot.build },
     profiles: profileVersions(),
     registration: registrationVersions(),
@@ -404,6 +413,17 @@ export function hostTestingRuntime(
     model: snapshot.model,
     build: snapshot.build,
   };
+}
+
+type TestingLimits = Readonly<Record<keyof typeof TESTING_LIMITS, number>>;
+
+export function effectiveLimits(
+  runtime: Pick<HostTestingRuntime, "limits" | "roleLimits">,
+  role: string,
+): TestingLimits {
+  return role === "ac" || role === "ui"
+    ? { ...runtime.limits, ...runtime.roleLimits[role] }
+    : runtime.limits;
 }
 
 function testingChildWorkflowId(operationId: string, role: RoleId): string {
@@ -1381,7 +1401,7 @@ function ioScopeDenial(
 function modelStepUpdate(
   task: TaskRow,
   stepKey: string,
-  limits: HostTestingRuntime["limits"],
+  limits: TestingLimits,
 ): TaskUpdate | IoDenial {
   const step = callKeySchema.safeParse(stepKey);
   const parsed = modelStepsSchema.safeParse(task.model_steps);
@@ -1407,7 +1427,7 @@ function modelStepUpdate(
 function toolCallUpdate(
   task: TaskRow,
   nested: boolean,
-  limits: HostTestingRuntime["limits"],
+  limits: TestingLimits,
 ): TaskUpdate | IoDenial {
   if (task.native_calls >= limits.tools || (nested && task.nested_calls >= limits.nestedCalls)) {
     return denied("budget");
@@ -1431,7 +1451,7 @@ export async function guardActualIOInTransaction(
     return denial;
   }
 
-  const { limits } = frozenRuntime(operation);
+  const limits = effectiveLimits(frozenRuntime(operation), task.role);
   const budget =
     input.kind === "model"
       ? modelStepUpdate(task, input.step, limits)
@@ -1720,13 +1740,10 @@ export async function appendTrustedObservation(input: {
       .select()
       .from(testingObservationsTable)
       .where(eq(testingObservationsTable.task_id, task.id));
-    const runtime = frozenRuntime(operation);
+    const limits = effectiveLimits(frozenRuntime(operation), task.role);
     const used = existing.reduce((sum, row) => sum + row.bytes, 0);
 
-    if (
-      existing.length + 1 > runtime.limits.observationEntries ||
-      used + bytes > runtime.limits.observationBytes
-    ) {
+    if (existing.length + 1 > limits.observationEntries || used + bytes > limits.observationBytes) {
       throw new TestingPersistenceError(409, "Observation bound exceeded");
     }
 

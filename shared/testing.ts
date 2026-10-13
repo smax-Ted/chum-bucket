@@ -230,22 +230,49 @@ export type PlanCriterion = Readonly<z.infer<typeof planCriterionSchema>>;
 
 export const planCriteriaSchema = z.array(planCriterionSchema).min(1).max(500);
 
+export const MAX_CASE_HANDOFFS = 3;
+
+const handoffTargetSchema = z.strictObject({
+  intent: z.string().min(1).max(512),
+  operation: z.enum(["click", "fill", "observe", "visible"]),
+  at: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("action"), index: z.number().int().nonnegative() }),
+    z.strictObject({ kind: z.literal("check"), checkId: z.string().trim().min(1).max(64) }),
+  ]),
+});
+export type HandoffTarget = Readonly<z.infer<typeof handoffTargetSchema>>;
+
+const browserSelectionSchema = z.union([
+  z.strictObject({
+    model: z.string(),
+    choice: z.string(),
+    confidence: z.number().min(0).max(1),
+    candidateDigest: z.string(),
+  }),
+  z.strictObject({
+    source: z.literal("agent_choose"),
+    handoffId: z.string(),
+    candidateId: z.string(),
+    fingerprintDigest: z.string(),
+    target: handoffTargetSchema,
+  }),
+  z.strictObject({
+    source: z.literal("agent_navigate"),
+    handoffId: z.string(),
+    linkId: z.string(),
+    from: z.string(),
+    to: z.string(),
+  }),
+]);
+export type BrowserSelection = Readonly<z.infer<typeof browserSelectionSchema>>;
+
 const mockEvidenceBase = {
   caseId: z.string().trim().min(1).max(64),
   checkId: z.string().trim().min(1).max(64),
   origin: z.enum(["mock", "browser"]),
   browser: z
     .strictObject({
-      selections: z
-        .array(
-          z.strictObject({
-            model: z.string(),
-            choice: z.string(),
-            confidence: z.number().min(0).max(1),
-            candidateDigest: z.string(),
-          }),
-        )
-        .max(100),
+      selections: z.array(browserSelectionSchema).max(100),
       screenshot: z
         .strictObject({
           path: z.string().regex(/^[0-9a-f-]{36}\.png$/),
@@ -341,9 +368,69 @@ export const browserOutputSchema = z.strictObject({
 });
 export type BrowserOutput = Readonly<z.infer<typeof browserOutputSchema>>;
 
+const handoffResolutionSchema = z.strictObject({
+  handoffId: z.string().trim().min(1).max(64),
+  decision: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("navigate"), linkId: z.string().trim().min(1).max(16) }),
+    z.strictObject({ kind: z.literal("choose"), candidateId: z.string().trim().min(1).max(16) }),
+    z.strictObject({ kind: z.literal("abandon"), reason: z.string().trim().min(1).max(500) }),
+  ]),
+});
+export type HandoffResolution = Readonly<z.infer<typeof handoffResolutionSchema>>;
+export type HandoffDecision = HandoffResolution["decision"];
+
 export const useBrowserInputSchema = z.strictObject({
   checkId: z.string().trim().min(1).max(64),
+  resolution: handoffResolutionSchema.optional(),
 });
+
+const selectionDiagnosticsSchema = z.strictObject({
+  code: z.literal("uncertain_or_invalid_selection"),
+  choice: z.string(),
+  confidence: z.number(),
+  probability: z.number(),
+  gap: z.number(),
+  probabilityTotal: z.number(),
+  candidateCount: z.number().int().nonnegative(),
+  probabilityCount: z.number().int().nonnegative(),
+});
+export type SelectionDiagnostics = Readonly<z.infer<typeof selectionDiagnosticsSchema>>;
+
+const handoffSnapshotSchema = z.strictObject({
+  id: z.string().min(1).max(64),
+  caseId: z.string().min(1).max(64),
+  ordinal: z.number().int().min(1).max(MAX_CASE_HANDOFFS),
+  laterHandoffsAllowed: z
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_CASE_HANDOFFS - 1),
+  expiresAt: z.string().min(1).max(64),
+  url: z.string().min(1),
+  target: handoffTargetSchema,
+  candidates: z
+    .array(z.strictObject({ id: z.string().min(1).max(16), description: z.string() }))
+    .max(80),
+  links: z
+    .array(
+      z.strictObject({
+        id: z.string().min(1).max(16),
+        description: z.string().max(512),
+        url: z.string().min(1),
+      }),
+    )
+    .max(80),
+  linksTruncated: z.boolean(),
+  diagnostics: selectionDiagnosticsSchema,
+});
+
+export const selectionRequiredSchema = z.strictObject({
+  state: z.literal("selection_required"),
+  checkId: z.string().trim().min(1).max(64),
+  handoff: handoffSnapshotSchema,
+});
+export type SelectionRequired = Readonly<z.infer<typeof selectionRequiredSchema>>;
+export type HandoffSnapshot = Readonly<z.infer<typeof handoffSnapshotSchema>>;
 
 export type ArtifactOrigin = Readonly<{
   originalRunId: TestRunId;

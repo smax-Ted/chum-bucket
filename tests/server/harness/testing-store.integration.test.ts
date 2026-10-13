@@ -530,6 +530,235 @@ test(
   },
 );
 
+const browserPlanCase = {
+  id: "case-1",
+  title: "Checkout",
+  preconditions: [],
+  actions: [{ kind: "navigate" as const, path: "/checkout" }],
+  checks: [
+    {
+      id: "check-1",
+      criterionId: "AC-1",
+      kind: "functional" as const,
+      expectedObservation: "Order confirmation is visible",
+    },
+  ],
+};
+
+async function plannerWithExecution() {
+  await ensureDatabase();
+  const thread = await createThread();
+  const parent = await parentRun(thread.id);
+  const sourceAdmission = await admitAttachedTesting(parent, "source", sourceInput);
+  const sourceTask = (await reserveRoleTask(
+    parent.runId,
+    sourceAdmission.operationId,
+    "atlassian",
+    sourceInput,
+  ))!;
+  await readJira(sourceTask);
+  const requirements = await acceptRoleCompletion(parent.runId, sourceTask.taskId, {
+    role: "atlassian",
+  });
+  await ackDelivery(`start:${sourceTask.taskId}`, "quiet");
+  await closeTesting(parent.runId, sourceAdmission.operationId, "completed");
+  const plannerInput = delegationInputSchema.parse({
+    role: "planner",
+    summary: "Plan checkout",
+    requirementsRef: requirements.ref,
+  });
+  const planning = await admitAttachedTesting(parent, "plan", plannerInput);
+  const planner = (await reserveRoleTask(
+    parent.runId,
+    planning.operationId,
+    "planner",
+    plannerInput,
+  ))!;
+
+  const startAc = async () => {
+    const plan = await acceptRoleCompletion(parent.runId, planner.taskId, {
+      role: "planner",
+      proposal: planProposal([browserPlanCase]),
+    });
+    await ackDelivery(`start:${planner.taskId}`, "quiet");
+    await closeTesting(parent.runId, planning.operationId, "completed");
+    const acInput = delegationInputSchema.parse({
+      role: "ac",
+      summary: "Check checkout",
+      planRef: plan.ref,
+      targetUrl,
+    });
+    const checking = await admitAttachedTesting(parent, "ac", acInput);
+
+    return (await reserveRoleTask(parent.runId, checking.operationId, "ac", acInput))!;
+  };
+  const io = (frame: { taskId: string; attemptNonce: number; childWorkflowId: string }) => ({
+    taskId: frame.taskId,
+    parentRunId: parent.runId,
+    attemptNonce: frame.attemptNonce,
+    childWorkflowId: frame.childWorkflowId,
+  });
+
+  return { planner, startAc, io };
+}
+
+test(
+  "AC tasks allow 60 tools and 20 turns while the planner still stops at tool 25 and turn 9",
+  { skip: !enabled, timeout: 120_000 },
+  async () => {
+    const { planner, startAc, io } = await plannerWithExecution();
+    const turns = (frame: Parameters<typeof io>[0], count: number) =>
+      Promise.all(
+        Array.from({ length: count }, (_, index) =>
+          guardActualIO({ ...io(frame), kind: "model", step: `turn-${index + 1}` }),
+        ),
+      );
+    const tools = (frame: Parameters<typeof io>[0], count: number) =>
+      Promise.all(
+        Array.from({ length: count }, () => guardActualIO({ ...io(frame), kind: "tool" })),
+      );
+    const states = (results: readonly { state: string }[]) =>
+      new Set(results.map((result) => result.state));
+    const denied = { state: "denied", reason: "budget" };
+
+    assert.deepEqual(states(await turns(planner, 8)), new Set(["allowed"]));
+    assert.deepEqual(
+      await guardActualIO({ ...io(planner), kind: "model", step: "turn-9" }),
+      denied,
+    );
+    assert.deepEqual(states(await tools(planner, 24)), new Set(["allowed"]));
+    assert.deepEqual(await guardActualIO({ ...io(planner), kind: "tool" }), denied);
+    const ac = await startAc();
+
+    assert.deepEqual(states(await turns(ac, 20)), new Set(["allowed"]));
+    assert.deepEqual(await guardActualIO({ ...io(ac), kind: "model", step: "turn-21" }), denied);
+    assert.deepEqual(states(await tools(ac, 60)), new Set(["allowed"]));
+    assert.deepEqual(await guardActualIO({ ...io(ac), kind: "tool" }), denied);
+    const budget = await taskBudget(ac.taskId);
+    assert.deepEqual(
+      {
+        turns: Object.keys(budget.model_steps as object).length,
+        native: budget.native_calls,
+        io: budget.io_sequence,
+      },
+      { turns: 20, native: 60, io: 80 },
+    );
+  },
+);
+
+test(
+  "AC observation capacity admits 240 schema-maximal entries of 192 bytes while the planner keeps 64",
+  { skip: !enabled, timeout: 180_000 },
+  async () => {
+    const { planner, startAc } = await plannerWithExecution();
+    const append = (frame: { taskId: string; attemptNonce: number }, index: number) =>
+      appendTrustedObservation({
+        taskId: frame.taskId,
+        attemptNonce: frame.attemptNonce,
+        key: `capacity-${index}`,
+        body: {
+          kind: "tool_started",
+          toolName: "t".repeat(64),
+          route: "codemode",
+          at: String(index).padStart(64, "0"),
+        },
+      });
+
+    for (let index = 0; index < 64; index++) {
+      await append(planner, index);
+    }
+
+    await assert.rejects(() => append(planner, 64), /Observation bound exceeded/);
+    const ac = await startAc();
+
+    for (let index = 0; index < 240; index++) {
+      await append(ac, index);
+    }
+
+    await assert.rejects(() => append(ac, 240), /Observation bound exceeded/);
+  },
+);
+
+test(
+  "a selection_required handoff is refused as a browser receipt while terminal evidence is stored",
+  { skip: !enabled, timeout: 120_000 },
+  async () => {
+    const { startAc } = await plannerWithExecution();
+    const ac = await startAc();
+    const bindings = {
+      checkId: "check-1",
+      fixture: { id: "playwright-chromium", version: "v1" },
+      adapterVersion: "playwright-jev-v1",
+    };
+    const receipt = (slot: string, output: unknown) =>
+      appendTrustedReceipt({
+        id: `${slot}-${randomUUID()}`,
+        taskId: ac.taskId,
+        attemptNonce: ac.attemptNonce,
+        slot,
+        nativeName: "verify_ac",
+        route: "direct",
+        input: { checkId: "check-1" },
+        output,
+        bindings,
+      });
+    await assert.rejects(
+      () =>
+        receipt("handoff", {
+          state: "selection_required",
+          checkId: "check-1",
+          handoff: {
+            id: "h1",
+            caseId: "case-1",
+            ordinal: 1,
+            laterHandoffsAllowed: 2,
+            expiresAt: "2026-10-13T00:03:00.000Z",
+            url: "https://preview.example.test/checkout",
+            target: {
+              intent: "Order confirmation",
+              operation: "observe",
+              at: { kind: "check", checkId: "check-1" },
+            },
+            candidates: [{ id: "c0", description: "Order confirmation" }],
+            links: [],
+            linksTruncated: false,
+            diagnostics: {
+              code: "uncertain_or_invalid_selection",
+              choice: "none",
+              confidence: 0.9,
+              probability: 0.9,
+              gap: 0.8,
+              probabilityTotal: 1,
+              candidateCount: 2,
+              probabilityCount: 2,
+            },
+          },
+        }),
+      /Browser receipt is outside the host scope/,
+    );
+    const tool = createUseBrowserTool({
+      role: "ac",
+      cases: [browserPlanCase],
+      checks: browserPlanCase.checks,
+      fixture: syntheticBlockedBrowserFixture(),
+      figmaProperties: null,
+      designCapture: null,
+    });
+    await receipt("terminal", await tool.execute!({ checkId: "check-1" }));
+    const db = await database();
+
+    assert.deepEqual(
+      (
+        await db
+          .select({ slot: testingReceiptsTable.slot })
+          .from(testingReceiptsTable)
+          .where(eq(testingReceiptsTable.task_id, ac.taskId))
+      ).map((row) => row.slot),
+      ["terminal"],
+    );
+  },
+);
+
 test(
   "scope, nonce, root-claim, and terminal denials do not allocate budget",
   { skip: !enabled, timeout: 60_000 },

@@ -69,8 +69,8 @@
         "profiles": {
           "atlassian": "requirements-v4",
           "planner": "planning-v3",
-          "ac": "functional-v2",
-          "ui": "style-v2"
+          "ac": "functional-v3",
+          "ui": "style-v3"
         },
         "versions": {
           "loop": "agent-loop-v1",
@@ -92,8 +92,8 @@
         "registration": {
           "atlassian": "requirements:requirements-v4:enabled:atlassian_read",
           "planner": "plan:planning-v3:enabled:none",
-          "ac": "ac-result:functional-v2:enabled:browser_ac",
-          "ui": "ui-result:style-v2:enabled:browser_ui+figma_read"
+          "ac": "ac-result:functional-v3:enabled:browser_ac",
+          "ui": "ui-result:style-v3:enabled:browser_ui+figma_read"
         },
         "producerTaskId": "task-atlassian"
       },
@@ -959,8 +959,8 @@
         "profiles": {
           "atlassian": "requirements-v4",
           "planner": "planning-v3",
-          "ac": "functional-v2",
-          "ui": "style-v2"
+          "ac": "functional-v3",
+          "ui": "style-v3"
         },
         "versions": {
           "loop": "agent-loop-v1",
@@ -982,8 +982,8 @@
         "registration": {
           "atlassian": "requirements:requirements-v4:enabled:atlassian_read",
           "planner": "plan:planning-v3:enabled:none",
-          "ac": "ac-result:functional-v2:enabled:browser_ac",
-          "ui": "ui-result:style-v2:enabled:browser_ui+figma_read"
+          "ac": "ac-result:functional-v3:enabled:browser_ac",
+          "ui": "ui-result:style-v3:enabled:browser_ui+figma_read"
         },
         "producerTaskId": "task-planner"
       },

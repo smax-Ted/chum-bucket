@@ -12,6 +12,7 @@ import {
   appendTrustedObservation,
   appendTrustedReceipt,
   claimActualTask,
+  effectiveLimits,
   readStartCancelDeliveries,
   type RoleCompletion,
   type TestingExecution,
@@ -37,6 +38,7 @@ import {
   type TestingNativeEnvelope,
   type TestingNativeHost,
   type TestingNativeInvocation,
+  type TestingNativeReceipt,
   type TestingNativeReceiptReference,
 } from "./testing-tools";
 import { runAgentLoop, type AgentCheckpoint, type AgentSession } from "./agent-loop";
@@ -46,9 +48,11 @@ import type { ConversationState } from "./conversation";
 import {
   browserOutputSchema,
   designCaptureSchema,
+  selectionRequiredSchema,
   type DesignReference,
   type PlanCheck,
   type RoleId,
+  type SelectionRequired,
 } from "../../shared/testing";
 import type { AdapterYieldChunk } from "@tanstack/ai";
 import type { RunTools } from "./tools";
@@ -613,6 +617,8 @@ const BROWSER_CHECK_KINDS: Partial<Record<RoleId, "functional" | "style">> = {
   ui: "style",
 };
 
+const BROWSER_NATIVE_NAMES: readonly string[] = ["use_browser", "verify_ac", "verify_ui"];
+
 type PlannedCheck = Readonly<{ planCase: CanonicalPlan["cases"][number]; check: PlanCheck }>;
 
 function plannedCheck(plan: CanonicalPlan | null, checkId: string): PlannedCheck | undefined {
@@ -667,6 +673,37 @@ function browserReceiptBindings(
     adapterVersion: execution.runtime.versions.adapter,
     checkId: match.check.id,
   };
+}
+
+function browserHandoff(
+  output: unknown,
+  nativeName: string,
+  role: RoleId,
+  plan: CanonicalPlan | null,
+): SelectionRequired | null {
+  if (!BROWSER_NATIVE_NAMES.includes(nativeName)) {
+    return null;
+  }
+
+  const parsed = selectionRequiredSchema.safeParse(output);
+
+  if (!parsed.success) {
+    return null;
+  }
+
+  const kind = BROWSER_CHECK_KINDS[role];
+  const match = plannedCheck(plan, parsed.data.checkId);
+
+  if (
+    !kind ||
+    !match ||
+    match.check.kind !== kind ||
+    match.planCase.id !== parsed.data.handoff.caseId
+  ) {
+    throw new Error("Browser output is outside the canonical host scope");
+  }
+
+  return parsed.data;
 }
 
 type DeliveryRecord = Awaited<ReturnType<typeof readStartCancelDeliveries>>[number];
@@ -842,16 +879,24 @@ async function guardNativeCall(
   return guard.slot;
 }
 
+function toolSettled(input: TestingChildInput, slot: string) {
+  return observe(input, `tool-settle-${slot}`, {
+    kind: "tool_settled",
+    outcome: "completed",
+    at: new Date().toISOString(),
+  });
+}
+
 async function storeNativeReceipt(
   run: ChildRun,
   invocation: TestingNativeInvocation,
   slot: string,
   output: unknown,
-): Promise<TestingNativeEnvelope> {
+): Promise<TestingNativeReceipt> {
   const { input } = run;
   const nativeInput = normalizeJson(invocation.input);
   const receiptId = `native-${slot}-${invocation.nativeName}`;
-  const bindings = ["use_browser", "verify_ac", "verify_ui"].includes(invocation.nativeName)
+  const bindings = BROWSER_NATIVE_NAMES.includes(invocation.nativeName)
     ? browserReceiptBindings(output, input.role, run.plan, run.execution)
     : {};
   const stored = await appendTrustedReceipt({
@@ -879,13 +924,9 @@ async function storeNativeReceipt(
     output,
     outputDigest: stored.outputDigest,
   });
-  await observe(input, `tool-settle-${slot}`, {
-    kind: "tool_settled",
-    outcome: "completed",
-    at: new Date().toISOString(),
-  });
+  await toolSettled(input, slot);
 
-  return { output, receiptId, outputDigest: stored.outputDigest };
+  return { kind: "receipted", output, receiptId, outputDigest: stored.outputDigest };
 }
 
 async function invokeNative(
@@ -903,6 +944,13 @@ async function invokeNative(
 
   try {
     const output = normalizeJson(await track(run.transport, () => work()));
+    const handoff = browserHandoff(output, invocation.nativeName, run.input.role, run.plan);
+
+    if (handoff) {
+      await toolSettled(run.input, slot);
+
+      return { kind: "ephemeral", output: handoff };
+    }
 
     return await storeNativeReceipt(run, invocation, slot, output);
   } catch (error) {
@@ -975,23 +1023,29 @@ function restoredDesignFor(run: ChildRun): DesignCaptureResult | undefined {
   return restoreDesignCapture(run.execution, run.input.taskId, design, run.requested) ?? undefined;
 }
 
-function childHost(run: ChildRun): TestingNativeHost {
-  const { execution } = run;
+function childFixture(run: ChildRun) {
+  const { execution, input } = run;
 
+  return (input.role === "ac" || input.role === "ui") && execution.intent.targetUrl
+    ? createPlaywrightFixture(
+        execution.intent.targetUrl,
+        input.role,
+        run.signal,
+        undefined,
+        input.taskId,
+      )
+    : undefined;
+}
+
+function childHost(
+  run: ChildRun,
+  browserFixture: TestingNativeHost["browserFixture"],
+): TestingNativeHost {
   return {
     invoke: (invocation, work) => invokeNative(run, invocation, work),
     captureDesign: (capture) => captureDesignReceipt(run, capture),
     restoredDesign: restoredDesignFor(run),
-    browserFixture:
-      (run.input.role === "ac" || run.input.role === "ui") && execution.intent.targetUrl
-        ? createPlaywrightFixture(
-            execution.intent.targetUrl,
-            run.input.role,
-            run.signal,
-            undefined,
-            run.input.taskId,
-          )
-        : undefined,
+    browserFixture,
   };
 }
 
@@ -1055,6 +1109,15 @@ async function orchestrateComment(run: ChildRun, call: ModelCall) {
   );
 }
 
+const FEEDBACK_TURNS = 2;
+
+export function rolePassTurns(runtime: TestingExecution["runtime"], role: RoleId) {
+  return {
+    initial: effectiveLimits(runtime, role).turns - FEEDBACK_TURNS,
+    feedback: FEEDBACK_TURNS,
+  };
+}
+
 async function runRoleLoops(run: ChildRun, tools: RunTools): Promise<TestingChildResult> {
   const { input, execution, signal } = run;
   const step = { current: "model-0" };
@@ -1086,14 +1149,19 @@ async function runRoleLoops(run: ChildRun, tools: RunTools): Promise<TestingChil
       orchestration: (call) => orchestrateComment(run, call),
       signal,
     });
-  const first = await loop(initial, Math.min(6, execution.runtime.limits.turns), "a");
+  const passes = rolePassTurns(execution.runtime, input.role);
+  const first = await loop(initial, passes.initial, "a");
   const decision = await reviewCompletion(input, first.conversation, "proposal");
 
   if (decision.issues.length === 0) {
     return { state: "ready", completion: decision.completion };
   }
 
-  const second = await loop(feedbackConversation(first.conversation, decision.issues), 2, "b");
+  const second = await loop(
+    feedbackConversation(first.conversation, decision.issues),
+    passes.feedback,
+    "b",
+  );
   const again = await reviewCompletion(input, second.conversation, "proposal-2");
 
   if (again.issues.length === 0) {
@@ -1140,17 +1208,23 @@ async function runClaimedChild(
     nativeReceipts: new Map(),
   };
 
-  return withTestingRoleTools(
-    {
-      role: input.role,
-      intent: execution.intent,
-      requirements: pinnedRequirements(execution),
-      plan,
-      host: childHost(run),
-    },
-    (tools) => runRoleLoops(run, tools),
-    signal,
-  );
+  const fixture = childFixture(run);
+
+  try {
+    return await withTestingRoleTools(
+      {
+        role: input.role,
+        intent: execution.intent,
+        requirements: pinnedRequirements(execution),
+        plan,
+        host: childHost(run, fixture),
+      },
+      (tools) => runRoleLoops(run, tools),
+      signal,
+    );
+  } finally {
+    await fixture?.dispose();
+  }
 }
 
 function failureReason(error: unknown, signal: AbortSignal): string {

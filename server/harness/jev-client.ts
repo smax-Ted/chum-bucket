@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import type { SelectionDiagnostics } from "../../shared/testing";
 
 export class JevError extends Error {
   constructor(
     readonly code: string,
-    readonly diagnostics?: Readonly<Record<string, number | string>>,
+    readonly diagnostics?: Omit<SelectionDiagnostics, "code">,
   ) {
     super(`Jev ${code}`);
   }

@@ -141,6 +141,37 @@ test("URL follow-up accepts explicit assigned checks despite planner unresolved 
   assert.ok(report.coverage.some((row) => row.state === "deferred"));
 });
 
+test("artifacts stored under the planning-v2, functional-v2 and style-v2 profiles must be produced again", () => {
+  const previous = (row: StoredArtifactRow): StoredArtifactRow => ({
+    ...row,
+    metadata: {
+      ...(row.metadata as Record<string, unknown>),
+      profiles: {
+        ac: "functional-v2",
+        ui: "style-v2",
+        planner: "planning-v2",
+        atlassian: "requirements-v3",
+      },
+      registration: {
+        ac: "ac-result:functional-v2:enabled:browser_ac",
+        ui: "ui-result:style-v2:enabled:browser_ui+figma_read",
+        planner: "plan:planning-v2:enabled:none",
+        atlassian: "requirements:requirements-v3:enabled:atlassian_read",
+      },
+    },
+  });
+
+  for (const input of fixture.inputs) {
+    assert.deepEqual(
+      decide(intentFor(input), rows.map(previous)).map((decision) => [
+        decision.ref,
+        decision.kind === "rejected" ? decision.reason : decision.kind,
+      ]),
+      rows.map((row) => [row.ref, "incompatible_snapshot"]),
+    );
+  }
+});
+
 test("assigned-check reuse still rejects altered snapshots, source scope, digests and provenance", () => {
   const intent = intentFor(fixture.inputs[0]);
   const variants: StoredArtifactRow[] = [

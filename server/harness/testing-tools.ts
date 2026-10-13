@@ -16,6 +16,7 @@ import {
   type PlanCheck,
   type StyleCheck,
   type RoleId,
+  type SelectionRequired,
   type TestingRequestInput,
 } from "../../shared/testing";
 import type { ModelCall } from "./model-turn";
@@ -55,14 +56,19 @@ export type TestingNativeInvocation = Readonly<{
   context: ToolExecutionContext;
 }>;
 
-export type TestingNativeEnvelope = Readonly<{
+export type TestingNativeReceipt = Readonly<{
+  kind: "receipted";
   output: unknown;
   receiptId: string;
   outputDigest: string;
 }>;
 
+export type TestingNativeEnvelope =
+  | TestingNativeReceipt
+  | Readonly<{ kind: "ephemeral"; output: SelectionRequired }>;
+
 export type TestingNativeReceiptReference = Readonly<
-  Pick<TestingNativeEnvelope, "receiptId" | "outputDigest">
+  Pick<TestingNativeReceipt, "receiptId" | "outputDigest">
 >;
 
 export type TestingNativeHost = Readonly<{
@@ -126,12 +132,13 @@ function definitionOf(tool: Pick<Tool, "name" | "description" | "inputSchema">):
 }
 
 const envelopeSchema = z.strictObject({
+  kind: z.literal("receipted"),
   output: z.unknown(),
   receiptId: z.string().trim().min(1).max(128),
   outputDigest: z.string().trim().min(1).max(128),
 });
 
-function envelopeOf(value: unknown): TestingNativeEnvelope {
+function envelopeOf(value: unknown): TestingNativeReceipt {
   const parsed = envelopeSchema.safeParse(value);
 
   if (!parsed.success) {
@@ -144,7 +151,12 @@ function envelopeOf(value: unknown): TestingNativeEnvelope {
     throw new Error("Host native receipt digest does not match its output");
   }
 
-  return { output, receiptId: parsed.data.receiptId, outputDigest: parsed.data.outputDigest };
+  return {
+    kind: "receipted",
+    output,
+    receiptId: parsed.data.receiptId,
+    outputDigest: parsed.data.outputDigest,
+  };
 }
 
 function roleRunTools(options: {
@@ -369,11 +381,16 @@ async function browserEnvelope(
   route: TestingNativeRoute,
 ): Promise<unknown> {
   const parsed = useBrowserInputSchema.parse(call.input);
-  const envelope = envelopeOf(
-    await host.invoke({ call, input: parsed, nativeName: call.name, route, context }, async () =>
-      browser.execute!(parsed, context),
-    ),
+  const result = await host.invoke(
+    { call, input: parsed, nativeName: call.name, route, context },
+    async () => browser.execute!(parsed, context),
   );
+
+  if (result.kind === "ephemeral") {
+    return result.output;
+  }
+
+  const envelope = envelopeOf(result);
   const output = browserOutputSchema.parse(envelope.output);
 
   if (output.checkId !== parsed.checkId) {
@@ -427,7 +444,7 @@ function pendingBrowserDefinition(tool: Tool): ModelTool {
   return {
     ...definitionOf(tool),
     description:
-      "Verify one assigned canonical check using the live browser adapter after capturing the requested Figma design. Supply only checkId; the host owns actions, targets and observations.",
+      "Verify one assigned canonical check using the live browser adapter after capturing the requested Figma design. Supply checkId, and resolution only to answer the pending handoff of a selection_required result; the host owns actions, targets and observations.",
   };
 }
 

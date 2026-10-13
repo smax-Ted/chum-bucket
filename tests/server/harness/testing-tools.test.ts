@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ToolExecutionContext, UIMessage } from "@tanstack/ai";
-import type { DesignReference, PlanCase, TestingRequestInput } from "../../../shared/testing";
+import {
+  selectionRequiredSchema,
+  type DesignReference,
+  type HandoffSnapshot,
+  type PlanCase,
+  type TestingRequestInput,
+} from "../../../shared/testing";
 import type { ModelCall } from "../../../server/harness/model-turn";
 import {
   assembleRequirements,
@@ -147,9 +153,20 @@ function fixtureHost(options: {
       }
 
       const output = await work();
+      const handoff = selectionRequiredSchema.safeParse(output);
+
+      if (handoff.success) {
+        return { kind: "ephemeral", output: handoff.data };
+      }
+
       receipts += 1;
 
-      return { output, receiptId: `receipt-${receipts}`, outputDigest: digestOf(output) };
+      return {
+        kind: "receipted",
+        output,
+        receiptId: `receipt-${receipts}`,
+        outputDigest: digestOf(output),
+      };
     },
     async captureDesign(input) {
       designInputs.push(input);
@@ -637,6 +654,79 @@ test("AC role returns Host receipt envelopes and rejects foreign tools", async (
         /Unknown scoped check/,
       );
     },
+  );
+});
+
+test("a selection_required handoff reaches the model without receipt fields while the resolved result keeps the terminal envelope", async () => {
+  const handoff: HandoffSnapshot = {
+    id: "h1",
+    caseId: "case-1",
+    ordinal: 1,
+    laterHandoffsAllowed: 2,
+    expiresAt: "2026-10-13T00:03:00.000Z",
+    url: "http://127.0.0.1:4173/app",
+    target: { intent: "submit", operation: "click", at: { kind: "action", index: 1 } },
+    candidates: [{ id: "c0", description: "untrusted page text" }],
+    links: [],
+    linksTruncated: false,
+    diagnostics: {
+      code: "uncertain_or_invalid_selection",
+      choice: "none",
+      confidence: 0.9,
+      probability: 0.9,
+      gap: 0.8,
+      probabilityTotal: 1,
+      candidateCount: 2,
+      probabilityCount: 2,
+    },
+  };
+  const resolution = {
+    handoffId: "h1",
+    decision: { kind: "abandon", reason: "No submit control" },
+  };
+  const received: unknown[] = [];
+  const harness = fixtureHost({
+    fixture: {
+      ...hostFixture,
+      run: async (_planCase, _check, decided) => {
+        received.push(decided ?? null);
+
+        return decided
+          ? { state: "blocked", reason: "handoff_abandoned", browser: { selections: [] } }
+          : { state: "selection_required", handoff };
+      },
+    },
+  });
+  await withTestingRoleTools(
+    { role: "ac", intent, requirements: null, plan: testPlan(), host: harness.host },
+    async (tools) => {
+      assert.deepEqual(
+        await tools.executeTool([], modelCall("verify_ac", { checkId: "check-f" }), context),
+        { state: "selection_required", checkId: "check-f", handoff },
+      );
+      const resolved = (await tools.executeTool(
+        [],
+        modelCall("verify_ac", { checkId: "check-f", resolution }),
+        context,
+      )) as Record<string, unknown>;
+
+      assert.deepEqual(Object.keys(resolved).sort(), [
+        "checkId",
+        "evidence",
+        "outputDigest",
+        "receiptId",
+      ]);
+      assert.equal(resolved.receiptId, "receipt-1");
+      assert.equal(
+        resolved.outputDigest,
+        digestOf({ checkId: resolved.checkId, evidence: resolved.evidence }),
+      );
+    },
+  );
+  assert.deepEqual(received, [null, resolution]);
+  assert.deepEqual(
+    harness.invocations.map((invocation) => invocation.input),
+    [{ checkId: "check-f" }, { checkId: "check-f", resolution }],
   );
 });
 

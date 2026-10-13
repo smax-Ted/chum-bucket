@@ -680,6 +680,64 @@ test("results coverage derives judgments from trusted receipt outputs", () => {
   });
 });
 
+test("a selection_required handoff cannot be cited as evidence for a check", () => {
+  const output = {
+    state: "selection_required",
+    checkId: "check-1",
+    handoff: {
+      id: "h1",
+      caseId: "case-1",
+      ordinal: 1,
+      laterHandoffsAllowed: 2,
+      expiresAt: "2026-10-13T00:03:00.000Z",
+      url: "http://127.0.0.1:4173/checkout",
+      target: { intent: "Place order", operation: "click", at: { kind: "action", index: 0 } },
+      candidates: [{ id: "c0", description: "Place order" }],
+      links: [],
+      linksTruncated: false,
+      diagnostics: {
+        code: "uncertain_or_invalid_selection",
+        choice: "none",
+        confidence: 0.9,
+        probability: 0.9,
+        gap: 0.8,
+        probabilityTotal: 1,
+        candidateCount: 2,
+        probabilityCount: 2,
+      },
+    },
+  };
+  const receipt: TrustedToolReceipt = {
+    ...functionalReceipt,
+    id: "receipt-handoff",
+    outputDigest: digestOf(output),
+    output,
+  };
+
+  assert.deepEqual(
+    validateResults(
+      {
+        checks: [
+          {
+            caseId: "case-1",
+            checkId: "check-1",
+            judgment: "blocked",
+            evidence: [{ receiptId: "receipt-handoff", digest: digestOf(output) }],
+          },
+        ],
+      },
+      { role: "ac", cases: plan.cases, checks: [functionalCheck], receipts: [receipt] },
+    ),
+    {
+      kind: "rejected",
+      issues: [
+        "receipt receipt-handoff does not carry a matching check result",
+        "check check-1 has no trusted evidence",
+      ],
+    },
+  );
+});
+
 test("results validation rejects fabricated evidence, wrong judgments and missing coverage", () => {
   const context = {
     role: "ac" as const,

@@ -8,11 +8,12 @@ import {
   extractJson,
   observeStream,
   restoreDesignCapture,
+  rolePassTurns,
 } from "../../../server/harness/testing-child";
 import { assembleRequirements, digestOf } from "../../../server/harness/testing-domain";
 import { roleFeedbackPrompt } from "../../../server/harness/prompts";
-import type { TestingExecution } from "../../../server/harness/testing-store";
-import { delegationInputSchema } from "../../../shared/testing";
+import { hostTestingRuntime, type TestingExecution } from "../../../server/harness/testing-store";
+import { ROLE_IDS, delegationInputSchema } from "../../../shared/testing";
 
 const { scriptedEvents } = createRequire(import.meta.url)(
   "../../fixtures/testing-runtime-external-fixture.mjs",
@@ -54,6 +55,20 @@ test("source read feedback names unread sources without dumping read text and st
   );
   assert.equal(bounded.length, "Private validation failed: ".length + 20 * 512 + 19 * 2);
   assert.equal(bounded.includes("20:"), false);
+});
+
+test("AC and UI first passes get 18 of their 20 turns while planner and atlassian keep 6, each with 2 feedback turns", () => {
+  const runtime = hostTestingRuntime({ model: "owner-model", build: "owner-build" });
+
+  assert.deepEqual(
+    ROLE_IDS.map((role) => [role, rolePassTurns(runtime, role)]),
+    [
+      ["atlassian", { initial: 6, feedback: 2 }],
+      ["planner", { initial: 6, feedback: 2 }],
+      ["ac", { initial: 18, feedback: 2 }],
+      ["ui", { initial: 18, feedback: 2 }],
+    ],
+  );
 });
 
 test("design capture rejects truncated output, the wrong node, and missing properties", () => {

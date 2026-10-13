@@ -5,9 +5,12 @@ import {
   type BrowserOutput,
   type DesignCapture,
   type FixtureIdentity,
+  type HandoffResolution,
+  type HandoffSnapshot,
   type PlanCase,
   type PlanCheck,
   type PublicEvidence,
+  type SelectionRequired,
 } from "../../../shared/testing";
 import { digestOf, withinTolerance } from "../testing-domain";
 
@@ -17,10 +20,18 @@ export type BrowserOutcome = (
 ) &
   Readonly<{ browser?: PublicEvidence["browser"] }>;
 
+export type BrowserRunOutcome =
+  | BrowserOutcome
+  | Readonly<{ state: "selection_required"; handoff: HandoffSnapshot }>;
+
 export type BrowserAdapter = Readonly<{
   identity: FixtureIdentity;
   adapterVersion: string;
-  run: (planCase: PlanCase, check: PlanCheck) => Promise<BrowserOutcome>;
+  run: (
+    planCase: PlanCase,
+    check: PlanCheck,
+    resolution?: HandoffResolution,
+  ) => Promise<BrowserRunOutcome>;
 }>;
 
 export type BrowserCheckScope = Readonly<{
@@ -249,7 +260,7 @@ async function browserOutput(
   casesByCheck: ReadonlyMap<string, PlanCase>,
   design: TrustedDesign,
   raw: unknown,
-): Promise<BrowserOutput> {
+): Promise<BrowserOutput | SelectionRequired> {
   const input = useBrowserInputSchema.parse(raw);
   const check = scope.checks.find((item) => item.id === input.checkId);
 
@@ -263,10 +274,14 @@ async function browserOutput(
     throw new Error(`Scoped check ${input.checkId} is not assigned to a canonical case`);
   }
 
-  const outcome = await scope.fixture.run(planCase, check);
+  const outcome = await scope.fixture.run(planCase, check, input.resolution);
 
   if (!outcome) {
     throw new Error(`Browser adapter returned no outcome for ${input.checkId}`);
+  }
+
+  if (outcome.state === "selection_required") {
+    return { state: "selection_required", checkId: input.checkId, handoff: outcome.handoff };
   }
 
   return {
@@ -276,7 +291,7 @@ async function browserOutput(
 }
 
 const browserToolDescription =
-  "Verify one assigned canonical check. The host owns actions, targets, observations and expectations. Supply only checkId; never supply selectors or expected values.";
+  "Verify one assigned canonical check. The host owns actions, targets, observations and expectations. Supply checkId, and resolution only to answer the pending handoff of a selection_required result; never supply selectors, URLs or expected values.";
 
 export const verifyAcTool = toolDefinition({
   name: "verify_ac",
@@ -306,7 +321,7 @@ export function createUseBrowserTool(
   assertScopedChecks(scope, casesByCheck);
   const design = trustedDesign(scope);
 
-  return definition.server(async (raw): Promise<BrowserOutput> =>
+  return definition.server(async (raw): Promise<BrowserOutput | SelectionRequired> =>
     browserOutput(scope, casesByCheck, design, raw),
   );
 }
