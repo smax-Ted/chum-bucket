@@ -639,15 +639,12 @@ test("AC role returns Host receipt envelopes and rejects foreign tools", async (
 
       const sandbox = (await tools.executeTool(
         [],
-        modelCall("codemode", {
-          code: "const r = await external_verify_ac({ checkId: 'check-f' }); return r.receiptId;",
-        }),
+        modelCall("codemode", { code: "return typeof external_verify_ac;" }),
         context,
       )) as { success: boolean; result: unknown };
       assert.equal(sandbox.success, true);
-      assert.equal(sandbox.result, "receipt-2");
-      assert.equal(harness.invocations.length, 2);
-      assert.equal(harness.invocations[1]!.route, "codemode");
+      assert.equal(sandbox.result, "undefined");
+      assert.equal(harness.invocations.length, 1);
 
       await assert.rejects(
         () => tools.executeTool([], modelCall("verify_ac", { checkId: "missing" }), context),
@@ -930,6 +927,17 @@ test("UI captures Figma lazily from the requested node and blocks incomplete out
           harness.designInputs[0]!.nativeReceipt.outputDigest,
           digestOf(harness.designInputs[0]!.raw),
         );
+
+        const sandbox = (await tools.executeTool(
+          [],
+          modelCall("codemode", {
+            code: "return [typeof external_get_figma, typeof external_verify_ui];",
+          }),
+          context,
+        )) as { success: boolean; result: unknown };
+        assert.equal(sandbox.success, true);
+        assert.deepEqual(sandbox.result, ["function", "undefined"]);
+        assert.equal(harness.invocations.length, 1);
 
         const browser = (await tools.executeTool(
           [],

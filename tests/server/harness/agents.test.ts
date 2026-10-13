@@ -353,8 +353,12 @@ test("QA roles keep their capability policy inside the shared registry", () => {
   assert.equal(allowsTool("planner", "use_browser", "direct"), false);
   assert.deepEqual(toolNamesFor("ac"), ["verify_ac"]);
   assert.equal(allowsTool("ac", "jira_get_issue", "direct"), false);
+  assert.equal(allowsTool("ac", "verify_ac", "direct"), true);
+  assert.equal(allowsTool("ac", "verify_ac", "codemode"), false);
   assert.deepEqual([...toolNamesFor("ui")].sort(), ["get_figma", "verify_ui"]);
-  assert.equal(allowsTool("ui", "verify_ui", "codemode"), true);
+  assert.equal(allowsTool("ui", "verify_ui", "direct"), true);
+  assert.equal(allowsTool("ui", "verify_ui", "codemode"), false);
+  assert.equal(allowsTool("ui", "get_figma", "codemode"), true);
 });
 
 test("main and delegation text describe evidence origin instead of always claiming mock-only", () => {

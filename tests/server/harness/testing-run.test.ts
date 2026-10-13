@@ -4,8 +4,10 @@ import { test } from "node:test";
 import type { AdapterYieldChunk } from "@tanstack/ai";
 import { DELEGATE_TASK_TOOL, withRunTools } from "../../../server/harness/tools";
 import {
+  GuardDenial,
   designProperties,
   extractJson,
+  failureReason,
   observeStream,
   restoreDesignCapture,
   rolePassTurns,
@@ -426,4 +428,21 @@ test("role output that is not valid JSON is reported without echoing the model t
     );
   }
   assert.deepEqual(extractJson('prefix {"cases":[]} suffix'), { cases: [] });
+});
+
+test("a guard denial keeps its reason through the abort while a plain cancel still reads cancelled", () => {
+  const denied = new AbortController();
+  denied.abort(new GuardDenial("budget"));
+  assert.equal(failureReason(new Error("budget"), denied.signal), "budget");
+
+  const cancelled = new AbortController();
+  cancelled.abort();
+  assert.equal(failureReason(new Error("budget"), cancelled.signal), "cancelled");
+
+  const cancelledFirst = new AbortController();
+  cancelledFirst.abort();
+  cancelledFirst.abort(new GuardDenial("budget"));
+  assert.equal(failureReason(new Error("budget"), cancelledFirst.signal), "cancelled");
+
+  assert.equal(failureReason(new Error("x"), new AbortController().signal), "x");
 });
