@@ -406,7 +406,9 @@ async function openCasePage(
   signal: AbortSignal,
   denyNavigation: () => void,
 ): Promise<Page> {
-  session.browser = await chromium.launch({ headless: true, timeout: 15_000 });
+  // toogle demo or not
+  session.browser = await chromium.launch({ headless: false, slowMo: 500, timeout: 15_000 });
+  // session.browser = await chromium.launch({ headless: true, timeout: 15_000 });
   signal.throwIfAborted();
   session.context = await session.browser.newContext({
     viewport: { width: 1280, height: 900 },

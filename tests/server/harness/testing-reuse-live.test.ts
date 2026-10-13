@@ -1,0 +1,207 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { test } from "node:test";
+import {
+  artifactRefSchema,
+  delegationInputSchema,
+  type TestingRequestInput,
+} from "../../../shared/testing";
+import {
+  canonicalizePlan,
+  deriveReport,
+  digestOf,
+  planPayloadSchema,
+  requirementsPayloadSchema,
+  validateReuse,
+} from "../../../server/harness/testing-domain";
+import {
+  closureDecisions,
+  hostTestingRuntime,
+  resultTaskContext,
+  type StoredArtifactRow,
+} from "../../../server/harness/testing-store";
+import { testRunIdSchema } from "../../../shared/testing";
+
+const fixture = JSON.parse(
+  await readFile(new URL("./fixtures/fetm78-reuse.json", import.meta.url), "utf8"),
+);
+const rows = fixture.rows as StoredArtifactRow[];
+const requirementsRow = rows[0]!;
+const planRow = rows[1]!;
+const requirements = requirementsPayloadSchema.parse(requirementsRow.payload);
+const plan = planPayloadSchema.parse(planRow.payload);
+const host = hostTestingRuntime(fixture.snapshot);
+
+function intentFor(raw: unknown): TestingRequestInput {
+  const input = delegationInputSchema.parse(raw);
+  assert.ok(input.role === "ac" || input.role === "ui");
+  return {
+    goal: requirements.goal,
+    sources: requirements.captures.map((capture) => capture.reference),
+    criteria: requirements.selection,
+    ...resultTaskContext(plan, input),
+    existingArtifacts: rows.map((row) => artifactRefSchema.parse(row.ref)),
+    task: { version: 2, input },
+  };
+}
+
+function decide(intent: TestingRequestInput, candidates = rows) {
+  return closureDecisions({
+    threadId: planRow.threadId,
+    intent,
+    refs: rows.map((row) => row.ref),
+    rows: new Map(candidates.map((row) => [row.ref, row])),
+    host,
+  });
+}
+
+function envelope(row: StoredArtifactRow) {
+  return {
+    kind: row.kind,
+    ref: row.ref,
+    digest: row.payloadDigest,
+    threadId: row.threadId,
+    payload: row.payload,
+    scopeDigest: row.scopeDigest,
+    dependencies: row.dependencies,
+    origin: row.origin,
+  };
+}
+
+const planContext = {
+  requirements,
+  requirementsDigest: digestOf(requirements),
+  goal: requirements.goal,
+  targetUrl: plan.targetUrl,
+  design: plan.design,
+  bounds: host.bounds,
+};
+
+test("stored live-shaped artifacts pass digest, scope and canonical reuse before URL execution", () => {
+  assert.equal(
+    validateReuse(envelope(requirementsRow), {
+      requested: "requirements",
+      threadId: requirementsRow.threadId,
+      expectedScopeDigest: requirementsRow.scopeDigest,
+    }).kind,
+    "accepted",
+  );
+  assert.equal(
+    validateReuse(envelope(planRow), {
+      requested: "plan",
+      threadId: planRow.threadId,
+      expectedScopeDigest: planRow.scopeDigest,
+      planContext,
+    }).kind,
+    "accepted",
+  );
+  assert.equal(requirements.criteria.length, 10);
+  assert.equal(plan.targetUrl, null);
+  assert.equal(plan.assignments.ac.length, 20);
+  assert.equal(plan.assignments.ui.length, 7);
+});
+
+test("URL follow-up accepts explicit assigned checks despite unresolved requirements and deferred outcomes", () => {
+  for (const input of fixture.inputs) {
+    const decisions = decide(intentFor(input));
+    assert.deepEqual(
+      decisions.map((decision) => ({ ref: decision.ref, kind: decision.kind })),
+      rows.map((row) => ({ ref: row.ref, kind: "accepted" })),
+    );
+  }
+  const report = deriveReport({
+    runId: testRunIdSchema.parse("run-report"),
+    rootOutcome: "completed",
+    requirements,
+    plan,
+    acResults: null,
+    uiResults: null,
+    unresolvedSources: [],
+    artifacts: [],
+    progressVersion: 1,
+    outcomes: {},
+  });
+  assert.equal(report.acceptance.verdict, "blocked");
+  assert.deepEqual(report.requirements?.unresolved, requirements.unresolved);
+  assert.ok(report.coverage.some((row) => row.state === "deferred"));
+});
+
+test("assigned-check reuse still rejects altered snapshots, source scope, digests and provenance", () => {
+  const intent = intentFor(fixture.inputs[0]);
+  const variants: StoredArtifactRow[] = [
+    { ...requirementsRow, metadata: {} },
+    { ...requirementsRow, scopeDigest: "altered-scope" },
+    { ...requirementsRow, payloadDigest: "altered-digest" },
+    { ...requirementsRow, origin: { ...requirementsRow.origin, role: "planner" } },
+    { ...requirementsRow, payload: { ...requirements, captures: [] } },
+    { ...requirementsRow, threadId: "foreign-thread" },
+  ];
+  for (const candidate of variants) {
+    assert.ok(
+      decide(intent, [candidate, planRow]).every((decision) => decision.kind === "rejected"),
+    );
+  }
+  assert.ok(
+    decide({ ...intent, task: undefined }).every((decision) => decision.kind === "rejected"),
+  );
+  const input = delegationInputSchema.parse(fixture.inputs[0]);
+  assert.ok(input.role === "ac" || input.role === "ui");
+  assert.throws(
+    () => resultTaskContext({ ...plan, targetUrl: "https://bound.example.test" }, input),
+    /Plan target URL is incompatible/,
+  );
+});
+
+test("27 real-shaped requirements fit grouped deferred scenarios within 20 cases and 80 checks", () => {
+  const expanded = requirementsPayloadSchema.parse(fixture.expandedRequirements);
+  const groups = Array.from({ length: 3 }, (_, index) => ({
+    id: `deferred-scenario-${index}`,
+    title: [
+      "Functional cart behavior",
+      "Shared page appearance",
+      "Interactive and responsive appearance",
+    ][index]!,
+    steps: [
+      "Use the visible page navigation to open the relevant product or cart page",
+      "Inspect each source-bound expected outcome",
+    ],
+    reason:
+      "These source expectations require manual verification with setup or properties unavailable to the runner",
+    expectations: expanded.criteria.slice(index * 9, index * 9 + 9).map((criterion) => ({
+      criterionId: criterion.id,
+      expectedObservation: criterion.statement,
+    })),
+  }));
+  const context = {
+    ...planContext,
+    requirements: expanded,
+    requirementsDigest: digestOf(expanded),
+    goal: expanded.goal,
+    design: null,
+  };
+  const result = canonicalizePlan({ cases: [], deferredCases: groups }, context);
+  assert.equal(result.kind, "accepted");
+  if (result.kind !== "accepted") return;
+  assert.equal(result.value.deferredCases?.length, 3);
+  assert.equal(result.value.deferredCases?.flatMap((item) => item.expectations).length, 27);
+  assert.deepEqual(result.value.assignments, { ac: [], ui: [] });
+  const report = deriveReport({
+    runId: testRunIdSchema.parse("run-grouped"),
+    rootOutcome: "completed",
+    requirements: expanded,
+    plan: result.value,
+    acResults: null,
+    uiResults: null,
+    unresolvedSources: [],
+    artifacts: [],
+    progressVersion: 1,
+    outcomes: {},
+  });
+  assert.deepEqual(
+    report.coverage.map((row) => row.criterionId),
+    expanded.criteria.map((criterion) => criterion.id),
+  );
+  assert.ok(report.coverage.every((row) => row.state === "deferred"));
+  assert.equal(report.acceptance.verdict, "blocked");
+  assert.deepEqual(report.results, { ac: [], ui: [] });
+});

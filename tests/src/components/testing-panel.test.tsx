@@ -737,3 +737,138 @@ test("a cancelling individual card retains its actual tool activity", () => {
   assert.match(markup, /取消中/);
   assert.doesNotMatch(markup, /Test Planner|Test AC|Test UI/);
 });
+
+const deferredPlan: PublicPlan = {
+  cases: [],
+  deferredCases: [
+    {
+      id: "deferred-ui-1",
+      title: "加入購物車按鈕樣式",
+      steps: ["開啟商品頁", "檢查按鈕外觀"],
+      expectations: [
+        { criterionId: "crit:UI-AC-1", expectedObservation: "背景色 #2D6A4F，文字白色 16px" },
+        { criterionId: "crit:UI-AC-2", expectedObservation: "停用按鈕維持原色且整體不透明度 45%" },
+      ],
+      reason: "Jira 描述的樣式值沒有綁定設計稿",
+    },
+  ],
+  assignments: { ac: [], ui: [] },
+};
+
+function plannerView(
+  result: NonNullable<TestView["task"]>["result"],
+  planner: ProgressRow = { status: "terminal", outcome: "completed", reasonCode: "completed" },
+): TestView {
+  return {
+    ...activeView({ ...completedRows, planner }),
+    state: "finished",
+    task: { version: 2, role: "planner", summary: "Plan FETM-78", result },
+    report: null,
+  };
+}
+
+test("deferred cases render separately from executable cases and are never shown as results", () => {
+  const markup = plainText(
+    renderToStaticMarkup(
+      <TestingPanel
+        view={plannerView({ kind: "plan", ref: availableArtifact, payload: deferredPlan })}
+      />,
+    ),
+  );
+  assert.match(markup, /延後案例/);
+  assert.match(markup, /加入購物車按鈕樣式/);
+  assert.match(markup, /crit:UI-AC-1/);
+  assert.match(markup, /開啟商品頁/);
+  assert.match(markup, /背景色 #2D6A4F，文字白色 16px/);
+  assert.match(markup, /準則 crit:UI-AC-2，預期：停用按鈕維持原色且整體不透明度 45%/);
+  assert.match(markup, /Jira 描述的樣式值沒有綁定設計稿/);
+  assert.match(markup, /未自動執行/);
+  assert.match(markup, /data-deferred-case-id="deferred-ui-1"/);
+  assert.doesNotMatch(markup, /瀏覽器符合|模擬符合/);
+  const parsed = parseTestView(
+    plannerView({ kind: "plan", ref: availableArtifact, payload: deferredPlan }),
+  );
+  assert.ok(parsed);
+  const reloaded = plainText(renderToStaticMarkup(<TestingPanel view={parsed} />));
+  assert.match(reloaded, /準則 crit:UI-AC-1，預期：背景色 #2D6A4F，文字白色 16px/);
+  assert.match(reloaded, /準則 crit:UI-AC-2，預期：停用按鈕維持原色且整體不透明度 45%/);
+});
+
+test("requirements list host-derived Figma links with source, label, file and node", () => {
+  const markup = plainText(
+    renderToStaticMarkup(
+      <TestingPanel
+        view={plannerView({
+          kind: "requirements",
+          ref: artifact,
+          payload: {
+            ...requirements,
+            links: [
+              {
+                source: { kind: "jira", issueKey: "FETM-78" },
+                url: "https://www.figma.com/design/DiPISvcpFmaPsK9QonpeDf?node-id=1-81",
+                label: "商品頁 桌面",
+                fileKey: "DiPISvcpFmaPsK9QonpeDf",
+                nodeId: "1:81",
+              },
+              {
+                source: { kind: "jira", issueKey: "FETM-78" },
+                url: "https://www.figma.com/design/DiPISvcpFmaPsK9QonpeDf",
+                fileKey: "DiPISvcpFmaPsK9QonpeDf",
+              },
+            ],
+          },
+        })}
+      />,
+    ),
+  );
+  assert.match(markup, /Figma 連結/);
+  assert.match(markup, /商品頁 桌面/);
+  assert.match(markup, /Jira FETM-78/);
+  assert.match(markup, /節點 1:81/);
+  assert.match(markup, /整份檔案/);
+  assert.match(markup, /data-figma-file="DiPISvcpFmaPsK9QonpeDf"/);
+});
+
+test("deferred coverage and not-required execution roles are labeled truthfully", () => {
+  const view = finishedView(
+    report({
+      plan: deferredPlan,
+      results: { ac: [], ui: [] },
+      coverage: [
+        { criterionId: "crit:UI-AC-1", caseId: "deferred-ui-1", checkId: null, state: "deferred" },
+      ],
+      roleOutcomes: {
+        ...completedRows,
+        ac: { status: "not_required", reason: "no_functional_checks" },
+      },
+    }),
+    { ...completedRows, ac: { status: "not_required", reason: "no_functional_checks" } },
+  );
+  const markup = plainText(renderToStaticMarkup(<TestingPanel view={view} />));
+  assert.match(markup, /data-coverage-state="deferred"/);
+  assert.match(markup, /延後，未自動執行/);
+  assert.match(markup, /無功能檢查，不需要派工/);
+});
+
+test("a failed role shows its bounded validator issues next to the reason code", () => {
+  const markup = plainText(
+    renderToStaticMarkup(
+      <TestingPanel
+        view={plannerView(null, {
+          status: "terminal",
+          outcome: "failed",
+          reasonCode: "proposal_rejected",
+          issues: [
+            "criterion crit:UI-AC-2 has no executable check or deferred case",
+            "deferredCases[0].steps: Too small",
+          ],
+        })}
+      />,
+    ),
+  );
+  assert.match(markup, /proposal_rejected/);
+  assert.match(markup, /驗證問題/);
+  assert.match(markup, /crit:UI-AC-2 has no executable check or deferred case/);
+  assert.match(markup, /deferredCases\[0\]\.steps: Too small/);
+});

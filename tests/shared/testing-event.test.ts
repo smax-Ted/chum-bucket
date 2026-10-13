@@ -15,9 +15,17 @@ import {
   TESTING_PROJECTION_EVENT,
   parsePublishedTesting,
   parsePublishedTasks,
+  parseTestView,
   parseTestingProjectionEvent,
   testingProjectionEvent,
 } from "../../shared/testing-event";
+
+import {
+  validateRequirements,
+  publicTaskArtifact,
+  projectProgress,
+  deriveReport,
+} from "../../server/harness/testing-domain";
 
 const runId = testRunIdSchema.parse("run-1");
 const otherRunId = testRunIdSchema.parse("run-2");
@@ -184,6 +192,77 @@ function chunk(value: unknown) {
   return { type: EventType.CUSTOM, name: TESTING_PROJECTION_EVENT, value, timestamp: 1 };
 }
 
+test("legal repeated captures retain more than 100 source-bound links through projection and hydration", () => {
+  const source = { kind: "jira" as const, issueKey: "FETM-78" };
+  const captures = Array.from({ length: 6 }, (_, index) => ({
+    reference: source,
+    digest: `capture-${index}`,
+    anchors: ["AC-1"],
+    capturedAt: "2026-10-13T00:00:00Z",
+    links: Array.from({ length: 20 }, (_, node) => ({
+      url: `https://www.figma.com/design/File${index}?node-id=1-${node}`,
+      fileKey: `File${index}`,
+      nodeId: `1:${node}`,
+    })),
+  }));
+  const validated = validateRequirements(
+    {
+      criteria: [{ key: "AC-1", statement: "Product is visible", source, anchor: "AC-1" }],
+      unresolved: [],
+    },
+    { goal: "Plan linked sources", selection: { kind: "all" }, captures },
+  );
+  assert.equal(validated.kind, "accepted");
+  if (validated.kind !== "accepted") return;
+  const result = publicTaskArtifact({
+    ref: artifact,
+    kind: "requirements",
+    payload: validated.value,
+  });
+  assert.equal(result.kind, "requirements");
+  if (result.kind !== "requirements") return;
+  const expectedLinks = captures.flatMap((capture) =>
+    capture.links.map((link) => ({ source, ...link })),
+  );
+  assert.equal(expectedLinks.length, 120);
+  assert.deepEqual(result.payload.links, expectedLinks);
+  const view: TestView = {
+    runId,
+    state: "finished",
+    report: null,
+    reuse: [],
+    availableArtifacts: [],
+    progress: projectProgress(1, {}, null),
+    task: { version: 2, role: "atlassian", summary: "Read linked requirements", result },
+  };
+  assert.deepEqual(parseTestView(view), view);
+  assert.deepEqual(parseTestingProjectionEvent(testingProjectionEvent(view)), view);
+  assert.deepEqual(parsePublishedTasks({ publishedTasks: [view] }), [view]);
+  const projectedReport = deriveReport({
+    runId,
+    rootOutcome: "completed",
+    requirements: validated.value,
+    plan: null,
+    acResults: null,
+    uiResults: null,
+    unresolvedSources: [],
+    artifacts: [],
+    progressVersion: 1,
+    outcomes: {},
+  });
+  const reportView: TestView = {
+    ...view,
+    state: "finished",
+    task: undefined,
+    report: projectedReport,
+  };
+  assert.deepEqual(parseTestView(reportView)?.report?.requirements?.links, expectedLinks);
+  assert.deepEqual(
+    parsePublishedTasks({ publishedTasks: [reportView] })[0]?.report?.requirements?.links,
+    expectedLinks,
+  );
+});
+
 test("the factory round-trips a finished public view with all metadata preserved", () => {
   assert.deepEqual(parseTestingProjectionEvent(testingProjectionEvent(finishedView)), finishedView);
 });
@@ -327,4 +406,119 @@ test("hydration payloads expose only a structurally valid published view", () =>
     null,
   );
   assert.equal(parsePublishedTesting("unexpected"), null);
+});
+
+const deferredCase = {
+  id: "deferred-ui-1",
+  title: "按鈕樣式",
+  steps: ["開啟商品頁", "檢查加入購物車按鈕"],
+  expectations: [{ criterionId: "criterion-1", expectedObservation: "背景色 #2D6A4F，文字白色" }],
+  reason: "Jira 描述的樣式值沒有綁定設計稿",
+};
+
+const figmaLink = {
+  source: { kind: "jira" as const, issueKey: "FETM-78" },
+  url: "https://www.figma.com/design/DiPISvcpFmaPsK9QonpeDf?node-id=1-81",
+  label: "商品頁 桌面",
+  fileKey: "DiPISvcpFmaPsK9QonpeDf",
+  nodeId: "1:81",
+};
+
+function taskView(
+  result: NonNullable<TestView["task"]>["result"],
+  rowsOverride = rows(),
+): TestView {
+  return {
+    runId,
+    state: "finished",
+    report: null,
+    reuse: [],
+    availableArtifacts: [],
+    progress: { version: 4, rows: rowsOverride },
+    task: { version: 2, role: "planner", summary: "Plan FETM-78", result },
+  };
+}
+
+test("task plans round-trip deferred cases and requirements round-trip host Figma links", () => {
+  const plan = taskView({
+    ref: otherArtifact,
+    kind: "plan",
+    payload: { cases: [], deferredCases: [deferredCase], assignments: { ac: [], ui: [] } },
+  });
+  assert.deepEqual(parseTestingProjectionEvent(testingProjectionEvent(plan)), plan);
+  assert.deepEqual(parsePublishedTasks({ publishedTasks: [plan] }), [plan]);
+  const requirements = taskView({
+    ref: artifact,
+    kind: "requirements",
+    payload: { ...report.requirements!, links: [figmaLink] },
+  });
+  assert.deepEqual(parseTestingProjectionEvent(testingProjectionEvent(requirements)), requirements);
+});
+
+test("plans and requirements without the optional fields keep their exact shape", () => {
+  const legacy = taskView({
+    ref: otherArtifact,
+    kind: "plan",
+    payload: { cases: report.plan!.cases, assignments: { ac: ["check-1"], ui: [] } },
+  });
+  const parsed = parseTestingProjectionEvent(testingProjectionEvent(legacy));
+  assert.deepEqual(parsed, legacy);
+  assert.equal(
+    parsed?.task?.result?.kind === "plan" && "deferredCases" in parsed.task.result.payload,
+    false,
+  );
+  const hostile = taskView({
+    ref: otherArtifact,
+    kind: "plan",
+    payload: {
+      cases: [],
+      deferredCases: [{ ...deferredCase, steps: [] }],
+      assignments: { ac: [], ui: [] },
+    },
+  });
+  assert.equal(parseTestingProjectionEvent(chunk(hostile)), null);
+});
+
+test("reports round-trip deferred coverage, not-required roles and bounded failure issues", () => {
+  const issues = ["criterion crit:UI-AC-2 has no executable check or deferred case"];
+  const view: TestView = {
+    ...finishedView,
+    report: {
+      ...report,
+      plan: { cases: [], deferredCases: [deferredCase], assignments: { ac: [], ui: [] } },
+      coverage: [
+        { criterionId: "criterion-1", caseId: "deferred-ui-1", checkId: null, state: "deferred" },
+      ],
+      roleOutcomes: {
+        ...rows(),
+        ac: { status: "not_required", reason: "no_functional_checks" },
+        planner: { status: "terminal", outcome: "failed", reasonCode: "proposal_rejected", issues },
+      },
+    },
+    progress: {
+      version: 3,
+      rows: {
+        ...rows(),
+        ac: { status: "not_required", reason: "no_functional_checks" },
+        planner: { status: "terminal", outcome: "failed", reasonCode: "proposal_rejected", issues },
+      },
+    },
+  };
+  assert.deepEqual(parseTestingProjectionEvent(testingProjectionEvent(view)), view);
+  const tooMany = {
+    ...view,
+    progress: {
+      version: 3,
+      rows: {
+        ...rows(),
+        planner: {
+          status: "terminal" as const,
+          outcome: "failed" as const,
+          reasonCode: "proposal_rejected",
+          issues: Array.from({ length: 9 }, (_, index) => `issue ${index}`),
+        },
+      },
+    },
+  };
+  assert.equal(parseTestingProjectionEvent(chunk(tooMany)), null);
 });

@@ -1628,9 +1628,10 @@ export async function recordRoleFailure(
   ownerRunId: string,
   taskId: string,
   reasonCode: string,
+  issues?: readonly string[],
 ): Promise<{ duplicate: boolean }> {
   return withTestingRoot(ownerRunId, (tx) =>
-    recordRoleFailureInTransaction(tx, ownerRunId, taskId, reasonCode),
+    recordRoleFailureInTransaction(tx, ownerRunId, taskId, reasonCode, issues),
   );
 }
 

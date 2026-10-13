@@ -45,6 +45,8 @@ import {
   canonicalizePlan,
   checksForRole,
   deriveReport,
+  publicIssues,
+  schemaIssueMessages,
   digestOf,
   planScopeDigest,
   planPayloadSchema,
@@ -354,7 +356,11 @@ type DecisionBody =
       ref: string;
       origin: "produced" | "reused" | "recovered";
     }>
-  | Readonly<{ kind: "not_required"; role: "ui"; reason: "no_style_checks" }>
+  | Readonly<{
+      kind: "not_required";
+      role: "ac" | "ui";
+      reason: "no_style_checks" | "no_functional_checks";
+    }>
   | Readonly<{ kind: "dispatch"; role: RoleId; taskId: string; childWorkflowId: string }>
   | Readonly<{
       kind: "task_result";
@@ -369,6 +375,7 @@ type DecisionBody =
       taskId: string;
       execution: Exclude<TaskOutcome, "completed">;
       reasonCode: string;
+      issues?: readonly string[];
     }>
   | Readonly<{ kind: "cancel"; acceptedAt: string }>
   | Readonly<{ kind: "terminal"; outcome: RootRunOutcome; reasonCode: string }>;
@@ -490,9 +497,24 @@ function rowKindRejection(row: StoredArtifactRow): ReuseRejection | null {
   return isRecord(row.payload) ? null : "raw_blob";
 }
 
+type ReusePurpose = "planning" | "execution" | "assigned_checks";
+
+function reusePurpose(role: RoleId | undefined): ReusePurpose {
+  if (role === "planner") {
+    return "planning";
+  }
+
+  if (role === "ac" || role === "ui") {
+    return "assigned_checks";
+  }
+
+  return "execution";
+}
+
 function dependenciesRejected(
   row: StoredArtifactRow,
   rows: ReadonlyMap<string, StoredArtifactRow>,
+  purpose: ReusePurpose,
 ): boolean {
   if (row.dependencies.some((dependency) => !rows.has(dependency))) {
     return true;
@@ -504,7 +526,10 @@ function dependenciesRejected(
 
   const requirements = rows.get(row.dependencies[0] ?? "");
 
-  return !requirements || !reusableSnapshot(requirements);
+  return (
+    !requirements ||
+    !reusableSnapshot(requirements, purpose === "assigned_checks" ? purpose : "execution")
+  );
 }
 
 function snapshotRejection(
@@ -522,16 +547,13 @@ function snapshotRejection(
     return "incompatible_snapshot";
   }
 
-  if (dependenciesRejected(row, input.rows)) {
+  const purpose = reusePurpose(input.intent.task?.input.role);
+
+  if (dependenciesRejected(row, input.rows, purpose)) {
     return "dependency_rejected";
   }
 
-  return reusableSnapshot(
-    row,
-    input.intent.task?.input.role === "planner" ? "planning" : "execution",
-  )
-    ? null
-    : "incomplete";
+  return reusableSnapshot(row, purpose) ? null : "incomplete";
 }
 
 function storedRowRejection(
@@ -567,17 +589,14 @@ function classifyRef(ref: string, input: ClassifyInput): ReuseDecision {
   return reusePlan(parsedRef.data, row, input.threadId, input.intent, input.rows, input.host);
 }
 
-function reusableSnapshot(
-  row: StoredArtifactRow,
-  purpose: "planning" | "execution" = "execution",
-): boolean {
+function reusableSnapshot(row: StoredArtifactRow, purpose: ReusePurpose = "execution"): boolean {
   const metadata = metadataSchema.safeParse(row.metadata);
 
   if (!metadata.success) {
     return false;
   }
 
-  if (row.kind === "requirements" && purpose === "planning") {
+  if ((row.kind === "requirements" && purpose === "planning") || purpose === "assigned_checks") {
     return true;
   }
 
@@ -638,10 +657,11 @@ function reusePlan(
     }),
   });
 
-  if (
-    requirementsValidation.kind === "rejected" ||
-    requirementsValidation.value.kind !== "requirements"
-  ) {
+  if (requirementsValidation.kind === "rejected") {
+    return rejectedDecision(ref, mapIssue(requirementsValidation.issues[0]));
+  }
+
+  if (requirementsValidation.value.kind !== "requirements") {
     return rejectedDecision(ref, "dependency_rejected");
   }
 
@@ -818,7 +838,12 @@ export async function admitAttachedInTransaction(
   const parsed = delegationInputSchema.safeParse(intent);
 
   if (!callId.success || !parsed.success) {
-    throw new TestingPersistenceError(400, "Invalid testing intent");
+    const issues = parsed.success ? [] : publicIssues(schemaIssueMessages(parsed.error, "intent"));
+
+    throw new TestingPersistenceError(
+      400,
+      issues.length > 0 ? `Invalid testing intent: ${issues.join("; ")}` : "Invalid testing intent",
+    );
   }
 
   const operationId = attachedOperationId(parentRunId, callId.data);
@@ -928,7 +953,7 @@ function requireDependency(
   return artifact;
 }
 
-function resultTaskContext(
+export function resultTaskContext(
   plan: CanonicalPlan,
   input: Extract<DelegationInput, { role: "ac" | "ui" }>,
 ) {
@@ -937,7 +962,10 @@ function resultTaskContext(
   }
 
   if (plan.assignments[input.role].length === 0) {
-    throw new TestingPersistenceError(400, "Plan has no checks for the delegated role");
+    throw new TestingPersistenceError(
+      400,
+      "Plan has no automated checks for the delegated role; deferred cases are not executable",
+    );
   }
 
   return { targetUrl: input.targetUrl, design: plan.design ?? undefined };
@@ -1096,14 +1124,15 @@ async function insertOperation(
 
   const plan = input.prepared.reused.find((row) => row.kind === "plan");
 
-  if (plan && styleAssignments(plan.payload).length === 0) {
+  for (const role of plan ? unassignedRoles(plan.payload) : []) {
     await appendDecision(
       tx,
       inserted,
-      "not_required:ui",
-      { kind: "not_required", role: "ui", reason: "no_style_checks" },
+      `not_required:${role}`,
+      { kind: "not_required", role, reason: NOT_REQUIRED_REASON[role] },
       index,
     );
+    index += 1;
   }
 
   if (input.prepared.pinRefs.length > 0) {
@@ -1118,20 +1147,26 @@ async function insertOperation(
   return admissionFrom(inserted, input.prepared.decisions, input.prepared.pinRefs);
 }
 
-function styleAssignments(payload: unknown): readonly string[] {
+const NOT_REQUIRED_REASON = { ac: "no_functional_checks", ui: "no_style_checks" } as const;
+
+function assignedChecks(payload: unknown, role: "ac" | "ui"): readonly string[] {
   if (!payload || typeof payload !== "object" || !("assignments" in payload)) {
     return [];
   }
 
   const assignments = payload.assignments;
 
-  if (!assignments || typeof assignments !== "object" || !("ui" in assignments)) {
+  if (!assignments || typeof assignments !== "object" || !(role in assignments)) {
     return [];
   }
 
-  return Array.isArray(assignments.ui)
-    ? assignments.ui.filter((item) => typeof item === "string")
-    : [];
+  const assigned = (assignments as Record<string, unknown>)[role];
+
+  return Array.isArray(assigned) ? assigned.filter((item) => typeof item === "string") : [];
+}
+
+function unassignedRoles(payload: unknown): readonly ("ac" | "ui")[] {
+  return (["ac", "ui"] as const).filter((role) => assignedChecks(payload, role).length === 0);
 }
 
 async function appendDecision(
@@ -2202,11 +2237,11 @@ async function recordCandidateDecisions(
     origin: "produced",
   });
 
-  if (accepted.kind === "plan" && styleAssignments(accepted.payload).length === 0) {
-    await appendDecision(tx, operation, "not_required:ui", {
+  for (const role of accepted.kind === "plan" ? unassignedRoles(accepted.payload) : []) {
+    await appendDecision(tx, operation, `not_required:${role}`, {
       kind: "not_required",
-      role: "ui",
-      reason: "no_style_checks",
+      role,
+      reason: NOT_REQUIRED_REASON[role],
     });
   }
 }
@@ -2952,7 +2987,12 @@ function resultOutcome(role: RoleId, decisions: readonly DecisionBody[]): RoleOu
 
   return result.execution === "completed"
     ? { kind: "terminal", outcome: "completed", reasonCode: "completed" }
-    : { kind: "terminal", outcome: result.execution, reasonCode: result.reasonCode };
+    : {
+        kind: "terminal",
+        outcome: result.execution,
+        reasonCode: result.reasonCode,
+        ...(result.issues ? { issues: result.issues } : {}),
+      };
 }
 
 function dependencyPending(role: RoleId, decisions: readonly DecisionBody[]): boolean {
@@ -3565,6 +3605,7 @@ export async function recordRoleFailureInTransaction(
   ownerRunId: string,
   taskId: string,
   reasonCode: string,
+  issues?: readonly string[],
 ): Promise<{ duplicate: boolean }> {
   const reason = roleFailureSchema.safeParse(reasonCode);
 
@@ -3604,6 +3645,7 @@ export async function recordRoleFailureInTransaction(
     taskId: task.id,
     execution,
     reasonCode: reason.data,
+    ...(issues && issues.length > 0 ? { issues: publicIssues(issues) } : {}),
   });
 
   return { duplicate: false };

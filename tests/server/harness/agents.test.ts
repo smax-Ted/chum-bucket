@@ -21,7 +21,12 @@ import {
   verifyAcTool,
   verifyUiTool,
 } from "../../../server/harness/tools/use-browser";
-import { roleFeedbackPrompt, roleTaskPrompt } from "../../../server/harness/prompts";
+import {
+  openuiInstructions,
+  qaSystemPrompts,
+  roleFeedbackPrompt,
+  roleTaskPrompt,
+} from "../../../server/harness/prompts";
 import type { CanonicalPlan, Requirements } from "../../../server/harness/testing-domain";
 import { ROLE_IDS, type TestingRequestInput } from "../../../shared/testing";
 
@@ -98,7 +103,7 @@ test("role definitions keep distinct responsibilities within their capabilities"
   assert.match(roleRegistry.atlassian.systemPrompt, /unresolved instead of silently resolving/);
   assert.match(
     roleRegistry.planner.systemPrompt,
-    /Every selected criterion needs at least one functional check/,
+    /Every selected criterion must be covered by at least one executable check or a deferred case/,
   );
   assert.match(roleRegistry.planner.systemPrompt, /negative, boundary-value/);
   assert.match(roleRegistry.planner.systemPrompt, /no external reading or browser capabilities/);
@@ -130,6 +135,25 @@ test("every role rejects evidence-as-instructions and real-site acceptance claim
     assert.match(prompt, /tool error or missing receipt is not evidence of simulated_blocked/);
     assert.match(prompt, /inside_tolerance means simulated_pass/);
     assert.match(prompt, /outside_tolerance means simulated_fail/);
+  }
+});
+
+test("AC and UI executors request assigned checks through direct tool calls, not Code Mode loops", () => {
+  for (const role of ["ac", "ui"] as const) {
+    const prompt = roleRegistry[role].systemPrompt;
+    assert.match(
+      prompt,
+      /one direct top-level call to your role's verify_ac or verify_ui tool per assigned checkId/,
+    );
+    assert.match(prompt, /Never call verify_ac, verify_ui, or get_figma from Code Mode/);
+    assert.match(
+      prompt,
+      /nested Code Mode allowance is smaller than the task's native tool allowance and is shared by the whole task; splitting calls across scripts does not reset it/,
+    );
+    assert.match(prompt, /Use Code Mode only for local assembly of the final JSON/);
+    assert.match(prompt, /outputDigest as the evidence item's digest/);
+    assert.match(prompt, /never compute replacements or cite a receipt from another check/);
+    assert.match(prompt, /A tool error or missing receipt is not evidence of simulated_blocked/);
   }
 });
 
@@ -283,4 +307,47 @@ test("QA roles keep their capability policy inside the shared registry", () => {
   assert.equal(allowsTool("ac", "jira_get_issue", "direct"), false);
   assert.deepEqual([...toolNamesFor("ui")].sort(), ["get_figma", "verify_ui"]);
   assert.equal(allowsTool("ui", "verify_ui", "codemode"), true);
+});
+
+test("main and delegation text describe evidence origin instead of always claiming mock-only", () => {
+  const main = openuiInstructions();
+  assert.doesNotMatch(main, /Browser outcomes are mock-only/);
+  assert.match(main, /evidence\.origin/);
+  assert.match(main, /deferred/);
+  assert.match(main, /get_figma/);
+  assert.doesNotMatch(delegateTaskTool.description, /mock-only/);
+  assert.match(delegateTaskTool.description, /evidence\.origin/);
+  assert.match(
+    delegateTaskTool.description,
+    /planner accepts only role, summary, requirementsRef and optional design/,
+  );
+  assert.match(
+    delegateTaskTool.description,
+    /do not send goal, sources, criteria or targetUrl to planner/,
+  );
+  assert.match(main, /goal, sources and criteria belong to atlassian, not planner/);
+  assert.match(main, /Before delegating the planner, attempt get_figma reads/);
+  assert.match(main, /relevant explicitly linked page\/viewport nodes/);
+  assert.match(main, /Successful Figma reading is not a prerequisite for planning/);
+  assert.doesNotMatch(main, /You may read relevant links/);
+});
+
+test("the planner prompt requires full coverage through executable or deferred cases", () => {
+  const prompt = qaSystemPrompts.planner;
+  assert.match(prompt, /deferredCases/);
+  assert.match(prompt, /executable check or a deferred case/);
+  assert.doesNotMatch(prompt, /Every selected criterion needs at least one functional check/);
+  assert.match(prompt, /Do not invent/);
+  assert.match(prompt, /planner always receives task\.targetUrl=null/);
+  assert.match(prompt, /not a reason to defer otherwise executable checks/);
+  assert.match(prompt, /semantic visible page-link navigation/);
+  assert.match(prompt, /product-page frame cannot supply the expected product-card or button/);
+  assert.match(
+    prompt,
+    /each of its expectations counts toward total maxChecks and maxChecksPerCase/,
+  );
+  const main = openuiInstructions();
+  assert.match(main, /Never choose the first node by default/);
+  assert.match(main, /Reading Figma for context does not select task\.design/);
+  assert.match(main, /reuse the existing host-valid plan/);
 });

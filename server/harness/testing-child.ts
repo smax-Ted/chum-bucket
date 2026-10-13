@@ -21,6 +21,7 @@ import {
   digestOf,
   canonicalizePlan,
   checksForRole,
+  publicIssues,
   sameDesign,
   sameSource,
   validateRequirements,
@@ -42,7 +43,8 @@ import {
 } from "./testing-tools";
 import { runAgentLoop, type AgentCheckpoint, type AgentSession } from "./agent-loop";
 import { roleRegistry, roleSystemPrompt } from "./agents";
-import { roleFeedbackPrompt, roleTaskPrompt } from "./prompts";
+import { finalTurnPrompt, roleFeedbackPrompt, roleTaskPrompt } from "./prompts";
+import { figmaLinks, jiraIssue } from "./source-links";
 import type { ConversationState } from "./conversation";
 import {
   browserOutputSchema,
@@ -67,7 +69,7 @@ export type TestingChildInput = Readonly<{
 export type TestingChildResult =
   | Readonly<{ state: "proposed"; proposal: unknown }>
   | Readonly<{ state: "denied"; reason: string }>
-  | Readonly<{ state: "failed"; reason: string }>;
+  | Readonly<{ state: "failed"; reason: string; issues?: readonly string[] }>;
 
 type Transport = {
   controller: AbortController;
@@ -190,17 +192,13 @@ async function settleTransport(workflowId: string, transport: Transport): Promis
 
 export function sourceAnchors(raw: unknown, limit = 24, nativeName?: string): readonly string[] {
   if (nativeName === "jira_get_issue" && isRecord(raw) && typeof raw.result === "string") {
-    try {
-      const issue: unknown = JSON.parse(raw.result);
+    const issue = jiraIssue(raw);
 
-      if (!isRecord(issue) || typeof issue.key !== "string" || !issue.key.trim()) {
-        return [];
-      }
-
-      raw = [issue.description, issue.key, issue.summary, issue];
-    } catch {
+    if (!issue) {
       return [];
     }
+
+    raw = [issue.description, issue.key, issue.summary, issue];
   }
 
   const found = new Set<string>();
@@ -412,15 +410,19 @@ function assistantText(conversation: ConversationState): string {
   );
 }
 
-function extractJson(text: string): unknown {
+export function extractJson(text: string): unknown {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
 
   if (start < 0 || end <= start) {
-    throw new Error("Role output is not JSON");
+    throw new Error("Role output is not valid JSON");
   }
 
-  return JSON.parse(text.slice(start, end + 1)) as unknown;
+  try {
+    return JSON.parse(text.slice(start, end + 1)) as unknown;
+  } catch {
+    throw new Error("Role output is not valid JSON");
+  }
 }
 
 type ExecutionTask = TestingExecution["tasks"][number];
@@ -1041,6 +1043,7 @@ async function captureSourceReceipt(
     run.execution.intent.sources,
   );
   const anchors = sourceAnchors(output, 24, native.nativeName);
+  const links = native.nativeName === "jira_get_issue" ? figmaLinks(output) : [];
 
   if (!authorized || !sameSource(authorized, capture.reference) || anchors.length === 0) {
     throw new Error("Source capture is not linked to the requested source");
@@ -1050,6 +1053,7 @@ async function captureSourceReceipt(
     reference: capture.reference,
     digest: native.outputDigest,
     anchors: [...anchors],
+    ...(links.length > 0 ? { links: [...links] } : {}),
     capturedAt: new Date().toISOString(),
   };
   await appendTrustedReceipt({
@@ -1218,6 +1222,7 @@ async function runRoleLoops(run: ChildRun, tools: RunTools): Promise<TestingChil
       model: roleRegistry[input.role].model,
       prompt: run.systemPrompt,
       compaction: { kind: "bounded", maxTurn },
+      finalTurn: finalTurnPrompt,
       checkpoint: prefixed(checkpoint, prefix),
       orchestration: (call) => orchestrateComment(run, call),
       signal,
@@ -1242,7 +1247,7 @@ async function runRoleLoops(run: ChildRun, tools: RunTools): Promise<TestingChil
 
   return again.issues.length === 0
     ? { state: "proposed", proposal: again.proposal }
-    : { state: "failed", reason: "proposal_rejected" };
+    : { state: "failed", reason: "proposal_rejected", issues: publicIssues(again.issues) };
 }
 
 async function runClaimedChild(

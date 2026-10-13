@@ -78,6 +78,7 @@ async function settleChild(
       ownerRunId,
       child.taskId,
       failureCode(result?.reason ?? "child_failed"),
+      result?.state === "failed" ? result.issues : undefined,
     );
 
     return;

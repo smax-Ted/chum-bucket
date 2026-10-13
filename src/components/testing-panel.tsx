@@ -8,6 +8,7 @@ import type {
   Action,
   ArtifactRef,
   Coverage,
+  DeferredCase,
   DesignReference,
   Judgment,
   PlanCheck,
@@ -17,6 +18,7 @@ import type {
   PublicPlan,
   PublicRequirements,
   PublicTestReport,
+  RequirementLink,
   RoleId,
   Source,
   TaskOutcome,
@@ -254,7 +256,11 @@ function checkText(check: PlanCheck): string {
 }
 
 function coverageStateText(state: Coverage["state"]): string {
-  return state === "uncovered" ? "未覆蓋" : JUDGMENT_LABELS[state];
+  if (state === "uncovered") {
+    return "未覆蓋";
+  }
+
+  return state === "deferred" ? "延後，未自動執行" : JUDGMENT_LABELS[state];
 }
 
 function sourceKey(source: Source): string {
@@ -306,6 +312,34 @@ const WAITING_DETAILS: Record<Extract<ProgressRow, { status: "waiting" }>["reaso
   dispatch: "等待派工。",
 };
 
+const NOT_REQUIRED_DETAILS: Record<
+  Extract<ProgressRow, { status: "not_required" }>["reason"],
+  string
+> = {
+  no_style_checks: "無樣式檢查，不需要派工。",
+  no_functional_checks: "無功能檢查，不需要派工。",
+};
+
+function TerminalDetail({ row }: { row: Extract<ProgressRow, { status: "terminal" }> }) {
+  return (
+    <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+      <p>原因：{row.reasonCode}</p>
+      {row.issues ? (
+        <>
+          <p>驗證問題：</p>
+          <ul className="flex flex-col gap-1">
+            {row.issues.map((issue) => (
+              <li key={issue} className="break-words">
+                {issue}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function RoleProgressDetail({ row }: { row: ProgressRow }) {
   switch (row.status) {
     case "waiting":
@@ -322,7 +356,7 @@ function RoleProgressDetail({ row }: { row: ProgressRow }) {
         </div>
       );
     case "not_required":
-      return <p className="text-xs text-muted-foreground">無樣式檢查，不需要派工。</p>;
+      return <p className="text-xs text-muted-foreground">{NOT_REQUIRED_DETAILS[row.reason]}</p>;
     case "undispatched":
       return (
         <p className="text-xs text-muted-foreground">
@@ -351,7 +385,7 @@ function RoleProgressDetail({ row }: { row: ProgressRow }) {
         </div>
       );
     case "terminal":
-      return <p className="text-xs text-muted-foreground">原因：{row.reasonCode}</p>;
+      return <TerminalDetail row={row} />;
   }
 }
 
@@ -394,6 +428,34 @@ function AcceptanceSummary({ acceptance }: { acceptance: Acceptance }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function figmaLinkScope(link: RequirementLink): string {
+  return link.nodeId === undefined ? "整份檔案" : `節點 ${link.nodeId}`;
+}
+
+function FigmaLinkList({ links }: { links: readonly RequirementLink[] }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <h4 className="text-sm font-medium">Figma 連結</h4>
+      <ul className="flex flex-col gap-1">
+        {links.map((link) => (
+          <li
+            key={link.url}
+            data-figma-file={link.fileKey}
+            data-figma-node={link.nodeId}
+            className="text-xs text-muted-foreground"
+          >
+            {link.label ? `${link.label} · ` : ""}
+            {sourceText(link.source)} · 檔案 <span className="font-mono">{link.fileKey}</span> ·{" "}
+            {figmaLinkScope(link)}
+            <span className="block font-mono break-all">{link.url}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="text-xs text-muted-foreground">連結僅供參考，不代表已讀取設計內容。</p>
     </div>
   );
 }
@@ -449,6 +511,46 @@ function RequirementsSummary({ requirements }: { requirements: PublicRequirement
           ))}
         </ul>
       ) : null}
+      {requirements.links ? <FigmaLinkList links={requirements.links} /> : null}
+    </div>
+  );
+}
+
+function DeferredCaseList({ cases }: { cases: readonly DeferredCase[] }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <h4 className="text-sm font-medium">延後案例</h4>
+      <p className="text-xs text-muted-foreground">
+        以下案例未自動執行，不會產生結果或通過判定，預期結果僅供人工或後續執行參考。
+      </p>
+      <ol className="flex flex-col gap-2">
+        {cases.map((deferred) => (
+          <li
+            key={deferred.id}
+            data-deferred-case-id={deferred.id}
+            className="flex flex-col gap-1 rounded-md border border-border p-2"
+          >
+            <p className="text-xs font-medium">
+              {deferred.title}（案例 {deferred.id}）
+            </p>
+            <ol className="flex flex-col gap-1">
+              {deferred.steps.map((step, index) => (
+                <li key={index} className="text-xs text-muted-foreground">
+                  步驟 {index + 1}：{step}
+                </li>
+              ))}
+            </ol>
+            <ol className="flex flex-col gap-1">
+              {deferred.expectations.map((expectation, index) => (
+                <li key={index} className="text-xs text-muted-foreground">
+                  準則 {expectation.criterionId}，預期：{expectation.expectedObservation}
+                </li>
+              ))}
+            </ol>
+            <p className="text-xs text-muted-foreground">延後原因：{deferred.reason}</p>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
@@ -511,6 +613,7 @@ function PlanSummary({ plan }: { plan: PublicPlan | null }) {
           </li>
         ))}
       </ol>
+      {plan.deferredCases ? <DeferredCaseList cases={plan.deferredCases} /> : null}
     </div>
   );
 }

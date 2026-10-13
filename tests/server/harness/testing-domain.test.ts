@@ -630,7 +630,9 @@ test("plan canonicalization assigns functional checks to AC and style checks to 
     planContext,
   );
   assert.equal(noFunctional.kind, "rejected");
-  assert.ok(noFunctional.issues.some((issue) => /has no functional check/.test(issue)));
+  assert.ok(
+    noFunctional.issues.some((issue) => /has no executable check or deferred case/.test(issue)),
+  );
   const duplicate = canonicalizePlan(
     {
       cases: [
@@ -1047,7 +1049,9 @@ test("plan reuse canonicalization rejects duplicate checks and missing selected 
     },
   );
   assert.equal(missingCoverage.kind, "rejected");
-  assert.ok(missingCoverage.issues.includes("criterion crit:AC-2 has no functional check"));
+  assert.ok(
+    missingCoverage.issues.includes("criterion crit:AC-2 has no executable check or deferred case"),
+  );
 });
 
 test("a missing plan lists every selected criterion as uncovered", () => {

@@ -103,13 +103,17 @@ async function modelStep(
     model: string;
     prompt: string;
     signal: AbortSignal;
+    finalTurn?: string;
   },
 ): Promise<ModelOutcome> {
-  const { conversation, model, prompt, signal } = input;
+  const { conversation, model, prompt, signal, finalTurn } = input;
   signal.throwIfAborted();
   await session.assertExecution();
   await session.emit(session.runId, snapshot(conversation.display), conversation);
-  const turn = await session.tools.getModelTools(conversation.context);
+  const turn =
+    finalTurn === undefined
+      ? await session.tools.getModelTools(conversation.context)
+      : { definitions: [], systemPrompt: finalTurn };
   signal.throwIfAborted();
   await session.assertExecution();
   const options: Parameters<AgentChatStream>[0] = {
@@ -230,18 +234,24 @@ type AgentLoopInput = {
   checkpoint: AgentCheckpoint;
   signal: AbortSignal;
   orchestration?: AgentOrchestration;
+  finalTurn?: string;
 };
 
 type CompletedModel = Extract<ModelOutcome, { state: "done" }>;
 
-function modelAttempt(input: AgentLoopInput, conversation: ConversationState, name: string) {
+function modelAttempt(
+  input: AgentLoopInput,
+  conversation: ConversationState,
+  name: string,
+  finalTurn?: string,
+) {
   const { session, model, prompt, signal } = input;
 
   return input.checkpoint({
     name,
     retry: MODEL_RETRY,
     shouldRetry: () => !signal.aborted,
-    work: () => modelStep(session, { conversation, model, prompt, signal }),
+    work: () => modelStep(session, { conversation, model, prompt, signal, finalTurn }),
   });
 }
 
@@ -330,7 +340,8 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       conversation = await compaction.compact({ conversation, reason: "threshold", turn });
     }
 
-    const attempt = await modelAttempt(input, conversation, `model:${turn}`);
+    const reserved = turn === maxTurn - 1 ? input.finalTurn : undefined;
+    const attempt = await modelAttempt(input, conversation, `model:${turn}`, reserved);
     const result = await completedModel(input, attempt, conversation, turn);
 
     if (!result) {
@@ -339,7 +350,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
 
     conversation = result.conversation;
 
-    if (!result.calls.length) {
+    if (!result.calls.length || reserved !== undefined) {
       return { state: "done", conversation };
     }
 

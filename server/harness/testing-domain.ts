@@ -6,7 +6,9 @@ import {
   artifactRefSchema,
   browserOutputSchema,
   criteriaSelectionSchema,
+  deferredCaseSchema,
   designReferenceSchema,
+  figmaLinkSchema,
   planCaseSchema,
   planCheckSchema,
   requirementCriterionSchema,
@@ -18,6 +20,7 @@ import {
   type CheckProgress,
   type Coverage,
   type CriteriaSelection,
+  type DeferredCase,
   type DesignReference,
   type FixtureIdentity,
   type FunctionalCheck,
@@ -33,6 +36,7 @@ import {
   type PublicPlan,
   type PublicTestReport,
   type PublicTaskArtifact,
+  type RequirementLink,
   type ArtifactKind,
   type RequirementCriterion,
   type RoleId,
@@ -129,6 +133,7 @@ export const sourceCaptureSchema = z.strictObject({
   reference: sourceSchema,
   digest: z.string().trim().min(1).max(128),
   anchors: z.array(z.string().trim().min(1).max(512)).min(1),
+  links: z.array(figmaLinkSchema).max(20).optional(),
   capturedAt: z.string().trim().min(1).max(64),
 });
 export type SourceCapture = Readonly<z.infer<typeof sourceCaptureSchema>>;
@@ -221,18 +226,24 @@ export type RequirementsDecision =
       unresolved: readonly string[];
     }>;
 
-function requirementsSchemaIssues(error: z.ZodError): Validation<never> {
-  const issues = error.issues.map((issue) => {
-    const path = issue.path.reduce<string>(
-      (text, part) =>
-        typeof part === "number" ? `${text}[${part}]` : `${text}${text ? "." : ""}${String(part)}`,
-      "",
-    );
+export function schemaIssueMessages(error: z.ZodError, root = "proposal"): string[] {
+  return error.issues.map((issue) => {
+    const path = issue.path.reduce<string>((text, part) => {
+      if (typeof part === "number") {
+        return `${text}[${part}]`;
+      }
 
-    return `${path || "proposal"}: ${issue.message}`;
+      return `${text}${text ? "." : ""}${String(part)}`;
+    }, "");
+
+    return `${path || root}: ${issue.message}`;
   });
+}
 
-  return rejected(issues[0] ?? "requirements rejected", ...issues.slice(1));
+function schemaIssues(error: z.ZodError, fallback: string): Validation<never> {
+  const issues = schemaIssueMessages(error);
+
+  return rejected(issues[0] ?? fallback, ...issues.slice(1));
 }
 
 export type RequirementsContext = Readonly<{
@@ -336,13 +347,13 @@ export function validateRequirements(
 
     return failure.success
       ? { kind: "not_extractable", unresolved: failure.data.unresolved }
-      : requirementsSchemaIssues(failure.error);
+      : schemaIssues(failure.error, "requirements rejected");
   }
 
   const parsed = requirementsProposalSchema.safeParse(raw);
 
   if (!parsed.success) {
-    return requirementsSchemaIssues(parsed.error);
+    return schemaIssues(parsed.error, "requirements rejected");
   }
 
   const { criteria, issues } = extractRequirementCriteria(parsed.data.criteria, context.captures);
@@ -386,13 +397,14 @@ export type CanonicalPlan = Readonly<{
   targetUrl: string | null;
   design: DesignReference | null;
   cases: readonly PlanCase[];
+  deferredCases?: readonly DeferredCase[];
   assignments: Readonly<{ ac: readonly string[]; ui: readonly string[] }>;
   bounds: PlanContext["bounds"];
 }>;
 
-const planProposalSchema = z.strictObject({
-  cases: z
-    .array(
+const planProposalSchema = z
+  .strictObject({
+    cases: z.array(
       z.strictObject({
         id: z.string().trim().min(1).max(64),
         title: z.string().trim().min(1).max(200),
@@ -400,9 +412,13 @@ const planProposalSchema = z.strictObject({
         actions: z.array(actionSchema).min(1).max(50),
         checks: z.array(planCheckSchema).min(1).max(50),
       }),
-    )
-    .min(1),
-});
+    ),
+    deferredCases: z.array(deferredCaseSchema).optional(),
+  })
+  .refine((plan) => plan.cases.length + (plan.deferredCases?.length ?? 0) > 0, {
+    path: ["cases"],
+    message: "a plan needs at least one executable or deferred case",
+  });
 
 type PlanProposal = z.infer<typeof planProposalSchema>;
 
@@ -414,8 +430,9 @@ type PlanScope = Readonly<{
 
 type PlanScan = {
   issues: string[];
+  caseIds: Set<string>;
   checkIds: Set<string>;
-  functionalByCriterion: Map<string, number>;
+  covered: Set<string>;
   totalChecks: number;
 };
 
@@ -423,11 +440,21 @@ export function sameDesign(left: DesignReference, right: DesignReference | null)
   return right !== null && left.fileKey === right.fileKey && left.nodeId === right.nodeId;
 }
 
+function criterionIssue(subject: string, criterionId: string, scope: PlanScope): string | null {
+  if (scope.selectedIds.has(criterionId)) {
+    return null;
+  }
+
+  return scope.universeIds.has(criterionId)
+    ? `${subject} references an unselected criterion`
+    : `${subject} references an unknown criterion`;
+}
+
 function planCheckIssue(check: PlanCheck, scope: PlanScope): string | null {
-  if (!scope.selectedIds.has(check.criterionId)) {
-    return scope.universeIds.has(check.criterionId)
-      ? `check ${check.id} references an unselected criterion`
-      : `check ${check.id} references an unknown criterion`;
+  const unselected = criterionIssue(`check ${check.id}`, check.criterionId, scope);
+
+  if (unselected) {
+    return unselected;
   }
 
   if (check.kind === "style" && !sameDesign(check.design, scope.design)) {
@@ -458,13 +485,7 @@ function acceptedPlanChecks(
       continue;
     }
 
-    if (check.kind === "functional") {
-      scan.functionalByCriterion.set(
-        check.criterionId,
-        (scan.functionalByCriterion.get(check.criterionId) ?? 0) + 1,
-      );
-    }
-
+    scan.covered.add(check.criterionId);
     checks.push(check);
   }
 
@@ -477,16 +498,15 @@ function canonicalCases(
   maxChecksPerCase: number,
   scan: PlanScan,
 ): PlanCase[] {
-  const caseIds = new Set<string>();
   const cases: PlanCase[] = [];
 
   for (const proposed of proposals) {
-    if (caseIds.has(proposed.id)) {
+    if (scan.caseIds.has(proposed.id)) {
       scan.issues.push(`duplicate case id ${proposed.id}`);
       continue;
     }
 
-    caseIds.add(proposed.id);
+    scan.caseIds.add(proposed.id);
 
     if (proposed.checks.length > maxChecksPerCase) {
       scan.issues.push(`case ${proposed.id} exceeds the check bound`);
@@ -505,12 +525,52 @@ function canonicalCases(
   return cases;
 }
 
+function canonicalDeferredCases(
+  proposals: readonly DeferredCase[],
+  scope: PlanScope,
+  maxChecksPerCase: number,
+  scan: PlanScan,
+): DeferredCase[] {
+  const deferred: DeferredCase[] = [];
+
+  for (const proposed of proposals) {
+    scan.totalChecks += proposed.expectations.length;
+
+    if (proposed.expectations.length > maxChecksPerCase) {
+      scan.issues.push(`case ${proposed.id} exceeds the check bound`);
+    }
+
+    if (scan.caseIds.has(proposed.id)) {
+      scan.issues.push(`duplicate case id ${proposed.id}`);
+      continue;
+    }
+
+    scan.caseIds.add(proposed.id);
+
+    for (const expectation of proposed.expectations) {
+      const issue = criterionIssue(`deferred case ${proposed.id}`, expectation.criterionId, scope);
+
+      if (issue) {
+        scan.issues.push(issue);
+      } else {
+        scan.covered.add(expectation.criterionId);
+      }
+    }
+
+    deferred.push(proposed);
+  }
+
+  return deferred;
+}
+
 export function canonicalizePlan(raw: unknown, context: PlanContext): Validation<CanonicalPlan> {
   const parsed = planProposalSchema.safeParse(raw);
 
   if (!parsed.success) {
-    return rejected(parsed.error.issues.map((issue) => issue.message).join("; "));
+    return schemaIssues(parsed.error, "plan rejected");
   }
+
+  const proposedDeferred = parsed.data.deferredCases ?? [];
 
   const { maxCases, maxChecks, maxChecksPerCase } = context.bounds;
   const selection = selectedCriteria(context.requirements.criteria, context.requirements.selection);
@@ -523,24 +583,26 @@ export function canonicalizePlan(raw: unknown, context: PlanContext): Validation
     issues: selection.missingKeys.map(
       (key) => `selected criterion ${key} is missing from the extraction`,
     ),
+    caseIds: new Set(),
     checkIds: new Set(),
-    functionalByCriterion: new Map(),
+    covered: new Set(),
     totalChecks: 0,
   };
 
-  if (parsed.data.cases.length > maxCases) {
+  if (parsed.data.cases.length + proposedDeferred.length > maxCases) {
     scan.issues.push("plan exceeds the case bound");
   }
 
   const cases = canonicalCases(parsed.data.cases, scope, maxChecksPerCase, scan);
+  const deferredCases = canonicalDeferredCases(proposedDeferred, scope, maxChecksPerCase, scan);
 
   if (scan.totalChecks > maxChecks) {
     scan.issues.push("plan exceeds the check bound");
   }
 
   for (const criterion of selection.criteria) {
-    if (!scan.functionalByCriterion.has(criterion.id)) {
-      scan.issues.push(`criterion ${criterion.id} has no functional check`);
+    if (!scan.covered.has(criterion.id)) {
+      scan.issues.push(`criterion ${criterion.id} has no executable check or deferred case`);
     }
   }
 
@@ -559,6 +621,7 @@ export function canonicalizePlan(raw: unknown, context: PlanContext): Validation
     targetUrl: context.targetUrl,
     design: context.design,
     cases,
+    ...(deferredCases.length > 0 ? { deferredCases } : {}),
     assignments: { ac: functional.map((check) => check.id), ui: styles.map((check) => check.id) },
     bounds: context.bounds,
   });
@@ -980,9 +1043,10 @@ export const planPayloadSchema = z.strictObject({
   goal: z.string().min(1).max(2_000),
   targetUrl: z.string().min(1).max(2_048).nullable(),
   design: designReferenceSchema.nullable(),
-  cases: z.array(planCaseSchema).min(1),
+  cases: z.array(planCaseSchema),
+  deferredCases: z.array(deferredCaseSchema).optional(),
   assignments: z.strictObject({
-    ac: z.array(z.string().min(1)).min(1),
+    ac: z.array(z.string().min(1)),
     ui: z.array(z.string().min(1)),
   }),
   bounds: z.strictObject({
@@ -1152,7 +1216,13 @@ function reusePlan(artifact: StoredArtifact, context: ReuseContext): Validation<
     return rejected("dependency_rejected");
   }
 
-  const canonical = canonicalizePlan({ cases: payload.data.cases }, context.planContext);
+  const canonical = canonicalizePlan(
+    {
+      cases: payload.data.cases,
+      ...(payload.data.deferredCases ? { deferredCases: payload.data.deferredCases } : {}),
+    },
+    context.planContext,
+  );
 
   if (canonical.kind === "rejected") {
     return rejected(...canonical.issues);
@@ -1185,7 +1255,7 @@ export function validateReuse(raw: unknown, context: ReuseContext): Validation<B
 
 export type RoleOutcome =
   | Readonly<{ kind: "reused"; artifact: ArtifactRef; provenance: ArtifactOrigin }>
-  | Readonly<{ kind: "not_required"; reason: "no_style_checks" }>
+  | Readonly<{ kind: "not_required"; reason: "no_style_checks" | "no_functional_checks" }>
   | Readonly<{ kind: "waiting"; reason: "dependency" | "dispatch" }>
   | Readonly<{
       kind: "undispatched";
@@ -1198,10 +1268,21 @@ export type RoleOutcome =
       checks?: CheckProgress;
     }>
   | Readonly<{ kind: "cancelling"; active: readonly ToolActivityView[] }>
-  | Readonly<{ kind: "terminal"; outcome: TaskOutcome; reasonCode: string }>;
+  | Readonly<{
+      kind: "terminal";
+      outcome: TaskOutcome;
+      reasonCode: string;
+      issues?: readonly string[];
+    }>;
 
 function withChecks(checks: CheckProgress | undefined): Readonly<{ checks?: CheckProgress }> {
   return checks ? { checks } : {};
+}
+
+function withIssues(
+  issues: readonly string[] | undefined,
+): Readonly<{ issues?: readonly string[] }> {
+  return issues ? { issues } : {};
 }
 
 function rowOf(outcome: RoleOutcome): ProgressRow {
@@ -1221,8 +1302,24 @@ function rowOf(outcome: RoleOutcome): ProgressRow {
     case "cancelling":
       return { status: "cancelling", active: outcome.active };
     case "terminal":
-      return { status: "terminal", outcome: outcome.outcome, reasonCode: outcome.reasonCode };
+      return {
+        status: "terminal",
+        outcome: outcome.outcome,
+        reasonCode: outcome.reasonCode,
+        ...withIssues(outcome.issues),
+      };
   }
+}
+
+const MAX_PUBLIC_ISSUES = 8;
+const MAX_PUBLIC_ISSUE_LENGTH = 240;
+
+export function publicIssues(issues: readonly string[]): string[] {
+  const bounded = issues
+    .map((issue) => issue.trim().slice(0, MAX_PUBLIC_ISSUE_LENGTH).trim())
+    .filter((issue) => issue.length > 0);
+
+  return [...new Set(bounded)].slice(0, MAX_PUBLIC_ISSUES);
 }
 
 export function projectProgress(
@@ -1235,6 +1332,10 @@ export function projectProgress(
 
     if (outcome) {
       return rowOf(outcome);
+    }
+
+    if (role === "ac" && plan && plan.assignments.ac.length === 0) {
+      return { status: "not_required", reason: "no_functional_checks" };
     }
 
     if (role === "ui" && plan && plan.assignments.ui.length === 0) {
@@ -1270,7 +1371,11 @@ export type ReportInput = Readonly<{
 
 function publicPlan(plan: CanonicalPlan | null): PublicPlan | null {
   return plan
-    ? { cases: plan.cases, assignments: { ac: plan.assignments.ac, ui: plan.assignments.ui } }
+    ? {
+        cases: plan.cases,
+        ...(plan.deferredCases ? { deferredCases: plan.deferredCases } : {}),
+        assignments: { ac: plan.assignments.ac, ui: plan.assignments.ui },
+      }
     : null;
 }
 
@@ -1320,9 +1425,17 @@ function reportCoverage(input: ReportInput, plan: PublicPlan | null): Coverage[]
       state: byCheck.get(check.id) ?? "uncovered",
     })),
   );
-  const covered = new Set(planned.map((row) => row.criterionId));
+  const deferred = (plan?.deferredCases ?? []).flatMap((deferredCase) =>
+    deferredCase.expectations.map((expectation): Coverage => ({
+      criterionId: expectation.criterionId,
+      caseId: deferredCase.id,
+      checkId: null,
+      state: "deferred",
+    })),
+  );
+  const covered = new Set([...planned, ...deferred].map((row) => row.criterionId));
 
-  return [...planned, ...uncoveredCriteria(input.requirements, covered)];
+  return [...planned, ...deferred, ...uncoveredCriteria(input.requirements, covered)];
 }
 
 function resultsMissing(assigned: readonly string[] | undefined, results: Results | null): boolean {
@@ -1353,7 +1466,7 @@ function reportIssues(
 }
 
 function notRequiredIssue(role: RoleId, plan: PublicPlan | null): string | null {
-  return role === "ui" && plan?.assignments.ui.length === 0
+  return (role === "ui" || role === "ac") && plan?.assignments[role].length === 0
     ? null
     : `role_${role}_unexpected_not_required`;
 }
@@ -1384,15 +1497,26 @@ function roleIssues(input: ReportInput, plan: PublicPlan | null): string[] {
   });
 }
 
+function requirementLinks(requirements: Requirements): RequirementLink[] {
+  return requirements.captures.flatMap((capture) =>
+    (capture.links ?? []).map((link) => ({ source: capture.reference, ...link })),
+  );
+}
+
 function publicRequirements(requirements: Requirements | null): PublicTestReport["requirements"] {
-  return requirements
-    ? {
-        goal: requirements.goal,
-        criteria: requirements.criteria,
-        selection: requirements.selection,
-        unresolved: requirements.unresolved,
-      }
-    : null;
+  if (!requirements) {
+    return null;
+  }
+
+  const links = requirementLinks(requirements);
+
+  return {
+    goal: requirements.goal,
+    criteria: requirements.criteria,
+    selection: requirements.selection,
+    unresolved: requirements.unresolved,
+    ...(links.length > 0 ? { links } : {}),
+  };
 }
 
 export function publicTaskArtifact(
@@ -1423,7 +1547,7 @@ export function deriveReport(input: ReportInput): PublicTestReport {
     ? { verdict: "blocked", reasons: blocked }
     : {
         verdict: "not_verified",
-        reason: coverage.some((row) => ["pass", "fail", "blocked"].includes(row.state))
+        reason: coverage.some((row) => ["pass", "fail", "blocked", "deferred"].includes(row.state))
           ? "release_not_assessed"
           : "mock_only",
       };

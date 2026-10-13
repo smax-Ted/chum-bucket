@@ -317,6 +317,41 @@ test(
 );
 
 test(
+  "seventeen direct tool calls fit the native allowance without consuming nested calls",
+  { skip: !enabled, timeout: 60_000 },
+  async () => {
+    await ensureDatabase();
+    const thread = await createThread();
+    const admission = await admitSource(thread.id);
+    const frame = (await reserveRoleTask(
+      admission.parentRunId,
+      admission.operationId,
+      "atlassian",
+      { goal },
+    ))!;
+    const input = {
+      taskId: frame.taskId,
+      parentRunId: admission.parentRunId,
+      attemptNonce: frame.attemptNonce,
+      childWorkflowId: frame.childWorkflowId,
+    };
+    const direct = await Promise.all(
+      Array.from({ length: 17 }, () => guardActualIO({ ...input, kind: "tool" })),
+    );
+    assert.equal(
+      direct.every((result) => result.state === "allowed"),
+      true,
+    );
+    assert.deepEqual(await taskBudget(frame.taskId), {
+      model_steps: {},
+      native_calls: 17,
+      nested_calls: 0,
+      io_sequence: 17,
+    });
+  },
+);
+
+test(
   "cancel freezes IO without renewing deadline and records delivery acks",
   { skip: !enabled, timeout: 60_000 },
   async () => {

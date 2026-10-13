@@ -6,9 +6,11 @@ import {
   ROLE_IDS,
   artifactRefSchema,
   criteriaSelectionSchema,
+  deferredCaseSchema,
   evidenceSchema,
   planCaseSchema,
   requirementCriterionSchema,
+  requirementLinkSchema,
   sourceSchema,
   testRunIdSchema,
   type TestView,
@@ -63,7 +65,7 @@ const progressRowSchema = z.discriminatedUnion("status", [
   }),
   z.object({
     status: z.literal("not_required"),
-    reason: z.literal("no_style_checks"),
+    reason: z.enum(["no_style_checks", "no_functional_checks"]),
   }),
   z.object({
     status: z.literal("undispatched"),
@@ -87,6 +89,7 @@ const progressRowSchema = z.discriminatedUnion("status", [
     status: z.literal("terminal"),
     outcome: taskOutcomeSchema,
     reasonCode: boundedText(128),
+    issues: z.array(boundedText(256)).max(8).optional(),
   }),
 ]);
 
@@ -139,10 +142,12 @@ const publicRequirementsSchema = z.object({
   criteria: z.array(requirementCriterionSchema).max(500),
   selection: criteriaSelectionSchema,
   unresolved: z.array(boundedText(512)).max(500),
+  links: z.array(requirementLinkSchema).optional(),
 });
 
 const publicPlanSchema = z.object({
   cases: z.array(planCaseSchema).max(20),
+  deferredCases: z.array(deferredCaseSchema).max(20).optional(),
   assignments: z.object({
     ac: z.array(boundedText(64)).max(80),
     ui: z.array(boundedText(64)).max(80),
@@ -160,7 +165,7 @@ const coverageSchema = z.object({
   criterionId: boundedText(128),
   caseId: boundedText(64).nullable(),
   checkId: boundedText(64).nullable(),
-  state: z.union([judgmentSchema, z.literal("uncovered")]),
+  state: z.union([judgmentSchema, z.literal("uncovered"), z.literal("deferred")]),
 });
 
 const blockedReasonsSchema = z.tuple([boundedText(256)]).rest(boundedText(256));

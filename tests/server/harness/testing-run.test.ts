@@ -5,6 +5,7 @@ import type { AdapterYieldChunk } from "@tanstack/ai";
 import { DELEGATE_TASK_TOOL, withRunTools } from "../../../server/harness/tools";
 import {
   designProperties,
+  extractJson,
   observeStream,
   restoreDesignCapture,
   sourceAnchors,
@@ -499,4 +500,15 @@ test("the retired whole-pipeline tool is rejected instead of rerouted", async ()
     undefined,
     "main",
   );
+});
+
+test("role output that is not valid JSON is reported without echoing the model text", () => {
+  const secret = "sk-secret-token-value";
+  for (const text of [`no json here ${secret}`, `{"a": ${secret}}`, `{ broken ${secret} }`]) {
+    assert.throws(
+      () => extractJson(text),
+      (error) => error instanceof Error && error.message === "Role output is not valid JSON",
+    );
+  }
+  assert.deepEqual(extractJson('prefix {"cases":[]} suffix'), { cases: [] });
 });

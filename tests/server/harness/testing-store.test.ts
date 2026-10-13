@@ -1,17 +1,26 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { artifactRefSchema, type TestingRequestInput } from "../../../shared/testing";
 import {
+  artifactRefSchema,
+  delegationInputSchema,
+  type TestingRequestInput,
+} from "../../../shared/testing";
+import {
+  canonicalizePlan,
   digestOf,
+  planScopeDigest,
   requirementsScopeDigest,
   validateRequirements,
 } from "../../../server/harness/testing-domain";
 import { roleRegistry } from "../../../server/harness/agents";
 import {
   closureDecisions,
+  admitAttachedInTransaction,
+  TestingPersistenceError,
   hostTestingRuntime,
   missingSourceCaptures,
+  resultTaskContext,
   testingFinishOutcome,
   type StoredArtifactRow,
 } from "../../../server/harness/testing-store";
@@ -37,6 +46,70 @@ function row(
     ...overrides,
   };
 }
+
+test("invalid planner delegation names the forbidden goal field without exposing input values", async () => {
+  const input = {
+    role: "planner",
+    summary: "Build a full test plan for FETM-78 from the requirements artifact",
+    requirementsRef: "art-8bd6426dfb3ed14f0bb827670fa94c42d5f217ca",
+    goal: "Create a comprehensive test plan for Jira issue FETM-78 from the captured requirements",
+  };
+  const tx = null as unknown as Parameters<typeof admitAttachedInTransaction>[0];
+  await assert.rejects(
+    admitAttachedInTransaction(
+      tx,
+      "run-parent",
+      "thread-1",
+      "chatcmpl-tool-b46dde7e21fe0c87",
+      input,
+      host,
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof TestingPersistenceError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /Invalid testing intent/);
+      assert.match(error.message, /goal/);
+      assert.match(error.message, /Unrecognized|not allowed/);
+      assert.doesNotMatch(error.message, /Create a comprehensive|Build a full|art-8bd6426/);
+      return true;
+    },
+  );
+  const { goal: _goal, ...corrected } = input;
+  assert.deepEqual(delegationInputSchema.parse(corrected), corrected);
+});
+
+test("malformed delegation diagnostics are bounded and never echo secret values", async () => {
+  const secret = "secret-provider-token-source-content";
+  const tx = null as unknown as Parameters<typeof admitAttachedInTransaction>[0];
+  for (const input of [
+    null,
+    { role: secret },
+    { role: "planner", summary: 42, requirementsRef: {}, goal: secret },
+    { role: "ac", summary: "Check", planRef: "plan-1", targetUrl: secret },
+  ]) {
+    await assert.rejects(
+      admitAttachedInTransaction(tx, "run-parent", "thread-1", "call-1", input, host),
+      (error: unknown) => {
+        assert.ok(error instanceof TestingPersistenceError);
+        assert.match(error.message, /Invalid testing intent/);
+        assert.ok(error.message.length <= 2048);
+        assert.ok(!error.message.includes(secret));
+        return true;
+      },
+    );
+  }
+  await assert.rejects(
+    admitAttachedInTransaction(
+      tx,
+      "run-parent",
+      "thread-1",
+      "invalid call key",
+      { role: "planner", summary: "Plan", requirementsRef: "requirements-1" },
+      host,
+    ),
+    { message: "Invalid testing intent" },
+  );
+});
 
 test("owner snapshot versions are passed in and are not a second model constant", () => {
   assert.equal(host.model, "owner-model");
@@ -260,4 +333,161 @@ test("supervised testing migration has no SQL comments", async () => {
 
 test("host runtime rejects an empty owner snapshot", () => {
   assert.throws(() => hostTestingRuntime({ model: " ", build: "owner-build" }), /host snapshot/);
+});
+
+test("a plan bound to no target stays reusable for an explicit execution URL", () => {
+  const source = { kind: "jira" as const, issueKey: "CHUM-42" };
+  const goal = "Verify checkout";
+  const selection = { kind: "all" as const };
+  const requirements = validateRequirements(
+    {
+      criteria: [{ key: "AC-1", statement: "Receipt appears", source, anchor: "AC-1" }],
+      unresolved: [],
+    },
+    {
+      goal,
+      selection,
+      captures: [
+        {
+          reference: source,
+          digest: "source",
+          anchors: ["AC-1"],
+          capturedAt: "2026-10-10T00:00:00Z",
+        },
+      ],
+    },
+  );
+  assert.equal(requirements.kind, "accepted");
+
+  if (requirements.kind !== "accepted") {
+    return;
+  }
+
+  const requirementsRef = artifactRefSchema.parse("requirements-artifact");
+  const planRef = artifactRefSchema.parse("plan-artifact");
+  const requirementsDigest = digestOf(requirements.value);
+  const plan = canonicalizePlan(
+    {
+      cases: [],
+      deferredCases: [
+        {
+          id: "deferred-1",
+          title: "Receipt copy",
+          steps: ["Open the receipt"],
+          expectations: [{ criterionId: "crit:AC-1", expectedObservation: "Receipt appears" }],
+          reason: "Receipt setup is unavailable",
+        },
+      ],
+    },
+    {
+      requirements: requirements.value,
+      requirementsDigest,
+      goal,
+      targetUrl: null,
+      design: null,
+      bounds: host.bounds,
+    },
+  );
+  assert.equal(plan.kind, "accepted");
+
+  if (plan.kind !== "accepted") {
+    return;
+  }
+
+  const metadata = (payloadDigest: string, dependencies: string[]) => ({
+    dependencies,
+    versions: host.versions,
+    profiles: host.profiles,
+    registration: host.registration,
+    bounds: host.bounds,
+    fixture: host.fixture,
+    parentRunId: "run-1",
+    producerTaskId: "task-1",
+    attempt: 1,
+    inputDigest: "input",
+    outputDigest: payloadDigest,
+    complete: true,
+  });
+  const requirementsRow = row({
+    ref: requirementsRef,
+    kind: "requirements",
+    payload: requirements.value,
+    payloadDigest: requirementsDigest,
+    metadata: metadata(requirementsDigest, []),
+    scopeDigest: requirementsScopeDigest({ goal, sources: [source], selection }),
+  });
+  const planRow = (targetUrl: string | null) => {
+    const payload = { ...plan.value, targetUrl };
+
+    return row({
+      ref: planRef,
+      kind: "plan",
+      payload,
+      payloadDigest: digestOf(payload),
+      metadata: metadata(digestOf(payload), [requirementsRef]),
+      scopeDigest: planScopeDigest({
+        goal,
+        targetUrl,
+        design: null,
+        requirementsDigest,
+      }),
+      dependencies: [requirementsRef],
+    });
+  };
+  const decide = (stored: StoredArtifactRow, targetUrl: string | null) =>
+    closureDecisions({
+      threadId: "thread-1",
+      intent: {
+        goal,
+        sources: [source],
+        criteria: selection,
+        targetUrl,
+        task: {
+          version: 2,
+          input: {
+            role: "ac",
+            summary: "Run checks",
+            planRef,
+            targetUrl: "https://preview.example.test/",
+          },
+        },
+      },
+      refs: [planRef],
+      rows: new Map<string, StoredArtifactRow>([
+        [requirementsRef, requirementsRow],
+        [planRef, stored],
+      ]),
+      host,
+    });
+  assert.equal(decide(planRow(null), "https://preview.example.test/")[0]?.kind, "accepted");
+});
+
+test("execution binds an unbound plan to the explicit URL and rejects any other URL for a bound plan", () => {
+  const base = {
+    requirementsDigest: "digest",
+    goal: "Verify checkout",
+    design: null,
+    cases: [],
+    bounds: host.bounds,
+  };
+  const input = {
+    role: "ac" as const,
+    summary: "Run checks",
+    planRef: artifactRefSchema.parse("plan-artifact"),
+    targetUrl: "https://preview.example.test/",
+  };
+  const unbound = { ...base, targetUrl: null, assignments: { ac: ["check-1"], ui: [] } };
+  assert.deepEqual(resultTaskContext(unbound, input), {
+    targetUrl: "https://preview.example.test/",
+    design: undefined,
+  });
+  const bound = { ...unbound, targetUrl: "https://preview.example.test/" };
+  assert.equal(resultTaskContext(bound, input).targetUrl, "https://preview.example.test/");
+  assert.throws(
+    () => resultTaskContext({ ...unbound, targetUrl: "https://other.example.test/" }, input),
+    { message: "Plan target URL is incompatible" },
+  );
+  assert.throws(() => resultTaskContext({ ...unbound, assignments: { ac: [], ui: [] } }, input), {
+    message: /no automated checks for the delegated role/,
+  });
 });

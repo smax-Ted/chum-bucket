@@ -36,6 +36,7 @@ import {
   type AtlassianScope,
   type ModelTool,
 } from "./tools/atlassian";
+import { figmaUrlTarget, withRemoteLinks } from "./source-links";
 import { codeModeToolName, composeCodeModeTurn, type CodeModeTurn } from "./tools/code-mode";
 import { createUseBrowserTool, type BrowserAdapter } from "./tools/use-browser";
 import type { RunTools } from "./tools";
@@ -340,9 +341,11 @@ async function atlassianRoleTools(
         throw new Error("Unknown tool");
       }
 
+      const hostCall =
+        call.name === "jira_get_issue" ? { ...call, input: withRemoteLinks(call.input) } : call;
       const invocation = {
-        call,
-        input: call.input,
+        call: hostCall,
+        input: hostCall.input,
         nativeName: call.name,
         route,
         context,
@@ -352,7 +355,7 @@ async function atlassianRoleTools(
         requireRequestedDiscovery(call.input, allowed);
         const envelope = envelopeOf(
           await input.host.invoke(invocation, () =>
-            scope.executeTool(messages, call, context, undefined),
+            scope.executeTool(messages, hostCall, context, undefined),
           ),
         );
 
@@ -371,7 +374,7 @@ async function atlassianRoleTools(
 
       const envelope = envelopeOf(
         await input.host.invoke(invocation, () =>
-          scope.executeTool(messages, call, context, undefined),
+          scope.executeTool(messages, hostCall, context, undefined),
         ),
       );
       const sourceCapture = await input.host.captureSource({
@@ -494,27 +497,6 @@ const figmaOutputSchema = z.looseObject({
   truncated: z.boolean().optional(),
   nodes: z.array(z.looseObject({ id: z.string(), visible: z.boolean().optional() })).optional(),
 });
-
-const FIGMA_HOSTS = new Set(["figma.com", "www.figma.com"]);
-
-function figmaUrlTarget(target: string): { fileKey: string; nodeId: string | undefined } {
-  const url = new URL(target);
-
-  if (!FIGMA_HOSTS.has(url.hostname)) {
-    throw new Error("Expected a Figma URL.");
-  }
-
-  const match = url.pathname.match(/^\/(?:file|design)\/([a-zA-Z0-9]+)(?:\/|$)/);
-
-  if (!match) {
-    throw new Error("Expected a Figma file or design URL.");
-  }
-
-  return {
-    fileKey: url.pathname.match(/\/branch\/([a-zA-Z0-9]+)(?:\/|$)/)?.[1] ?? match[1]!,
-    nodeId: url.searchParams.get("node-id") ?? undefined,
-  };
-}
 
 export function requestedFigmaTarget(target: string, nodeId: string | undefined): DesignReference {
   const trimmed = target.trim();

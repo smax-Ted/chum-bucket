@@ -297,3 +297,108 @@ test("bounded loop stops at the caller budget after repeated tool turns", async 
   assert.equal(result.state, "limit");
   assert.equal(executed.length, 2);
 });
+
+test("a bounded loop reserves its last model turn for a tool-free final reply", async () => {
+  const events: StreamChunk[] = [];
+  const executed: ModelCall[] = [];
+  const offered: { tools: number; prompts: readonly string[] }[] = [];
+  const streams = [toolTurn("call-1", "codemode", { code: "1" }), textTurn("m-final", "{}")];
+  const base = sessionFor(streams, events, executed);
+  const session: AgentSession = {
+    ...base,
+    tools: {
+      ...base.tools,
+      getModelTools: async () => ({
+        definitions: [{ name: "codemode", description: "run", inputSchema: { type: "object" } }],
+        systemPrompt: "codemode instructions",
+      }),
+    },
+    chatStream: async (options) => {
+      offered.push({ tools: options.tools.length, prompts: options.systemPrompts });
+
+      return base.chatStream(options);
+    },
+  };
+  const result = await runAgentLoop({
+    session,
+    conversation: baseline,
+    model: "deepseek-ai/DeepSeek-V4.1-Flash",
+    prompt: "role prompt",
+    compaction: bounded(2),
+    finalTurn: "Tools are closed. Reply with the final JSON object only.",
+    checkpoint: passCheckpoint,
+    signal: new AbortController().signal,
+  });
+  assert.equal(result.state, "done");
+  assert.deepEqual(offered, [
+    { tools: 1, prompts: ["role prompt", "codemode instructions"] },
+    {
+      tools: 0,
+      prompts: ["role prompt", "Tools are closed. Reply with the final JSON object only."],
+    },
+  ]);
+  assert.equal(executed.length, 1);
+});
+
+test("a tool call attempted on the reserved final turn is not executed", async () => {
+  const events: StreamChunk[] = [];
+  const executed: ModelCall[] = [];
+  const session = sessionFor(
+    [toolTurn("call-1", "codemode", { code: "1" }), toolTurn("call-2", "codemode", { code: "2" })],
+    events,
+    executed,
+  );
+  const result = await runAgentLoop({
+    session,
+    conversation: baseline,
+    model: "deepseek-ai/DeepSeek-V4.1-Flash",
+    prompt: "role prompt",
+    compaction: bounded(2),
+    finalTurn: "final",
+    checkpoint: passCheckpoint,
+    signal: new AbortController().signal,
+  });
+  assert.equal(result.state, "done");
+  assert.deepEqual(
+    executed.map((call) => call.id),
+    ["call-1"],
+  );
+});
+
+test("one executor model turn runs all seventeen direct check calls before the reserved final reply", async () => {
+  const checkIds = Array.from({ length: 17 }, (_, index) => `chk-${index + 1}`);
+  const events: StreamChunk[] = [];
+  const executed: ModelCall[] = [];
+  const parallelTurn = async function* (): AsyncGenerator<AdapterYieldChunk> {
+    yield { type: EventType.RUN_STARTED, threadId: "thread", runId: "provider-run" };
+
+    for (const checkId of checkIds) {
+      const input = { checkId };
+      yield { type: EventType.TOOL_CALL_START, toolCallId: checkId, toolCallName: "verify_ac" };
+      yield { type: EventType.TOOL_CALL_ARGS, toolCallId: checkId, delta: JSON.stringify(input) };
+      yield { type: EventType.TOOL_CALL_END, toolCallId: checkId, input };
+    }
+
+    yield { type: EventType.RUN_FINISHED, threadId: "thread", runId: "provider-run" };
+  };
+  const session = sessionFor(
+    [parallelTurn(), textTurn("m-final", '{"checks":[]}')],
+    events,
+    executed,
+  );
+  const result = await runAgentLoop({
+    session,
+    conversation: baseline,
+    model: "deepseek-ai/DeepSeek-V4.1-Flash",
+    prompt: "role prompt",
+    compaction: bounded(6),
+    finalTurn: "final",
+    checkpoint: passCheckpoint,
+    signal: new AbortController().signal,
+  });
+  assert.equal(result.state, "done");
+  assert.deepEqual(
+    executed.map((call) => [call.name, call.id]),
+    checkIds.map((checkId) => ["verify_ac", checkId]),
+  );
+});

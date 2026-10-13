@@ -206,6 +206,33 @@ export const planCaseSchema = z.strictObject({
 });
 export type PlanCase = Readonly<z.infer<typeof planCaseSchema>>;
 
+export const deferredCaseSchema = z.strictObject({
+  id: z.string().trim().min(1).max(64),
+  title: z.string().trim().min(1).max(200),
+  steps: z.array(z.string().trim().min(1).max(500)).min(1).max(20),
+  reason: z.string().trim().min(1).max(500),
+  expectations: z
+    .array(
+      z.strictObject({
+        criterionId: z.string().trim().min(1).max(128),
+        expectedObservation: z.string().trim().min(1).max(2_000),
+      }),
+    )
+    .min(1),
+});
+export type DeferredCase = Readonly<z.infer<typeof deferredCaseSchema>>;
+
+export const figmaLinkSchema = z.strictObject({
+  url: z.string().trim().min(1).max(2_048),
+  label: z.string().trim().min(1).max(256).optional(),
+  fileKey: z.string().trim().min(1).max(256),
+  nodeId: z.string().trim().min(1).max(256).optional(),
+});
+export type FigmaLink = Readonly<z.infer<typeof figmaLinkSchema>>;
+
+export const requirementLinkSchema = figmaLinkSchema.extend({ source: sourceSchema });
+export type RequirementLink = Readonly<z.infer<typeof requirementLinkSchema>>;
+
 export const requirementCriterionSchema = z.strictObject({
   id: z.string().trim().min(1).max(128),
   key: z.string().trim().min(1).max(128),
@@ -375,10 +402,12 @@ export type PublicRequirements = Readonly<{
   criteria: readonly RequirementCriterion[];
   selection: CriteriaSelection;
   unresolved: readonly string[];
+  links?: readonly RequirementLink[];
 }>;
 
 export type PublicPlan = Readonly<{
   cases: readonly PlanCase[];
+  deferredCases?: readonly DeferredCase[];
   assignments: Readonly<{ ac: readonly string[]; ui: readonly string[] }>;
 }>;
 
@@ -393,7 +422,7 @@ export type Coverage = Readonly<{
   criterionId: string;
   caseId: string | null;
   checkId: string | null;
-  state: Judgment | "uncovered";
+  state: Judgment | "uncovered" | "deferred";
 }>;
 
 export type CheckProgress = Readonly<{ completed: number; total: number }>;
@@ -407,7 +436,7 @@ export type ToolActivityView = Readonly<{
 export type ProgressRow =
   | Readonly<{ status: "waiting"; reason: "dependency" | "dispatch" }>
   | Readonly<{ status: "reused"; artifact: ArtifactRef; provenance: ArtifactOrigin }>
-  | Readonly<{ status: "not_required"; reason: "no_style_checks" }>
+  | Readonly<{ status: "not_required"; reason: "no_style_checks" | "no_functional_checks" }>
   | Readonly<{
       status: "undispatched";
       reason: "cancelled" | "dependency_blocked" | "incompatible" | "timed_out";
@@ -419,7 +448,12 @@ export type ProgressRow =
       checks?: CheckProgress;
     }>
   | Readonly<{ status: "cancelling"; active: readonly ToolActivityView[] }>
-  | Readonly<{ status: "terminal"; outcome: TaskOutcome; reasonCode: string }>;
+  | Readonly<{
+      status: "terminal";
+      outcome: TaskOutcome;
+      reasonCode: string;
+      issues?: readonly string[];
+    }>;
 
 export type ProgressCard = Readonly<{
   version: number;
