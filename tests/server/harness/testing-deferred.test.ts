@@ -77,7 +77,7 @@ function functionalCase(key: string) {
     checks: [
       {
         id: `check-${key}`,
-        criterionId: `${key}`,
+        criterionId: key,
         kind: "functional" as const,
         expectedObservation: `Observable result for ${key}`,
         observation: {
@@ -97,7 +97,7 @@ function deferredCase(key: string, overrides: Partial<DeferredCase> = {}): Defer
     steps: ["Open the product page at desktop width", "Inspect the add-to-cart button"],
     expectations: [
       {
-        criterionId: `${key}`,
+        criterionId: key,
         expectedObservation: "Button background is #2D6A4F and label is white 16px",
       },
     ],
@@ -387,7 +387,7 @@ test("deferred cases appear in coverage without becoming results, passes or assi
   assert.deepEqual(
     report.coverage,
     [...functionalKeys, ...uiKeys].map((key) => ({
-      criterionId: `${key}`,
+      criterionId: key,
       caseId: `deferred-${key}`,
       checkId: null,
       state: "deferred",
@@ -482,7 +482,7 @@ test("grouped expectations each consume the total and per-scenario check budgets
       expectations: Array.from(
         { length: Math.min(perCase, count - index * perCase) },
         (_, offset) => ({
-          criterionId: `${keys[(index * perCase + offset) % keys.length]}`,
+          criterionId: keys[(index * perCase + offset) % keys.length],
           expectedObservation: `Criterion-linked expected outcome ${index * perCase + offset}`,
         }),
       ),

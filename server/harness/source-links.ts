@@ -43,8 +43,12 @@ export function readSource(nativeName: string, input: unknown): Source | null {
 }
 
 function resultRecord(raw: unknown): Record<string, unknown> | null {
-  if (!isRecord(raw) || typeof raw.result !== "string") {
-    return isRecord(raw) ? raw : null;
+  if (!isRecord(raw)) {
+    return null;
+  }
+
+  if (typeof raw.result !== "string") {
+    return raw;
   }
 
   try {

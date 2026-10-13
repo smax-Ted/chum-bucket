@@ -679,10 +679,6 @@ function mapIssue(issue: string): ReuseRejection {
     return issue;
   }
 
-  if (issue === "incomplete") {
-    return "incomplete";
-  }
-
   if (issue.includes("bound")) {
     return "incompatible_snapshot";
   }

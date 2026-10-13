@@ -230,8 +230,7 @@ export function scriptedEvents(options, control = {}) {
       .filter((message) => message.role === "user")
       .map(textOf)
       .find((text) => text.startsWith("Private validation failed:"));
-    const scenario =
-      control.atlassianScenario ?? (task.summary?.startsWith("source-") ? task.summary : undefined);
+    const scenario = task.summary?.startsWith("source-") ? task.summary : undefined;
 
     if (toolOutputs.length === 0) {
       return toolEvents(identity, "discover_atlassian_tools", {
