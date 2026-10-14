@@ -791,8 +791,8 @@ function prepareCase(targetUrl: string, planCase: PlanCase): URL {
 
 function launchChromium(): Promise<Browser> {
   // toogle demo or not
-  // return chromium.launch({ headless: false, slowMo: 500, timeout: 15_000 });
-  return chromium.launch({ headless: true, timeout: 15_000 });
+  return chromium.launch({ headless: false, slowMo: 500, timeout: 15_000 });
+  // return chromium.launch({ headless: true, timeout: 15_000 });
 }
 
 async function openCasePage(
