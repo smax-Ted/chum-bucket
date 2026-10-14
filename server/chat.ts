@@ -7,6 +7,7 @@ import {
 } from "@tanstack/ai";
 import { deepinfra } from "@server/harness/provider";
 import { openuiInstructions } from "@server/harness/prompts";
+import { localTools } from "@server/harness/tools";
 import { Hono } from "hono";
 import { db } from "./db";
 import { threadsTable } from "./db/schema";
@@ -63,6 +64,7 @@ app.post("/", async (c) => {
     adapter: deepinfra("deepseek-ai/DeepSeek-V4.1-Flash"),
     systemPrompts: [openuiInstructions()],
     messages: payload.messages,
+    tools: localTools,
     threadId: payload.threadId,
     runId: payload.runId,
     middleware: [preserveRunId(payload.runId), updateChatMessage],
