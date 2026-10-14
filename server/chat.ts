@@ -8,6 +8,7 @@ import {
 import { deepinfra } from "@server/harness/provider";
 import { openuiInstructions } from "@server/harness/prompts";
 import { localTools } from "@server/harness/tools";
+import { connectAtlassian } from "@server/harness/tools/atlassian";
 import { Hono } from "hono";
 import { db } from "./db";
 import { threadsTable } from "./db/schema";
@@ -59,12 +60,14 @@ app.get("/", async (c) => {
 
 app.post("/", async (c) => {
   const payload = await chatParamsFromRequestBody(await c.req.json());
+  const atlassian = await connectAtlassian();
 
   const stream = chat({
     adapter: deepinfra("deepseek-ai/DeepSeek-V4.1-Flash"),
     systemPrompts: [openuiInstructions()],
     messages: payload.messages,
     tools: localTools,
+    mcp: atlassian ? { clients: [atlassian], connection: "close" } : undefined,
     threadId: payload.threadId,
     runId: payload.runId,
     middleware: [preserveRunId(payload.runId), updateChatMessage],

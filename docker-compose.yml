@@ -6,6 +6,7 @@ services:
         required: false
     environment:
       DATABASE_URL: postgres://postgres:postgres@postgres-db:5432/postgres
+      ATLASSIAN_MCP_URL: ${ATLASSIAN_MCP_URL:-http://host.docker.internal:8000/mcp}
       CHOKIDAR_USEPOLLING: "true"
       CHOKIDAR_INTERVAL: "300"
     ports:
