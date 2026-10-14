@@ -12,6 +12,17 @@ import { type Pane as PaneModel } from "./types";
 
 const DEFAULT_WIDTH = { main: 720, agent: 440 } as const;
 
+function sendFromAction(
+  onSend: ((text: string) => Promise<SendResult>) | undefined,
+  disabled: boolean,
+) {
+  if (!onSend || disabled) {
+    return undefined;
+  }
+
+  return (text: string) => void onSend(text).catch((cause) => console.error(cause));
+}
+
 export function Pane({
   pane,
   onOpenAgentPane,
@@ -67,6 +78,7 @@ export function Pane({
             messages={pane.messages}
             agent={pane.agent}
             isStreaming={pane.status === "running"}
+            onSend={sendFromAction(onSend, sendDisabled)}
           />
         )}
         <ProgressPanel

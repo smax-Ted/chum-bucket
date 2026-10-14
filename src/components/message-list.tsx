@@ -1,4 +1,10 @@
-import { createParser, Renderer, type ParseResult } from "@openuidev/react-lang";
+import {
+  BuiltinActionType,
+  createParser,
+  Renderer,
+  type ActionEvent,
+  type ParseResult,
+} from "@openuidev/react-lang";
 import { MarkDownRenderer } from "@openuidev/react-ui";
 import { openuiLibrary } from "@openuidev/react-ui/genui-lib";
 import { useMemo } from "react";
@@ -18,7 +24,46 @@ export function parseAssistantReply(text: string): ParseResult {
   return assistantReplyParser.parse(text);
 }
 
-function AssistantMessage({ text, isStreaming }: { text: string; isStreaming: boolean }) {
+function actionMessage({ humanFriendlyMessage, params, formState }: ActionEvent): string {
+  const context = typeof params.context === "string" ? params.context : "";
+  const lines = [humanFriendlyMessage, context];
+
+  if (formState && Object.keys(formState).length > 0) {
+    lines.push(JSON.stringify(formState));
+  }
+
+  return [...new Set(lines.map((line) => line.trim()).filter(Boolean))].join("\n\n");
+}
+
+function handleAction(event: ActionEvent, onSend?: (text: string) => void) {
+  if (event.type === BuiltinActionType.OpenUrl) {
+    const url = event.params.url;
+
+    if (typeof url === "string" && url) {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+
+    return;
+  }
+
+  if (event.type === BuiltinActionType.ContinueConversation) {
+    const text = actionMessage(event);
+
+    if (text) {
+      onSend?.(text);
+    }
+  }
+}
+
+function AssistantMessage({
+  text,
+  isStreaming,
+  onSend,
+}: {
+  text: string;
+  isStreaming: boolean;
+  onSend?: (text: string) => void;
+}) {
   const result = useMemo(
     () => (isStreaming ? null : parseAssistantReply(text)),
     [text, isStreaming],
@@ -43,7 +88,12 @@ function AssistantMessage({ text, isStreaming }: { text: string; isStreaming: bo
           {[...new Set(errors.map((error) => error.component))].join("、")}
         </p>
       ) : null}
-      <Renderer response={text} library={openuiLibrary} isStreaming={isStreaming} />
+      <Renderer
+        response={text}
+        library={openuiLibrary}
+        isStreaming={isStreaming}
+        onAction={(event) => handleAction(event, onSend)}
+      />
     </div>
   );
 }
@@ -52,10 +102,12 @@ function ChatMessageRow({
   message,
   agent,
   isStreaming,
+  onSend,
 }: {
   message: ChatMessage;
   agent: string;
   isStreaming: boolean;
+  onSend?: (text: string) => void;
 }) {
   const text = message.parts
     .filter((part) => part.type === "text")
@@ -86,7 +138,9 @@ function ChatMessageRow({
             {message.parts.map((part) =>
               part.type === "tool-call" ? <ToolCall key={part.id} part={part} /> : null,
             )}
-            {text.trim() !== "" ? <AssistantMessage text={text} isStreaming={isStreaming} /> : null}
+            {text.trim() !== "" ? (
+              <AssistantMessage text={text} isStreaming={isStreaming} onSend={onSend} />
+            ) : null}
           </div>
         ) : (
           <Bubble variant="default" align={align}>
@@ -102,10 +156,12 @@ export function MessageList({
   messages,
   agent,
   isStreaming = false,
+  onSend,
 }: {
   messages: ChatMessage[];
   agent: string;
   isStreaming?: boolean;
+  onSend?: (text: string) => void;
 }) {
   const streamingId = isStreaming ? messages.at(-1)?.id : undefined;
 
@@ -117,6 +173,7 @@ export function MessageList({
           message={message}
           agent={agent}
           isStreaming={message.id === streamingId && message.role === "assistant"}
+          onSend={onSend}
         />
       ))}
     </MessageGroup>
