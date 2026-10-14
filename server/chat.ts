@@ -33,6 +33,14 @@ const updateChatMessage: ChatMiddleware = {
   },
 };
 
+function preserveRunId(runId: string | undefined): ChatMiddleware {
+  return {
+    name: "preserveRunId",
+    onChunk: (_context, chunk) =>
+      runId && "runId" in chunk && chunk.runId !== runId ? { ...chunk, runId } : undefined,
+  };
+}
+
 app.get("/", async (c) => {
   const threadId = c.req.query("threadId");
 
@@ -57,7 +65,7 @@ app.post("/", async (c) => {
     messages: payload.messages,
     threadId: payload.threadId,
     runId: payload.runId,
-    middleware: [updateChatMessage],
+    middleware: [preserveRunId(payload.runId), updateChatMessage],
   });
 
   return toServerSentEventsResponse(stream);
