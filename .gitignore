@@ -33,3 +33,5 @@ dist
 .data/browser-evidence/
 
 .worktree/
+
+tool-playground/
