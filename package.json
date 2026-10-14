@@ -8,6 +8,8 @@
     "dev:client": "vite",
     "dev:server": "tsx watch server/index.ts",
     "typecheck": "tsc",
+    "test": "tsx --test \"server/**/*.test.ts\" \"tests/**/*.test.ts\" \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
+    "mcp:atlassian": "tsx scripts/mcp-atlassian.ts",
     "check:contrast": "tsx scripts/check-contrast.ts",
     "check:openui": "tsx scripts/check-openui-parse.ts",
     "prebuild": "pnpm run generate",

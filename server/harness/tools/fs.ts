@@ -25,6 +25,7 @@ function requireToolCallId(context?: ToolExecutionContext) {
 	if (!context?.toolCallId) {
 		throw new Error("Missing tool call ID");
 	}
+
 	return context.toolCallId;
 }
 
