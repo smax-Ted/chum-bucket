@@ -67,6 +67,7 @@ export function Pane({
             messages={pane.messages}
             agent={pane.agent}
             isStreaming={pane.status === "running"}
+            onSend={onSend}
           />
         )}
         <ProgressPanel

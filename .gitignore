@@ -28,6 +28,7 @@ lerna-debug.log*
 .DS_Store
 
 dist
+tool-playground/
 .fallow/
 .data/browser-executions/
 .data/browser-evidence/

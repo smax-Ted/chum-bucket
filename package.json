@@ -4,22 +4,23 @@
   "scripts": {
     "generate": "openui generate src/library.ts --spec --out src/generated/spec.json",
     "prevdev": "pnpm run generate",
-    "dev": "concurrently \"vite\" \"tsx watch server/index.ts\"",
+    "dev": "concurrently \"vite\" \"pnpm dev:server\"",
     "dev:client": "vite",
-    "dev:server": "tsx watch server/index.ts",
+    "dev:server": "env -u FIGMA_API_KEY -u MODEL_API_KEY -u JIRA_API_TOKEN -u JIRA_EMAIL -u JIRA_BASE_URL -u ATLASSIAN_MCP_URL -u DATABASE_URL tsx watch server/index.ts",
     "typecheck": "tsc",
     "check:contrast": "tsx scripts/check-contrast.ts",
     "check:openui": "tsx scripts/check-openui-parse.ts",
     "prebuild": "pnpm run generate",
     "build": "vite build",
-    "start": "tsx server/index.ts",
+    "start": "env -u FIGMA_API_KEY -u MODEL_API_KEY -u JIRA_API_TOKEN -u JIRA_EMAIL -u JIRA_BASE_URL -u ATLASSIAN_MCP_URL -u DATABASE_URL tsx server/index.ts",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "lint:fix": "oxlint --fix-dangerously",
-    "lint": "oxlint && fallow"
+    "lint": "oxlint && fallow",
+    "mcp:atlassian": "env -u FIGMA_API_KEY -u MODEL_API_KEY -u JIRA_API_TOKEN -u JIRA_EMAIL -u JIRA_BASE_URL -u ATLASSIAN_MCP_URL -u DATABASE_URL tsx scripts/mcp-atlassian.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
