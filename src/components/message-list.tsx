@@ -1,4 +1,4 @@
-import { createParser, Renderer, type ParseResult } from "@openuidev/react-lang";
+import { BuiltinActionType, createParser, Renderer, type ParseResult } from "@openuidev/react-lang";
 import { MarkDownRenderer } from "@openuidev/react-ui";
 import { openuiLibrary } from "@openuidev/react-ui/genui-lib";
 import { useMemo } from "react";
@@ -7,8 +7,11 @@ import remarkGfm from "remark-gfm";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Marker, MarkerContent } from "@/components/ui/marker";
 import { Message, MessageContent, MessageGroup, MessageHeader } from "@/components/ui/message";
+import type { SendResult } from "../hooks/use-threads";
 import { type ChatMessage } from "./types";
 import { ToolCall } from "./tool-call";
+
+type SendHandler = (text: string) => Promise<SendResult>;
 
 const assistantReplyParser = createParser(openuiLibrary.toJSONSchema(), openuiLibrary.root);
 const openuiStart = /^\s*\$?[A-Za-z_]\w*\s*=(?!=)/;
@@ -18,7 +21,15 @@ export function parseAssistantReply(text: string): ParseResult {
   return assistantReplyParser.parse(text);
 }
 
-function AssistantMessage({ text, isStreaming }: { text: string; isStreaming: boolean }) {
+function AssistantMessage({
+  text,
+  isStreaming,
+  onSend,
+}: {
+  text: string;
+  isStreaming: boolean;
+  onSend?: SendHandler;
+}) {
   const result = useMemo(
     () => (isStreaming ? null : parseAssistantReply(text)),
     [text, isStreaming],
@@ -43,7 +54,16 @@ function AssistantMessage({ text, isStreaming }: { text: string; isStreaming: bo
           {[...new Set(errors.map((error) => error.component))].join("、")}
         </p>
       ) : null}
-      <Renderer response={text} library={openuiLibrary} isStreaming={isStreaming} />
+      <Renderer
+        response={text}
+        library={openuiLibrary}
+        isStreaming={isStreaming}
+        onAction={(event) => {
+          if (event.type === BuiltinActionType.ContinueConversation && onSend) {
+            void onSend(event.humanFriendlyMessage);
+          }
+        }}
+      />
     </div>
   );
 }
@@ -52,10 +72,12 @@ function ChatMessageRow({
   message,
   agent,
   isStreaming,
+  onSend,
 }: {
   message: ChatMessage;
   agent: string;
   isStreaming: boolean;
+  onSend?: SendHandler;
 }) {
   const text = message.parts
     .filter((part) => part.type === "text")
@@ -86,7 +108,7 @@ function ChatMessageRow({
             {message.parts.map((part) =>
               part.type === "tool-call" ? <ToolCall key={part.id} part={part} /> : null,
             )}
-            {text.trim() !== "" ? <AssistantMessage text={text} isStreaming={isStreaming} /> : null}
+            {text.trim() !== "" ? <AssistantMessage text={text} isStreaming={isStreaming} onSend={onSend} /> : null}
           </div>
         ) : (
           <Bubble variant="default" align={align}>
@@ -102,10 +124,12 @@ export function MessageList({
   messages,
   agent,
   isStreaming = false,
+  onSend,
 }: {
   messages: ChatMessage[];
   agent: string;
   isStreaming?: boolean;
+  onSend?: SendHandler;
 }) {
   const streamingId = isStreaming ? messages.at(-1)?.id : undefined;
 
@@ -116,6 +140,7 @@ export function MessageList({
           key={message.id}
           message={message}
           agent={agent}
+          onSend={onSend}
           isStreaming={message.id === streamingId && message.role === "assistant"}
         />
       ))}
