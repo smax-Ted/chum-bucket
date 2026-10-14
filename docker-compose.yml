@@ -1,4 +1,21 @@
 services:
+  app:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres-db:5432/postgres
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "300"
+    ports:
+      - "5173:5173"
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - app-node-modules:/app/node_modules
+    depends_on:
+      - postgres-db
   postgres-db:
     image: postgres:17-alpine
     restart: always
@@ -25,5 +42,6 @@ services:
     links:
       - "postgres-db:pgsql-server"
 volumes:
+  app-node-modules:
   postgres-db-data:
   pgadmin-data:
