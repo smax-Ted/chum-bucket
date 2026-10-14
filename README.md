@@ -156,7 +156,8 @@ sequenceDiagram
 
 建立兩組工具，讓 Agent 讀取 Figma、Jira 與 Confluence，把整理結果寫入本機檔案，再讀回確認。
 
-- [ ] 建立 `get_figma` 與 Pi fs 工具 `read`、`write`、`edit`。
+- [ ] 建立 `get_figma` 與 [pi](https://deepwiki.com/search/how-to-implement-write-tool_dd9d3f11-2d60-43de-ad92-c95d2ace2da1?mode=fast) fs 工具 `read`、`write`、`edit`。
+    
 - [ ] 接入本機唯讀 Atlassian MCP，使用 lazy discovery 載入工具。
 
 依序閱讀以下文件：
